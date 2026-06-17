@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-plus"
+version = "0.1.0"
+description = "Force-Budgeted Recovery: LLM-guided failure recovery for contact-rich assembly under per-object force ceilings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic>=0.40.0",
+    "torch>=2.1.0",
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+    "omegaconf>=2.3.0",
+    "rich>=13.0.0",
+    "tensorboard>=2.14.0",
+    "gymnasium>=0.29.0",
+    "openai>=1.40.0",
+]
+
+[project.optional-dependencies]
+isaaclab = [
+    "isaaclab>=2.0.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["forge_plus*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

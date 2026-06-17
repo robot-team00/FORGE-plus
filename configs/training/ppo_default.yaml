@@ -1,0 +1,59 @@
+# PPO training hyperparameters for FORGE-style skills
+
+algorithm: ppo
+
+# Environment
+num_envs: 1024           # parallel Isaac Lab environments (GPU)
+max_steps_per_episode: 2000
+
+# PPO
+learning_rate: 3.0e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_epsilon: 0.2
+entropy_coefficient: 0.01
+value_loss_coefficient: 0.5
+max_grad_norm: 0.5
+
+# Rollout
+rollout_length: 256      # steps per env before PPO update
+num_epochs: 10           # PPO update epochs per rollout
+mini_batch_size: 512
+
+# Training schedule
+total_steps: 5_000_000
+warmup_steps: 50_000
+lr_schedule: cosine
+
+# Force budget curriculum
+f_cmd_curriculum:
+  start_range_n: [20.0, 80.0]   # start with a wide range
+  end_range_n: [10.0, 100.0]    # broaden over training
+  curriculum_steps: 1_000_000
+
+# Policy network
+policy:
+  obs_dim: 33
+  act_dim: 7
+  hidden_dim: 256
+  num_layers: 4
+  f_cmd_embed_dim: 64
+  dropout: 0.0
+
+# Reward shaping
+reward:
+  success: 10.0
+  broken: -5.0
+  progress_per_mm: 0.01
+  force_penalty_per_n: 0.001
+  ceiling_violation: -1.0
+
+# Checkpointing
+checkpoint_every_steps: 500_000
+checkpoint_dir: checkpoints/
+
+# Isaac Lab
+device: cuda:0
+headless: true
+physics_dt: 0.00833   # 120 Hz
+control_decimation: 2  # 60 Hz control

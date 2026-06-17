@@ -1,0 +1,41 @@
+# LLM supervisor configuration
+
+# Backend options: anthropic | openai_compatible | mock
+backend: anthropic
+
+# Anthropic settings
+model: claude-sonnet-4-6
+max_tokens: 512
+cache: true   # cache budget-setter outputs per (object, task) — safe for frozen model
+
+# Budget-setter
+budget_setter:
+  global_hard_cap_n: 120.0    # controller-level absolute ceiling (never exceeded)
+
+# Recovery selector
+recovery_selector:
+  menu:
+    - retract_and_reapproach
+    - wiggle_search
+    - rotate_align
+    - regrasp
+    - abort
+  # note: "increase_ceiling" is deliberately absent
+
+# Signature encoder
+signature_encoder:
+  lateral_bias_threshold_n: 2.0
+  slip_threshold_n: 1.5
+  axial_trend_window: 0.25
+  gripper_normalization:
+    franka_panda: 1.0
+    robotiq_2f140: 0.92   # 2F-140 has slightly different force transmission
+
+# JSON validation
+validation:
+  reject_f_max_above_cap: true
+  overwrite_keep_f_max: true  # recovery selector cannot change the budget
+
+# Local model (openai_compatible backend)
+# base_url: http://localhost:8000/v1
+# model: meta-llama/Llama-3.1-8B-Instruct

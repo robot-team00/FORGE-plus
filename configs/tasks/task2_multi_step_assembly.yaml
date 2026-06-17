@@ -1,0 +1,48 @@
+# Task 2: Multi-step assembly with injected jams
+# The core recovery stress test — disturbances manufacture realistic jams.
+# Tests closed-loop multi-attempt recovery across a sequence.
+
+name: task2_multi_step_assembly
+description: "Planetary gearbox assembly with cross-thread, misalignment, and tooth clash failures"
+
+objects:
+  fragile:
+    key: resin_planet_gear
+    f_break_range_n: [28, 70]
+    context: "brittle photopolymer resin; tooth mesh + bore press-fit"
+  robust:
+    key: metal_planet_gear
+    f_break_range_n: [165, 250]
+
+subphases:
+  - thread
+  - insert
+  - mesh
+
+per_subtask_budgets: true   # open decision: one ceiling vs. per-subtask
+
+disturbances:
+  type: pose_perturbation_sampled
+  perturbation_modes:
+    - type: cross_thread
+      angular_offset_deg: [3.0, 8.0]
+    - type: misalignment
+      lateral_offset_mm: [2.0, 5.0]
+    - type: tooth_clash
+      angular_offset_deg: [0.5, 2.0]
+  injection_probability: 0.6
+
+failure_modes:
+  - cross_thread    # torque spike + no axial progress
+  - misalignment    # steady lateral + moderate axial
+  - tooth_clash     # high-frequency torque oscillation
+
+max_steps: 4000
+max_attempts: 5
+
+grippers:
+  - franka_panda
+  - robotiq_2f140
+
+insertion_axis: z
+torque_axis: z   # relevant for threaded subphase
