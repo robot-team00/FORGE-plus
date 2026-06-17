@@ -24,28 +24,9 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│  SLOW SEMANTIC LAYER — FROZEN LLM (~0.1–1 Hz)       │
-│  ┌──────────────────┐     ┌───────────────────────┐ │
-│  │  Budget-Setter   │     │  Recovery-Selector    │ │
-│  │  identity → F_max│     │  signature → action   │ │
-│  │  (once/episode)  │     │  (once/failure)       │ │
-│  └──────────────────┘     └───────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-         │ F_max                    ↑ force signature
-         ▼                         │
-┌─────────────────────────────────────────────────────┐
-│  FAST CONTROL LAYER (~60–120 Hz)                    │
-│  RL skill → controller → FORCE CLAMP → sim          │
-│                           ↑                         │
-│                      safety lives here              │
-└─────────────────────────────────────────────────────┘
-                                    │
-                           [hidden F_break]
-                           evaluator only — never
-                           seen by agent or LLM
-```
+![Two-layer architecture diagram](docs/architecture.svg)
+
+> Full research proposal: [`docs/proposal.html`](docs/proposal.html)
 
 Two layers, two rates, clean roles:
 
