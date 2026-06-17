@@ -71,6 +71,8 @@ class BaselineRunner:
             clamp = ForceClamp(f_max_n=f_max_n, global_hard_cap_n=GLOBAL_HARD_CAP_N)
             peak = 0.0
             steps = 0
+            outcome = TaskOutcome.IN_PROGRESS
+            attempt_start_insert = obs.contact_step.insert_pos_mm
 
             while not self.env.is_done():
                 raw = self.skill.act(obs, f_max_n)
@@ -83,19 +85,22 @@ class BaselineRunner:
                 result.total_steps += 1
 
                 if outcome == TaskOutcome.BROKEN:
-                    result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, 0.0))
+                    net = obs.contact_step.insert_pos_mm - attempt_start_insert
+                    result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, net))
                     result.termination = EpisodeTermination.BROKEN
                     self._finalize(result, all_contact, f_max_n)
                     return result
 
+            net = obs.contact_step.insert_pos_mm - attempt_start_insert
+
             if outcome == TaskOutcome.SUCCESS:
-                result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, 0.0))
+                result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, net))
                 result.termination = EpisodeTermination.SUCCESS
                 break
 
             # Recovery / next attempt
             recovery_action = self._choose_recovery(attempt_idx, obs, f_max_n)
-            result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, recovery_action, peak, 0.0))
+            result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, recovery_action, peak, net))
 
             if recovery_action == "abort":
                 result.termination = EpisodeTermination.FAIL_ABORTED
@@ -105,7 +110,9 @@ class BaselineRunner:
             f_max_n = self._update_budget(f_max_n, attempt_idx, episode_cfg)
 
             self.recovery_executor.execute(self.env, recovery_action, {}, f_max_n)
-            obs = self.env.reset(episode_cfg)
+            # Continue from the recovered state (see EpisodeRunner): resetting here
+            # would re-randomize identically and discard the recovery just applied.
+            obs = self.env.observe()
 
         self._finalize(result, all_contact, f_max_n)
         return result

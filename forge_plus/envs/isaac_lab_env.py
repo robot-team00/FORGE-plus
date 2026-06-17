@@ -143,6 +143,10 @@ class IsaacLabAssemblyEnv(BaseAssemblyEnv):
         self._done = False
         self._outcome = TaskOutcome.IN_PROGRESS
 
+    def observe(self) -> EnvObservation:
+        """Return the current observation without resetting the scene."""
+        return self._observe()
+
     def get_contact_force_magnitude(self) -> float:
         """Read peak contact force from the F/T sensor."""
         return float(np.linalg.norm([self._last_ft.fx, self._last_ft.fy, self._last_ft.fz]))

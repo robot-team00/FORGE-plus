@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from forge_plus.control.force_clamp import ForceClamp, Wrench
+from forge_plus.control.force_clamp import GLOBAL_HARD_CAP_N, ForceClamp, Wrench
 from forge_plus.encoding.signature_encoder import ContactStep, SignatureEncoder
 from forge_plus.envs.base_assembly_env import BaseAssemblyEnv, EpisodeConfig, TaskOutcome
 from forge_plus.envs.object_configs import OBJECT_REGISTRY
@@ -43,7 +43,8 @@ from forge_plus.skills.forge_skill import FORGESkill
 
 log = logging.getLogger(__name__)
 
-GLOBAL_HARD_CAP_N: float = 120.0
+# GLOBAL_HARD_CAP_N is defined once in force_clamp and re-exported here for
+# backward compatibility (baselines import it from this module).
 SIGNATURE_WINDOW_STEPS: int = 50    # last N steps used for signature
 
 
@@ -194,6 +195,7 @@ class EpisodeRunner:
             attempt_steps = 0
             attempt_peak = 0.0
             attempt_start_insert = obs.contact_step.insert_pos_mm
+            outcome = TaskOutcome.IN_PROGRESS   # defined even if the loop body never runs
 
             # -- Fast control loop --
             while not self.env.is_done():
@@ -221,17 +223,9 @@ class EpisodeRunner:
                         net_insert_mm=net_insert,
                     ))
                     result.termination = EpisodeTermination.BROKEN
-                    result.peak_contact_n = float(max(all_contact_forces, default=0.0))
-                    result.mean_contact_n = float(
-                        sum(all_contact_forces) / max(len(all_contact_forces), 1)
+                    self._finalize_metrics(
+                        result, all_contact_forces, all_wrench_commands, f_max_n, t_start
                     )
-                    fidelity = ForceClamp.measure_clamp_fidelity(
-                        all_wrench_commands, all_contact_forces, f_max_n
-                    )
-                    result.clamp_overshoot_mean_n = fidelity["mean_overshoot_n"]
-                    result.clamp_overshoot_max_n = fidelity["max_overshoot_n"]
-                    result.wall_time_s = time.perf_counter() - t_start
-                    result.compute_derived()
                     return result
 
             # Check success
@@ -323,12 +317,28 @@ class EpisodeRunner:
                 result.termination = EpisodeTermination.FAIL_ABORTED
                 break
 
-            # Reset environment state for next attempt
-            obs = self.env.reset(episode_cfg) if attempt_idx < self.k_max - 1 else obs
+            # Continue from the recovered state — do NOT reset the episode.
+            # A full reset would re-randomize with the same seed and discard the
+            # recovery the executor just applied, making the recovery loop a no-op.
+            obs = self.env.observe()
 
         # ----------------------------------------------------------------
         # Populate final metrics
         # ----------------------------------------------------------------
+        self._finalize_metrics(
+            result, all_contact_forces, all_wrench_commands, f_max_n, t_start
+        )
+        return result
+
+    @staticmethod
+    def _finalize_metrics(
+        result: EpisodeResult,
+        all_contact_forces: list[float],
+        all_wrench_commands: list[Wrench],
+        f_max_n: float,
+        t_start: float,
+    ) -> None:
+        """Populate force-tracking and clamp-fidelity metrics on the result."""
         result.peak_contact_n = float(max(all_contact_forces, default=0.0))
         result.mean_contact_n = float(
             sum(all_contact_forces) / max(len(all_contact_forces), 1)
@@ -340,4 +350,3 @@ class EpisodeRunner:
         result.clamp_overshoot_max_n = fidelity["max_overshoot_n"]
         result.wall_time_s = time.perf_counter() - t_start
         result.compute_derived()
-        return result

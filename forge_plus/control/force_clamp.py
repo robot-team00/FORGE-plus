@@ -106,7 +106,12 @@ class ForceClamp:
             ty=cmd.ty,
             tz=cmd.tz,
         )
-        overshoot = max(0.0, (mag - self.f_max_n) / max(self.f_max_n, 1e-6))
+        if self.f_max_n > 1e-9:
+            overshoot = max(0.0, (mag - self.f_max_n) / self.f_max_n)
+        else:
+            # Degenerate ceiling (F_max ~= 0): the clamp zeroes every command,
+            # so report a fully-saturated clamp rather than dividing by ~0.
+            overshoot = 1.0 if mag > 1e-9 else 0.0
         return clamped, overshoot
 
     def update_ceiling(self, f_max_n: float) -> None:

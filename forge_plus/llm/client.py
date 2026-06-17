@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -15,6 +14,36 @@ SYSTEM_PROMPT = (
     "and contact failure modes from mechanical properties and force/contact data. "
     "You always respond with valid JSON matching the requested schema exactly."
 )
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip a leading ```/```json markdown fence (and trailing ```) if present."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    return text
+
+
+def parse_json_response(text: str) -> dict[str, Any]:
+    """Parse a model response into a dict, tolerating fences and surrounding prose."""
+    text = _strip_code_fences(text)
+    # Fast path: the whole response is valid JSON.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Fallback: decode the first complete JSON object, ignoring any preamble or
+    # trailing text. raw_decode stops at the end of the first object, so this is
+    # robust to multiple blocks where a greedy `{.*}` regex would fail.
+    start = text.find("{")
+    if start != -1:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(text[start:])
+            return obj
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"No valid JSON found in model response: {text!r}")
 
 
 class LLMClient(ABC):
@@ -60,14 +89,9 @@ class AnthropicClient(LLMClient):
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_text}],
         )
-        raw = message.content[0].text.strip()
+        raw = message.content[0].text
 
-        # Strip markdown fences if model wraps the JSON
-        if raw.startswith("```"):
-            lines = raw.split("\n")
-            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-        result = json.loads(raw)
+        result = parse_json_response(raw)
         if self._cache is not None:
             self._cache[cache_key] = result
         return result
@@ -137,20 +161,7 @@ class OpenAICompatibleClient(LLMClient):
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:
-        # Strip markdown fences if present
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        # Fast path: the whole response is valid JSON
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # Fallback: grab the first {...} block (handles models that emit a preamble)
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            return json.loads(m.group())
-        raise ValueError(f"No valid JSON found in model response: {text!r}")
+        return parse_json_response(text)
 
 
 class MockLLMClient(LLMClient):

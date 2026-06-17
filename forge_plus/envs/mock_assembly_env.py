@@ -133,6 +133,9 @@ class MockAssemblyEnv(BaseAssemblyEnv):
         self._outcome = TaskOutcome.IN_PROGRESS
         self._step_count = 0
 
+    def observe(self) -> EnvObservation:
+        return self._make_obs()
+
     def get_contact_force_magnitude(self) -> float:
         return self._last_contact_n
 
