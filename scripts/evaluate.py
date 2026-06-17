@@ -31,8 +31,12 @@ def parse_args() -> argparse.Namespace:
         choices=["ours", "no_ceiling", "fixed_global", "press_harder", "heuristic", "vision_llm", "oracle", "all"],
         default="all",
     )
-    p.add_argument("--backend", choices=["anthropic", "mock"], default="mock",
-                   help="LLM backend (mock for testing, anthropic for real runs)")
+    p.add_argument("--backend", choices=["anthropic", "local", "mock"], default="mock",
+                   help="LLM backend (mock for testing, anthropic or local for real runs)")
+    p.add_argument("--local-url", default="http://localhost:11434/v1",
+                   help="Base URL for local OpenAI-compatible server (--backend local)")
+    p.add_argument("--local-model", default="qwen2.5:7b-instruct",
+                   help="Model name served at --local-url (--backend local)")
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--output-dir", default="results")
     p.add_argument("--seed", type=int, default=0)
@@ -118,7 +122,10 @@ def run_evaluation(args: argparse.Namespace) -> None:
     # Run ours
     if args.baseline in ("ours", "all"):
         log.info("Running: ours")
-        llm_cfg = {"backend": args.backend}
+        llm_cfg: dict = {"backend": args.backend}
+        if args.backend == "local":
+            llm_cfg["base_url"] = args.local_url
+            llm_cfg["model"] = args.local_model
         llm_client = build_client(llm_cfg)
         budget_setter = BudgetSetter(client=llm_client)
         recovery_selector = RecoverySelector(client=llm_client)

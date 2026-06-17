@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470" role="img" aria-label="Two-layer architecture block diagram">
+
+  <!-- SLOW LAYER band -->
+  <rect x="20" y="20" width="600" height="150" rx="12" fill="#f5f6fe" stroke="#c7cdf5"/>
+  <text x="40" y="44" font-size="11" letter-spacing="1.4" fill="#4338ca" font-weight="700" font-family="sans-serif">SLOW SEMANTIC LAYER — FROZEN LLM (~0.1–1 Hz)</text>
+
+  <rect x="44" y="60" width="252" height="88" rx="9" fill="#fff" stroke="#4338ca"/>
+  <text x="60" y="86"  font-size="13.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Budget-Setter</text>
+  <text x="60" y="106" font-size="11.5" fill="#5b6170" font-family="sans-serif">object identity →</text>
+  <text x="60" y="123" font-size="11.5" fill="#5b6170" font-family="sans-serif">numeric ceiling F_max</text>
+  <text x="60" y="140" font-size="10.5" fill="#8a909e" font-family="sans-serif">called once per episode</text>
+
+  <rect x="344" y="60" width="252" height="88" rx="9" fill="#fff" stroke="#4338ca"/>
+  <text x="360" y="86"  font-size="13.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Recovery-Selector</text>
+  <text x="360" y="106" font-size="11.5" fill="#5b6170" font-family="sans-serif">force signature →</text>
+  <text x="360" y="123" font-size="11.5" fill="#5b6170" font-family="sans-serif">recovery action (menu)</text>
+  <text x="360" y="140" font-size="10.5" fill="#8a909e" font-family="sans-serif">called once per failure</text>
+
+  <!-- ENCODER -->
+  <rect x="648" y="60" width="208" height="88" rx="9" fill="#eef2ff" stroke="#4338ca"/>
+  <text x="664" y="84"  font-size="12.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Signature Encoder</text>
+  <text x="664" y="103" font-size="11"   fill="#5b6170" font-family="sans-serif">F/T + contact, last N steps</text>
+  <text x="664" y="119" font-size="11"   fill="#5b6170" font-family="sans-serif">→ compact text token</text>
+  <text x="664" y="138" font-size="10.5" fill="#b42318" font-family="sans-serif">no images · no F_break</text>
+
+  <!-- FAST LAYER band -->
+  <rect x="20" y="206" width="836" height="150" rx="12" fill="#f6f7f9" stroke="#d3d6de"/>
+  <text x="40" y="230" font-size="11" letter-spacing="1.4" fill="#334155" font-weight="700" font-family="sans-serif">FAST CONTROL LAYER (~60–120 Hz) — FORCE AUTHORITY LIVES HERE</text>
+
+  <rect x="44"  y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+  <text x="60"  y="274" font-size="13"   fill="#1f2330" font-weight="700" font-family="sans-serif">RL skill</text>
+  <text x="60"  y="293" font-size="11"   fill="#5b6170" font-family="sans-serif">FORGE-style,</text>
+  <text x="60"  y="309" font-size="11"   fill="#5b6170" font-family="sans-serif">conditioned on F_cmd</text>
+  <text x="60"  y="326" font-size="10.5" fill="#8a909e" font-family="sans-serif">F_cmd ≤ F_max</text>
+
+  <rect x="246" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+  <text x="262" y="274" font-size="13"   fill="#1f2330" font-weight="700" font-family="sans-serif">Controller</text>
+  <text x="262" y="293" font-size="11"   fill="#5b6170" font-family="sans-serif">impedance / OSC</text>
+  <text x="262" y="309" font-size="11"   fill="#5b6170" font-family="sans-serif">low stiffness</text>
+
+  <rect x="448" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#b45309"/>
+  <text x="464" y="274" font-size="13"   fill="#7a4f0a" font-weight="700" font-family="sans-serif">Force clamp</text>
+  <text x="464" y="293" font-size="11"   fill="#7a4f0a" font-family="sans-serif">saturate |F_cmd|</text>
+  <text x="464" y="309" font-size="11"   fill="#7a4f0a" font-family="sans-serif">to F_max</text>
+  <text x="464" y="326" font-size="10.5" fill="#b42318" font-family="sans-serif">safety, not the LLM</text>
+
+  <rect x="650" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+  <text x="666" y="274" font-size="13"   fill="#1f2330" font-weight="700" font-family="sans-serif">Robot + Object</text>
+  <text x="666" y="293" font-size="11"   fill="#5b6170" font-family="sans-serif">Isaac Lab</text>
+  <text x="666" y="309" font-size="11"   fill="#5b6170" font-family="sans-serif">rigid body, F/T</text>
+
+  <!-- EVALUATOR-ONLY hidden F_break -->
+  <rect x="448" y="392" width="380" height="58" rx="9" fill="#fff" stroke="#b45309" stroke-dasharray="5 4"/>
+  <text x="464" y="416" font-size="12"   fill="#7a4f0a" font-weight="700" font-family="sans-serif">Evaluator only — hidden F_break (per instance)</text>
+  <text x="464" y="434" font-size="10.5" fill="#8a909e" font-family="sans-serif">breakage check: |F_contact| &gt; F_break · never observed by policy or LLM</text>
+
+  <!-- ── Arrows (inline arrowheads; no url(#) fragment refs) ── -->
+
+  <!-- F_max: Budget-Setter → Force clamp (straight down) -->
+  <line x1="170" y1="148" x2="170" y2="240" stroke="#4338ca" stroke-width="1.6"/>
+  <polygon points="170,247 165,239 175,239" fill="#4338ca"/>
+  <text x="178" y="200" font-size="10.5" fill="#4338ca" font-family="sans-serif">F_max</text>
+
+  <!-- F_max: Budget-Setter → RL skill (curve) -->
+  <path d="M256 148 C 256 190, 520 196, 524 240" fill="none" stroke="#4338ca" stroke-width="1.4" opacity="0.85"/>
+  <polygon points="524,247 519,239 529,239" fill="#4338ca" opacity="0.85"/>
+
+  <!-- recovery action: Recovery-Selector → RL skill (curve) -->
+  <path d="M420 148 C 360 190, 150 196, 136 240" fill="none" stroke="#4338ca" stroke-width="1.4"/>
+  <polygon points="132,247 127,239 137,239" fill="#4338ca"/>
+  <text x="252" y="190" font-size="10.5" fill="#4338ca" font-family="sans-serif">recovery action</text>
+
+  <!-- F/T: Robot → Signature Encoder (straight up) -->
+  <line x1="752" y1="246" x2="752" y2="156" stroke="#475569" stroke-width="1.6"/>
+  <polygon points="752,149 747,157 757,157" fill="#475569"/>
+  <text x="758" y="205" font-size="10.5" fill="#475569" font-family="sans-serif">F/T, contact</text>
+
+  <!-- signature: Encoder → Recovery-Selector (straight left) -->
+  <line x1="648" y1="104" x2="607" y2="104" stroke="#4338ca" stroke-width="1.6"/>
+  <polygon points="600,104 608,99 608,109" fill="#4338ca"/>
+  <text x="606" y="96" font-size="10.5" fill="#4338ca" font-family="sans-serif">signature</text>
+
+  <!-- hidden F_break: Evaluator → Robot (dashed, straight up) -->
+  <line x1="752" y1="392" x2="752" y2="342" stroke="#b45309" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <polygon points="752,335 747,343 757,343" fill="#b45309"/>
+
+</svg>

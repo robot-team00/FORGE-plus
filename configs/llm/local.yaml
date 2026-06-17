@@ -1,0 +1,66 @@
+# Offline local LLM — Ollama (recommended) or vLLM / llama.cpp
+#
+# Quickstart with Ollama:
+#   ollama pull qwen2.5:7b-instruct
+#   ollama serve
+#   PYTHONPATH=. python scripts/run_episode.py --backend local
+
+backend: local
+
+# Ollama defaults (override for other servers — see alternatives below)
+base_url: http://localhost:11434/v1
+model: qwen2.5:7b-instruct
+max_tokens: 512
+cache: true       # budget-setter calls are near-deterministic; safe to cache per (object, task)
+
+# Ollama does not reliably honour response_format={type:json_object}.
+# Keep this false; the client will extract the first {...} block from the response.
+# Set true only for servers that fully implement json_object mode
+# (e.g. vLLM >= 0.4, llama-server with --json-schema).
+use_json_mode: false
+
+# Retry — local servers can be slow to warm up or may OOM-restart mid-run
+max_retries: 3
+retry_delay: 2.0  # seconds; doubles each attempt (2 s, 4 s, 8 s)
+
+# Inherited from default.yaml — kept here for self-contained overrides
+budget_setter:
+  global_hard_cap_n: 120.0
+
+recovery_selector:
+  menu:
+    - retract_and_reapproach
+    - wiggle_search
+    - rotate_align
+    - regrasp
+    - abort
+
+signature_encoder:
+  lateral_bias_threshold_n: 2.0
+  slip_threshold_n: 1.5
+  axial_trend_window: 0.25
+  gripper_normalization:
+    franka_panda: 1.0
+    robotiq_2f140: 0.92
+
+validation:
+  reject_f_max_above_cap: true
+  overwrite_keep_f_max: true
+
+# ---------------------------------------------------------------------------
+# Alternative servers
+# ---------------------------------------------------------------------------
+#
+# vLLM (best throughput; honours json_object):
+#   base_url: http://localhost:8000/v1
+#   model: Qwen/Qwen2.5-7B-Instruct
+#   use_json_mode: true
+#
+# llama-server / llama.cpp (CPU or GPU, GGUF):
+#   base_url: http://localhost:8080/v1
+#   model: qwen2.5-7b-instruct-q4_k_m
+#   use_json_mode: false   # set true only with --json-schema flag
+#
+# Larger models (16–24 GB VRAM):
+#   model: qwen2.5:14b-instruct      # Ollama
+#   model: Qwen/Qwen2.5-14B-Instruct # vLLM

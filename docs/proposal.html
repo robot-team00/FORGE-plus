@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Force-Budgeted Recovery — Research Proposal</title>
+<style>
+  :root{
+    --ink:#1f2330;
+    --muted:#5b6170;
+    --faint:#8a909e;
+    --line:#e4e6eb;
+    --line-strong:#d3d6de;
+    --indigo:#4338ca;
+    --indigo-soft:#eef2ff;
+    --indigo-line:#c7cdf5;
+    --amber-bg:#fffbeb;
+    --amber-line:#f59e0b;
+    --amber-ink:#7a4f0a;
+    --code-bg:#f7f8fb;
+    --code-line:#e6e8f0;
+    --c-comment:#6b8a73;
+    --c-key:#4338ca;
+    --c-string:#a4561a;
+    --c-num:#0e7490;
+    --c-kw:#7c3aed;
+    --c-punc:#7a8090;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:#fcfcfd;
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:64px 28px 120px}
+
+  /* ---- masthead ---- */
+  .eyebrow{
+    font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--indigo);font-weight:700;margin:0 0 14px;
+  }
+  h1{
+    font-size:30px;line-height:1.22;letter-spacing:-0.012em;
+    margin:0 0 10px;font-weight:700;
+  }
+  h1 .sub{display:block;font-size:18px;font-weight:500;color:var(--muted);letter-spacing:0;margin-top:8px;line-height:1.4}
+  .byline{color:var(--faint);font-size:13.5px;margin:14px 0 22px}
+  .byline code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;color:var(--muted)}
+
+  .tags{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 6px}
+  .pill{
+    display:inline-block;font-size:11.5px;font-weight:600;letter-spacing:.01em;
+    color:var(--indigo);background:var(--indigo-soft);border:1px solid var(--indigo-line);
+    padding:3px 11px;border-radius:999px;line-height:1.5;
+  }
+  .pill.neutral{color:var(--muted);background:#f2f3f6;border-color:var(--line-strong)}
+
+  .rule{height:1px;background:var(--line);border:0;margin:34px 0}
+
+  /* ---- sections ---- */
+  section{margin:46px 0 0}
+  h2{
+    font-size:14px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--indigo);margin:0 0 18px;padding-bottom:9px;
+    border-bottom:1.5px solid var(--indigo-line);
+  }
+  h2 .num{color:var(--faint);font-weight:700;margin-right:12px;font-variant-numeric:tabular-nums}
+  h3{font-size:15px;font-weight:700;color:var(--ink);margin:26px 0 8px;letter-spacing:-0.005em}
+  p{margin:0 0 14px}
+  a{color:var(--indigo);text-decoration:none;border-bottom:1px solid var(--indigo-line)}
+  a:hover{border-bottom-color:var(--indigo)}
+  strong{font-weight:670}
+  em.term{font-style:normal;font-weight:640;color:var(--ink)}
+  ul,ol{margin:0 0 14px;padding-left:22px}
+  li{margin:6px 0}
+  .lead{font-size:17px;color:#2b303c}
+
+  /* ---- callout ---- */
+  .callout{
+    background:var(--amber-bg);border:1px solid #f3e2b6;border-left:4px solid var(--amber-line);
+    border-radius:7px;padding:15px 18px;margin:20px 0;
+  }
+  .callout .lab{
+    font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+    color:var(--amber-ink);display:block;margin-bottom:6px;
+  }
+  .callout p{margin:0;color:#48402c;font-size:14.5px;line-height:1.56}
+  .callout p + p{margin-top:9px}
+
+  /* ---- tables ---- */
+  .tbl-wrap{overflow-x:auto;margin:18px 0 8px;border:1px solid var(--line-strong);border-radius:8px}
+  table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.45}
+  caption{caption-side:bottom;text-align:left;color:var(--faint);font-size:12px;padding:8px 2px 0;font-style:italic}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{
+    background:#f6f7fa;color:var(--muted);font-weight:700;font-size:11.5px;
+    letter-spacing:.04em;text-transform:uppercase;border-bottom:1.5px solid var(--line-strong);
+    white-space:nowrap;
+  }
+  tbody tr:last-child td{border-bottom:0}
+  td.col-h{font-weight:650;color:var(--ink);white-space:nowrap}
+  .yes{color:#15803d;font-weight:650}
+  .no{color:#b42318;font-weight:650}
+  .part{color:#b45309;font-weight:650}
+  td code,th code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--indigo);background:var(--indigo-soft);padding:1px 5px;border-radius:4px}
+
+  /* ---- code blocks ---- */
+  pre{
+    background:var(--code-bg);border:1px solid var(--code-line);border-radius:8px;
+    padding:16px 18px;margin:14px 0;overflow-x:auto;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.62;color:#2c313c;
+  }
+  pre .c{color:var(--c-comment);font-style:italic}
+  pre .k{color:var(--c-key)}
+  pre .s{color:var(--c-string)}
+  pre .n{color:var(--c-num)}
+  pre .kw{color:var(--c-kw);font-weight:600}
+  pre .p{color:var(--c-punc)}
+  pre .lbl{color:var(--faint)}
+  .code-cap{font-size:12px;color:var(--faint);margin:-2px 0 18px;font-style:italic}
+
+  code.inl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:#f1f2f6;color:#37323e;padding:1px 5px;border-radius:4px}
+
+  /* ---- figure / svg ---- */
+  figure{margin:18px 0;border:1px solid var(--line-strong);border-radius:10px;padding:18px 14px 8px;background:#fff}
+  figure svg{display:block;width:100%;height:auto}
+  figcaption{font-size:12.5px;color:var(--faint);font-style:italic;padding:10px 6px 2px;line-height:1.5}
+
+  /* ---- references ---- */
+  ol.refs{list-style:none;counter-reset:r;padding-left:0;margin:8px 0 0}
+  ol.refs li{counter-increment:r;position:relative;padding-left:38px;margin:0 0 14px;font-size:13.5px;line-height:1.55;color:var(--muted)}
+  ol.refs li::before{
+    content:"["counter(r)"]";position:absolute;left:0;top:0;
+    color:var(--indigo);font-weight:700;font-variant-numeric:tabular-nums;font-size:12.5px;
+  }
+  ol.refs .t{color:var(--ink);font-weight:640}
+  ol.refs a{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+
+  .foot{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
+
+  @media (max-width:560px){
+    .wrap{padding:40px 18px 80px}
+    h1{font-size:24px}
+    body{font-size:15px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Research Proposal · Simulation Study</p>
+  <h1>Force-Budgeted Recovery
+    <span class="sub">LLM-guided failure recovery for contact-rich assembly under per-object force ceilings</span>
+  </h1>
+  <p class="byline">A two-layer system studied entirely in simulation · <code>NVIDIA Isaac Lab</code> · single GPU · no real robot, no fracture modeling</p>
+
+  <div class="tags">
+    <span class="pill">Simulation-only</span>
+    <span class="pill">Frozen LLM supervisor</span>
+    <span class="pill">Force-grounded recovery</span>
+    <span class="pill">Hard per-object ceiling</span>
+    <span class="pill">Non-circular fragility metric</span>
+    <span class="pill">Closed-loop, multi-attempt</span>
+    <span class="pill neutral">FORGE-style skill</span>
+  </div>
+
+  <hr class="rule">
+
+  <!-- 1 -->
+  <section id="summary">
+    <h2><span class="num">01</span>Summary</h2>
+    <p class="lead">We propose a two-layer controller for contact-rich assembly in which a <strong>frozen large language model acts as a slow semantic supervisor</strong> over a fast, force-aware reinforcement-learning skill. The supervisor does two things and nothing else: (a) before an episode, it reads an object's identity and <strong>sets a numeric force ceiling <code class="inl">F_max</code></strong> that the manipulator must never exceed; and (b) on failure, it reads a <strong>compact text force/contact signature</strong> — not images — and selects a recovery action from a fixed menu.</p>
+    <p>Underneath sits a FORGE-style force-aware RL skill conditioned on a commanded maximum force. The scene carries a <em class="term">hidden ground-truth breaking force</em> <code class="inl">F_break</code> per object instance that the policy and the LLM never observe. Because breakage is decided by a hidden scalar rather than by deformation or fracture geometry, the study stays inside trustworthy rigid-body simulation: no soft-body modeling, no contact mesh fracture, no hardware.</p>
+    <p>No single ingredient here is new. Force-ceiling-conditioned skills exist (FORGE); LLM failure reasoners exist (REFLECT, DoReMi, AHA); language-conditioned force and force-based "try harder" recovery exist (Tactile-VLA); controller-retains-authority designs exist (PaCo-VLA). <strong>The contribution is their conjunction under one constraint</strong>: force-grounded (not vision) semantic recovery, under a hard per-object force ceiling, across multi-step assembly, judged by closed-loop multi-attempt success, and measured with a fragility metric that is not circular.</p>
+  </section>
+
+  <!-- 2 -->
+  <section id="motivation">
+    <h2><span class="num">02</span>Motivation</h2>
+    <p>The Factory → IndustReal → AutoMate → FORGE line has made simulated, contact-rich insertion robust and transferable. But that progress was bought by holding fragility constant: a peg is a peg, and the policy is free to apply whatever force completes the task. FORGE is the first of the four to take a force ceiling seriously — its policies are conditioned on a maximum allowable force — yet that ceiling is set to <em class="term">maximize success</em> (by autotuning or by a human), not to <em class="term">respect what the part can survive</em>.</p>
+    <p>Real assemblies mix robust and fragile parts on the same line: a steel bolt next to a nylon snap clip next to a board-mounted connector. A single force budget cannot serve all three. Set it high and you strip the clip; set it low and the bolt never seats. The budget has to be <strong>per object</strong>, and it has to come from somewhere — most naturally from what the object <em class="term">is</em>.</p>
+    <p>The second gap is recovery. When an insertion gets stuck, today's recovery reasoners (REFLECT, DoReMi, AHA) read vision and reason at the level of the task plan — wrong object, missing step, bad pose. But the information that distinguishes a wedge from a cross-thread from a burr is in the <strong>force and contact trace, not the pixels</strong>: those failures often look identical and feel completely different. And the obvious recovery — press harder — is exactly the move that finishes a robust part and destroys a fragile one.</p>
+    <div class="callout">
+      <span class="lab">Argumentative thread</span>
+      <p>"Press harder" is not our method; it is a <strong>baseline we expect to break fragile parts</strong>. A recovery layer that cannot see the force budget will, sooner or later, recommend exceeding it. Our claim is that recovery must be force-grounded and budget-aware, and that the budget itself must be set from object identity.</p>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section id="assumed-away">
+    <h2><span class="num">03</span>What prior assembly work assumes away</h2>
+    <p>The four NVIDIA-line systems we build on are excellent at what they do; the point of this table is to name, precisely, the assumptions that make per-object fragility and force-grounded recovery out of scope for each.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>System</th><th>Force as input?</th><th>Sim-to-real shown?</th><th>What it assumes away (w.r.t. this proposal)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-h">Factory<br><span class="lbl" style="color:var(--faint);font-weight:400">RSS '22</span></td>
+            <td class="part">Controllers only</td>
+            <td class="no">Sim only</td>
+            <td>A simulation-methods + benchmark paper. Provides force/impedance controllers, but the proof-of-concept nut-and-bolt RL policies use task/joint-space control without F/T as observation. Object fragility, breakage, and any failure-recovery branch are out of scope.</td>
+          </tr>
+          <tr>
+            <td class="col-h">IndustReal<br><span class="lbl" style="color:var(--faint);font-weight:400">RSS '23</span></td>
+            <td class="no">No</td>
+            <td class="yes">Yes</td>
+            <td>Transfers insertion/assembly using SDF-based rewards and pose/proprioception. Parts are rigid metal and assumed indestructible; success detection exists but there is no semantic recovery policy and no notion of a force the part cannot survive.</td>
+          </tr>
+          <tr>
+            <td class="col-h">AutoMate<br><span class="lbl" style="color:var(--faint);font-weight:400">RSS '24</span></td>
+            <td class="no">No</td>
+            <td class="yes">Yes</td>
+            <td>Generalizes across <em class="term">geometries</em> via shape conditioning. It generalizes over what a part looks like, not over how much force it tolerates; no per-object force limit, no breakage, no recovery reasoning.</td>
+          </tr>
+          <tr>
+            <td class="col-h">FORGE<br><span class="lbl" style="color:var(--faint);font-weight:400">RA-L '25</span></td>
+            <td class="yes">Yes</td>
+            <td class="yes">Yes</td>
+            <td>Closest to us: policies are conditioned on a maximum allowable force and predict success. But the ceiling is a robustness/safety knob set by autotuning or a human — <strong>not a fragility budget grounded in object identity</strong> — and there is no LLM layer that sets it per object or selects recovery from a force signature.</td>
+          </tr>
+        </tbody>
+      </table>
+      <caption>Force-ceiling-conditioned skills already exist (FORGE). This proposal does not claim the skill; it claims the semantic layer above it and the evaluation around it.</caption>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section id="related">
+    <h2><span class="num">04</span>Related work &amp; honest novelty positioning</h2>
+
+    <h3>The closest controller: FORGE</h3>
+    <p>We reuse FORGE-style force conditioning more or less wholesale. The difference is upstream: FORGE chooses <code class="inl">F_max</code> to make the task succeed; we choose it to keep the part alive, from identity, and the recovery layer is forbidden from relaxing it. FORGE is the skill; the question we ask is who sets its ceiling and why.</p>
+
+    <h3>The closest semantics: Tactile-VLA</h3>
+    <p>Tactile-VLA is the nearest neighbor on the semantic-force-recovery side. It does language-conditioned force control and, notably, demonstrates "reasoning to overcome failure" by autonomously <strong>increasing force</strong> — its headline example generalizes "wipe the marker" into "press harder to erase stubborn chalk" after a failed attempt. That behavior is precisely our <em class="term">press-harder baseline</em>. We differ on four axes: (i) a <strong>frozen LLM</strong>, not a fine-tuned VLA; (ii) recovery selected from a <strong>force/contact signature alone, no vision</strong>; (iii) a <strong>hard per-object ceiling</strong> that recovery cannot cross; and (iv) evaluation on <strong>fragile parts that "press harder" destroys</strong>, scored by a breakage metric. Tactile-VLA has no per-object budget and no breakage to violate, so its force escalation is always safe by construction; ours is the setting where it is not.</p>
+
+    <h3>The closest safety architecture: PaCo-VLA</h3>
+    <p>PaCo-VLA shares our central commitment — the network emits proposals, a runtime shield retains authority. The difference is what the shield guarantees. PaCo-VLA's shield is a passivity / energy-tank contract over admittance updates, and the authors are explicit that it is <strong>not a bound on peak force</strong>. Ours is exactly a hard scalar peak-force clamp tied to object identity. PaCo-VLA is also vision-conditioned (a VLA) and does not select a recovery action from a force signature on failure.</p>
+
+    <h3>The closest reasoners: REFLECT, DoReMi, AHA</h3>
+    <p>These are the strongest LLM/VLM failure reasoners, and all three are vision-centric. REFLECT builds a hierarchical summary of multisensory experience (RGB-D, audio, states) and queries an LLM to explain and re-plan. DoReMi has the LLM generate constraints and a <em class="term">VQA/VLM</em> watch for plan-execution misalignment, then re-plans. AHA is a VLM fine-tuned on procedurally generated failures to describe what went wrong from images. All three operate at the task-plan level — wrong object, missing step, mis-grasp — where the discriminating evidence is visual or symbolic. Our failure signal is a compact <strong>force/contact signature</strong>, the recovery is constrained by a <strong>force budget</strong>, and the failures we care about live in contact dynamics (jammed vs. cross-threaded vs. wedged) that look the same on camera.</p>
+
+    <div class="callout">
+      <span class="lab">Argumentative thread — novelty is the conjunction</span>
+      <p>Ceiling-conditioned skills (FORGE), LLM recovery (REFLECT / DoReMi / AHA), language-conditioned force with force-based recovery (Tactile-VLA), and shield-retains-authority (PaCo-VLA) each exist in isolation. None combines <strong>force-grounded (not vision) recovery</strong> + a <strong>hard per-object ceiling</strong> + <strong>multi-step assembly</strong> + <strong>closed-loop multi-attempt scoring</strong> + a <strong>fragility metric the agent cannot read off</strong>. That five-way conjunction, in one trustworthy rigid-body sim, is the proposal.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section id="architecture">
+    <h2><span class="num">05</span>System architecture</h2>
+    <p>Two layers run at different rates and never blur their roles. The <strong>slow layer</strong> is the frozen LLM, called episodically (~0.1–1 Hz of decisions, not Hz of control): once at episode start to set the budget, and once per failure to pick a recovery. The <strong>fast layer</strong> is the RL skill plus the controller (~60–120 Hz), which is where force authority lives. A <em class="term">signature encoder</em> sits between them, turning the recent F/T and contact history into a short text token. A hidden <code class="inl">F_break</code> lives in the simulator and is read only by the evaluator.</p>
+
+    <figure>
+      <svg viewBox="0 0 880 470" role="img" aria-label="Two-layer architecture block diagram">
+        <defs>
+          <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+            <path d="M0,0 L9,4.5 L0,9 z" fill="#4338ca"/>
+          </marker>
+          <marker id="arrow-s" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+            <path d="M0,0 L9,4.5 L0,9 z" fill="#475569"/>
+          </marker>
+          <marker id="arrow-a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+            <path d="M0,0 L9,4.5 L0,9 z" fill="#b45309"/>
+          </marker>
+        </defs>
+
+        <!-- SLOW LAYER band -->
+        <rect x="20" y="20" width="600" height="150" rx="12" fill="#f5f6fe" stroke="#c7cdf5"/>
+        <text x="40" y="44" font-size="11" letter-spacing="1.4" fill="#4338ca" font-weight="700" font-family="sans-serif">SLOW SEMANTIC LAYER — FROZEN LLM (~0.1–1 Hz)</text>
+
+        <rect x="44" y="60" width="252" height="88" rx="9" fill="#fff" stroke="#4338ca"/>
+        <text x="60" y="86" font-size="13.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Budget-Setter</text>
+        <text x="60" y="106" font-size="11.5" fill="#5b6170" font-family="sans-serif">object identity →</text>
+        <text x="60" y="123" font-size="11.5" fill="#5b6170" font-family="sans-serif">numeric ceiling F_max</text>
+        <text x="60" y="140" font-size="10.5" fill="#8a909e" font-family="sans-serif">called once per episode</text>
+
+        <rect x="344" y="60" width="252" height="88" rx="9" fill="#fff" stroke="#4338ca"/>
+        <text x="360" y="86" font-size="13.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Recovery-Selector</text>
+        <text x="360" y="106" font-size="11.5" fill="#5b6170" font-family="sans-serif">force signature →</text>
+        <text x="360" y="123" font-size="11.5" fill="#5b6170" font-family="sans-serif">recovery action (menu)</text>
+        <text x="360" y="140" font-size="10.5" fill="#8a909e" font-family="sans-serif">called once per failure</text>
+
+        <!-- ENCODER -->
+        <rect x="648" y="60" width="208" height="88" rx="9" fill="#eef2ff" stroke="#4338ca" stroke-dasharray="0"/>
+        <text x="664" y="84" font-size="12.5" fill="#1f2330" font-weight="700" font-family="sans-serif">Signature Encoder</text>
+        <text x="664" y="103" font-size="11" fill="#5b6170" font-family="sans-serif">F/T + contact, last N steps</text>
+        <text x="664" y="119" font-size="11" fill="#5b6170" font-family="sans-serif">→ compact text token</text>
+        <text x="664" y="138" font-size="10.5" fill="#b42318" font-family="sans-serif">no images · no F_break</text>
+
+        <!-- FAST LAYER band -->
+        <rect x="20" y="206" width="836" height="150" rx="12" fill="#f6f7f9" stroke="#d3d6de"/>
+        <text x="40" y="230" font-size="11" letter-spacing="1.4" fill="#334155" font-weight="700" font-family="sans-serif">FAST CONTROL LAYER (~60–120 Hz) — FORCE AUTHORITY LIVES HERE</text>
+
+        <rect x="44" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+        <text x="60" y="274" font-size="13" fill="#1f2330" font-weight="700" font-family="sans-serif">RL skill</text>
+        <text x="60" y="293" font-size="11" fill="#5b6170" font-family="sans-serif">FORGE-style,</text>
+        <text x="60" y="309" font-size="11" fill="#5b6170" font-family="sans-serif">conditioned on F_cmd</text>
+        <text x="60" y="326" font-size="10.5" fill="#8a909e" font-family="sans-serif">F_cmd ≤ F_max</text>
+
+        <rect x="246" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+        <text x="262" y="274" font-size="13" fill="#1f2330" font-weight="700" font-family="sans-serif">Controller</text>
+        <text x="262" y="293" font-size="11" fill="#5b6170" font-family="sans-serif">impedance / OSC</text>
+        <text x="262" y="309" font-size="11" fill="#5b6170" font-family="sans-serif">low stiffness</text>
+
+        <rect x="448" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#b45309"/>
+        <text x="464" y="274" font-size="13" fill="#7a4f0a" font-weight="700" font-family="sans-serif">Force clamp</text>
+        <text x="464" y="293" font-size="11" fill="#7a4f0a" font-family="sans-serif">saturate |F_cmd|</text>
+        <text x="464" y="309" font-size="11" fill="#7a4f0a" font-family="sans-serif">to F_max</text>
+        <text x="464" y="326" font-size="10.5" fill="#b42318" font-family="sans-serif">safety, not the LLM</text>
+
+        <rect x="650" y="248" width="178" height="86" rx="9" fill="#fff" stroke="#475569"/>
+        <text x="666" y="274" font-size="13" fill="#1f2330" font-weight="700" font-family="sans-serif">Robot + Object</text>
+        <text x="666" y="293" font-size="11" fill="#5b6170" font-family="sans-serif">Isaac Lab</text>
+        <text x="666" y="309" font-size="11" fill="#5b6170" font-family="sans-serif">rigid body, F/T</text>
+
+        <!-- EVALUATOR-ONLY hidden F_break -->
+        <rect x="448" y="392" width="380" height="58" rx="9" fill="#fff" stroke="#b45309" stroke-dasharray="5 4"/>
+        <text x="464" y="416" font-size="12" fill="#7a4f0a" font-weight="700" font-family="sans-serif">Evaluator only — hidden F_break (per instance)</text>
+        <text x="464" y="434" font-size="10.5" fill="#8a909e" font-family="sans-serif">breakage check: |F_contact| &gt; F_break · never observed by policy or LLM at decision time</text>
+
+        <!-- arrows: F_max down to clamp & skill -->
+        <path d="M170 148 L170 246" fill="none" stroke="#4338ca" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <text x="178" y="200" font-size="10.5" fill="#4338ca" font-family="sans-serif">F_max</text>
+        <path d="M256 148 C 256 190, 520 196, 524 246" fill="none" stroke="#4338ca" stroke-width="1.4" marker-end="url(#arrow)" opacity="0.85"/>
+
+        <!-- recovery action down to skill -->
+        <path d="M420 148 C 360 190, 150 196, 132 246" fill="none" stroke="#4338ca" stroke-width="1.4" marker-end="url(#arrow)"/>
+        <text x="300" y="190" font-size="10.5" fill="#4338ca" font-family="sans-serif">recovery action</text>
+
+        <!-- F/T up from robot to encoder -->
+        <path d="M752 246 L752 150" fill="none" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow-s)"/>
+        <text x="758" y="200" font-size="10.5" fill="#475569" font-family="sans-serif">F/T, contact</text>
+        <!-- signature from encoder to recovery-selector -->
+        <path d="M648 104 L600 104" fill="none" stroke="#4338ca" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <text x="604" y="96" font-size="10.5" fill="#4338ca" font-family="sans-serif">signature</text>
+
+        <!-- hidden F_break to robot (dashed) -->
+        <path d="M752 392 L752 336" fill="none" stroke="#b45309" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrow-a)"/>
+      </svg>
+      <figcaption>Force authority is a property of the fast layer's clamp, not of the LLM. The hidden breaking force feeds only the evaluator's breakage check; it is never an input to the encoder, the skill, or either LLM call.</figcaption>
+    </figure>
+
+    <div class="callout">
+      <span class="lab">Argumentative thread — safety is enforced by the controller</span>
+      <p>The LLM only emits a number and a menu choice. The guarantee "force never exceeds <code class="inl">F_max</code>" is produced by the clamp in the fast loop, which saturates the commanded wrench regardless of what the LLM said. <strong>Safety is never delegated to the language model</strong>; an LLM that hallucinates a huge ceiling is caught by a fixed global hard cap and JSON range validation before the number ever reaches the controller.</p>
+    </div>
+
+    <h3>Grasp &amp; embodiment — both grippers</h3>
+    <p>Every contact-rich phase begins from a grasp, and the study deliberately runs on <strong>both parallel-jaw grippers shipped with GraspGen</strong>: the <em class="term">Franka Panda</em> hand and the <em class="term">Robotiq 2F-140</em> industrial gripper. We adopt GraspGen's two gripper embodiments and its diffusion grasp generator to seed stable grasps on our assembly and seating parts. Its third gripper — a 30&nbsp;mm suction cup — is excluded on purpose: single-contact suction cannot deliver the threaded or insertion contact these tasks require. Using both jaws is not cosmetic: the 2F-140's longer stroke and adaptive fingers give it a different force range and finger compliance than the Panda, so the <em class="term">contact mechanics</em> and the <em class="term">scale of the force signature</em> genuinely differ between them.</p>
+    <p>That split is useful, because it draws a clean embodiment line through the system. A part's breaking force is a property of the <em class="term">object</em>, not the hand, so <code class="inl">F_max</code> should be <strong>gripper-invariant</strong> — and the budget-setter never sees which gripper is mounted. The skill, the controller, and the per-gripper normalization of the force signature are <strong>gripper-specific</strong>. Whether the LLM's identity-derived budget actually transfers across the two grippers is therefore a testable prediction, not an assumption: if it transfers, the supervisor is reasoning about the part; if it does not, it was quietly leaning on one controller's force profile.</p>
+  </section>
+
+  <!-- 6 -->
+  <section id="why-llm">
+    <h2><span class="num">06</span>Why an LLM, not a VLM/VLA</h2>
+    <p>The semantic facts we need are textual, not perceptual. "A nylon clip tolerates less than a steel bolt" and "rising force along the insertion axis with no displacement means jammed, not misaligned" are statements a language model already holds. Vision would add a renderer (and a rendering sim-to-real gap) to recover information that, at the moment of failure, is more cleanly available in the force trace. Keeping the supervisor a <strong>frozen, text-only LLM</strong> makes it swappable, auditable through JSON in/out, demonstration-free, and cheap — and it keeps the contribution about the <em class="term">interface</em>, not about training another VLA.</p>
+    <p>A VLA would entangle perception, control, and semantics into weights we cannot inspect or clamp, and would require images and fine-tuning. We want the opposite: a thin semantic seam we can validate.</p>
+
+    <h3>Budget-Setter — worked example</h3>
+    <pre><span class="c">// INPUT — object identity + task context (no force ground truth)</span>
+<span class="p">{</span>
+  <span class="k">"call"</span><span class="p">:</span> <span class="s">"set_force_ceiling"</span><span class="p">,</span>
+  <span class="k">"object"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="k">"name"</span><span class="p">:</span> <span class="s">"Ø8mm ABS round connector"</span><span class="p">,</span>
+    <span class="k">"material"</span><span class="p">:</span> <span class="s">"ABS"</span><span class="p">,</span>
+    <span class="k">"class"</span><span class="p">:</span> <span class="s">"round_connector"</span><span class="p">,</span>
+    <span class="k">"nominal_mass_g"</span><span class="p">:</span> <span class="n">6.2</span><span class="p">,</span>
+    <span class="k">"geometry_tags"</span><span class="p">:</span> <span class="p">[</span><span class="s">"thin_wall"</span><span class="p">,</span> <span class="s">"press_fit"</span><span class="p">]</span>
+  <span class="p">}</span><span class="p">,</span>
+  <span class="k">"task"</span><span class="p">:</span> <span class="s">"insert_until_seated"</span><span class="p">,</span>
+  <span class="k">"global_hard_cap_N"</span><span class="p">:</span> <span class="n">120</span>          <span class="c">// fixed by the controller; LLM cannot exceed</span>
+<span class="p">}</span>
+
+<span class="c">// OUTPUT — a proposal, range-validated before it reaches the clamp</span>
+<span class="p">{</span>
+  <span class="k">"F_max_N"</span><span class="p">:</span> <span class="n">18.0</span><span class="p">,</span>
+  <span class="k">"per_axis_N"</span><span class="p">:</span> <span class="p">{</span> <span class="k">"insertion"</span><span class="p">:</span> <span class="n">18.0</span><span class="p">,</span> <span class="k">"lateral"</span><span class="p">:</span> <span class="n">8.0</span> <span class="p">}</span><span class="p">,</span>
+  <span class="k">"confidence"</span><span class="p">:</span> <span class="n">0.62</span><span class="p">,</span>
+  <span class="k">"rationale"</span><span class="p">:</span> <span class="s">"Thin-wall ABS press-fit connector; seating needs only a modest axial push, and the wall yields well below a metal peg. Budget allows the part to seat while staying conservative on lateral load."</span>
+<span class="p">}</span></pre>
+    <p class="code-cap">The output never references <code class="inl">F_break</code> — the model has no access to it. It is reasoning from identity alone.</p>
+
+    <h3>Recovery-Selector — worked example</h3>
+    <pre><span class="c">// INPUT — compact force/contact signature, current budget, attempt count</span>
+<span class="p">{</span>
+  <span class="k">"call"</span><span class="p">:</span> <span class="s">"select_recovery"</span><span class="p">,</span>
+  <span class="k">"subphase"</span><span class="p">:</span> <span class="s">"insertion"</span><span class="p">,</span>
+  <span class="k">"gripper"</span><span class="p">:</span> <span class="s">"robotiq_2f140"</span><span class="p">,</span>    <span class="c">// signature thresholds normalized per gripper</span>
+  <span class="k">"attempt"</span><span class="p">:</span> <span class="n">2</span><span class="p">,</span>
+  <span class="k">"F_max_N"</span><span class="p">:</span> <span class="n">18.0</span><span class="p">,</span>            <span class="c">// echoed READ-ONLY; menu has no "raise ceiling"</span>
+  <span class="k">"signature"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="k">"peak_axial_N"</span><span class="p">:</span> <span class="n">17.6</span><span class="p">,</span>      <span class="c">// at the ceiling, yet...</span>
+    <span class="k">"net_insert_mm"</span><span class="p">:</span> <span class="n">0.3</span><span class="p">,</span>       <span class="c">// ...almost no displacement → jammed, not slow</span>
+    <span class="k">"axial_rising"</span><span class="p">:</span> <span class="kw">true</span><span class="p">,</span>
+    <span class="k">"lateral_bias"</span><span class="p">:</span> <span class="s">"+x steady"</span><span class="p">,</span>  <span class="c">// off-axis load → misalignment, not pure friction</span>
+    <span class="k">"contact_persist_ms"</span><span class="p">:</span> <span class="n">640</span><span class="p">,</span>
+    <span class="k">"slip_events"</span><span class="p">:</span> <span class="n">0</span>
+  <span class="p">}</span><span class="p">,</span>
+  <span class="k">"menu"</span><span class="p">:</span> <span class="p">[</span><span class="s">"retract_and_reapproach"</span><span class="p">,</span> <span class="s">"wiggle_search"</span><span class="p">,</span> <span class="s">"rotate_align"</span><span class="p">,</span> <span class="s">"regrasp"</span><span class="p">,</span> <span class="s">"abort"</span><span class="p">]</span>
+<span class="p">}</span>
+
+<span class="c">// OUTPUT — choice from the fixed menu, bounded params, F_max untouched</span>
+<span class="p">{</span>
+  <span class="k">"action"</span><span class="p">:</span> <span class="s">"rotate_align"</span><span class="p">,</span>     <span class="c">// off-axis load + no displacement ⇒ correct the angle</span>
+  <span class="k">"params"</span><span class="p">:</span> <span class="p">{</span> <span class="k">"yaw_deg"</span><span class="p">:</span> <span class="n">3.0</span><span class="p">,</span> <span class="k">"then"</span><span class="p">:</span> <span class="s">"wiggle_search"</span> <span class="p">}</span><span class="p">,</span>
+  <span class="k">"keep_F_max_N"</span><span class="p">:</span> <span class="n">18.0</span><span class="p">,</span>      <span class="c">// explicit: budget is preserved through recovery</span>
+  <span class="k">"rationale"</span><span class="p">:</span> <span class="s">"Axial force already at the budget with no progress and a steady lateral bias indicates angular misalignment, not insufficient force. Press-harder is unavailable and would be wrong here."</span>
+<span class="p">}</span></pre>
+    <p class="code-cap">The menu deliberately omits any "increase the ceiling" option. Recovery reallocates motion within the budget; it never buys more force.</p>
+  </section>
+
+  <!-- 7 -->
+  <section id="algorithm">
+    <h2><span class="num">07</span>Algorithm</h2>
+    <pre><span class="c"># ===== Force-Budgeted Recovery — closed-loop episode =====</span>
+<span class="kw">def</span> run_episode<span class="p">(</span>object<span class="p">,</span> task<span class="p">,</span> K_max<span class="p">):</span>
+    <span class="c"># --- slow call #1: set the per-object budget (identity only) ---</span>
+    F_max <span class="p">=</span> clamp<span class="p">(</span>LLM_budget_setter<span class="p">(</span>object<span class="p">,</span> task<span class="p">),</span> <span class="n">0</span><span class="p">,</span> GLOBAL_HARD_CAP<span class="p">)</span>   <span class="c"># validate range</span>
+
+    history <span class="p">=</span> <span class="p">[]</span>
+    <span class="kw">for</span> attempt <span class="kw">in</span> range<span class="p">(</span>K_max<span class="p">):</span>
+        F_cmd <span class="p">=</span> F_max                          <span class="c"># skill may request ≤ F_max</span>
+        <span class="kw">while</span> <span class="kw">not</span> done<span class="p">(</span>task<span class="p">):</span>
+            a <span class="p">=</span> skill<span class="p">.</span>act<span class="p">(</span>obs<span class="p">,</span> F_cmd<span class="p">)</span>          <span class="c"># FORGE-style, force-conditioned</span>
+            w <span class="p">=</span> controller<span class="p">(</span>a<span class="p">)</span>                  <span class="c"># impedance / OSC → wrench</span>
+            w <span class="p">=</span> force_clamp<span class="p">(</span>w<span class="p">,</span> F_max<span class="p">)</span>          <span class="c"># SAFETY — fast loop, not the LLM</span>
+            obs<span class="p">,</span> contact <span class="p">=</span> sim<span class="p">.</span>step<span class="p">(</span>w<span class="p">)</span>
+            <span class="c"># evaluator-only: hidden breakage check, not visible to agent</span>
+            <span class="kw">if</span> contact<span class="p">.</span>peak <span class="p">&gt;</span> object<span class="p">.</span>F_break<span class="p">:</span> log_break<span class="p">();</span> <span class="kw">return</span> <span class="s">"BROKEN"</span>
+            history<span class="p">.</span>append<span class="p">(</span>obs<span class="p">,</span> contact<span class="p">)</span>
+
+        <span class="kw">if</span> success<span class="p">(</span>task<span class="p">):</span> <span class="kw">return</span> <span class="s">"SUCCESS"</span>
+
+        <span class="c"># --- failure: encode a TEXT force signature (no images) ---</span>
+        sig <span class="p">=</span> encode_signature<span class="p">(</span>history<span class="p">[</span><span class="p">-</span>N<span class="p">:])</span>      <span class="c"># peaks, axis, displacement, slip…</span>
+        <span class="kw">assert</span> <span class="s">"F_break"</span> <span class="kw">not</span> <span class="kw">in</span> sig                <span class="c"># non-circularity guard</span>
+
+        <span class="c"># --- slow call #2: pick recovery from a fixed menu ---</span>
+        r <span class="p">=</span> LLM_recovery_selector<span class="p">(</span>sig<span class="p">,</span> F_max<span class="p">,</span> attempt<span class="p">,</span> MENU<span class="p">)</span>
+        apply_recovery<span class="p">(</span>r<span class="p">)</span>                       <span class="c"># reallocates motion; F_max unchanged</span>
+
+    <span class="kw">return</span> <span class="s">"FAIL_NO_ATTEMPTS_LEFT"</span></pre>
+    <p class="code-cap">The two LLM calls are episodic. Everything inside <code class="inl">while not done</code> runs at control rate, including the clamp and the hidden breakage check.</p>
+  </section>
+
+  <!-- 8 -->
+  <section id="fragility">
+    <h2><span class="num">08</span>Fragility as a force constraint</h2>
+    <p>Each object instance <em class="term">i</em> carries a hidden breaking force <code class="inl">F_break,i</code>, drawn per object class from a distribution with a class mean and a per-instance spread (so the supervisor must reason about a <em class="term">class</em>, not memorize an instance). The supervisor sets <code class="inl">F_max,i</code>; the controller enforces <code class="inl">|F_cmd| ≤ F_max,i</code>. Breakage occurs iff the peak contact force exceeds <code class="inl">F_break,i</code>. The relevant quantity is the safety margin <code class="inl">m_i = F_break,i − F_max,i</code>:</p>
+    <ul>
+      <li><strong>Over-budget</strong> (<code class="inl">F_max &gt; F_break</code>): the part can break — the controller faithfully delivers a fatal force. The fragility failure mode.</li>
+      <li><strong>Under-budget</strong> (<code class="inl">F_max</code> too far below what seating needs): the part survives but never seats — the success failure mode.</li>
+      <li>The supervisor must thread both from identity alone. A good budget is a tight positive margin.</li>
+    </ul>
+    <p>One subtlety we will not hide: clamping the <em class="term">command</em> does not by itself bound the <em class="term">contact</em> force, because contact dynamics (stiff impedance, approach velocity) can overshoot the command. The clamp is necessary, not sufficient. We control overshoot with low controller stiffness and near-contact velocity limits, and we report the clamp-vs-contact gap as a first-class number (see Risks).</p>
+    <div class="callout">
+      <span class="lab">Argumentative thread — the fragility metric is not circular</span>
+      <p>Neither the policy, the encoder, nor either LLM call ever observes <code class="inl">F_break</code>. The only inputs are object identity (for the budget) and the observable force/contact trace (for recovery). The single way to score well on breakage is to set and respect a sensible ceiling from <em class="term">what the part is</em> — not to read off the answer. A method that "cheats" would need <code class="inl">F_break</code> as an input, and the <code class="inl">assert</code> in §7 forbids exactly that.</p>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section id="tasks">
+    <h2><span class="num">09</span>Tasks</h2>
+    <p>Three tasks, escalating in what they stress. <strong>Task 1</strong> isolates budget-setting and the clamp in the simplest contact case. <strong>Task 2</strong> is the recovery stress test — disturbances are injected to manufacture realistic jams and misalignment across a sequence. <strong>Task 3</strong> carries the idea outside tight insertion, into seating contact where "press harder" is most destructive. Each task pairs a <em class="term">fragile</em> variant (low hidden <code class="inl">F_break</code>) with a geometrically matched <em class="term">robust</em> one. F_break ranges below are illustrative (Newtons), to be calibrated against measured sim contact forces.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Task</th><th>What it isolates</th><th>Subphases</th><th>Fragile / robust F_break</th><th>Injected disturbance</th><th>Dominant failure → why force-grounded</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-h">1 · Single insertion<br>under a force ceiling<br><span style="color:var(--faint);font-weight:400;font-size:11px">peg / round connector → socket</span></td>
+            <td>Budget-setting + clamp — the unit test of the whole idea: protect the fragile part while still seating the robust one.</td>
+            <td>approach · insert · seat</td>
+            <td>fragile connector<br>~30–50<br>robust peg<br>~200–260</td>
+            <td>small fixed pose / lateral offset (mild)</td>
+            <td>wedge vs. friction jam — wedging shows steady lateral bias with rising axial; a friction jam is axial-only. The two are identical on camera.</td>
+          </tr>
+          <tr>
+            <td class="col-h">2 · Multi-step assembly<br>with injected jams<br><span style="color:var(--faint);font-weight:400;font-size:11px">FORGE planetary gearbox / peg sequence</span></td>
+            <td>Closed-loop multi-attempt recovery across a sequence; per-subtask budgets. The case the proposal is built around.</td>
+            <td>thread → insert → mesh</td>
+            <td>mixed per member<br>resin planet gear<br>~40–60 amid metal ~180–240</td>
+            <td>pose perturbations sampled to cause cross-thread, misalignment, and tooth clash</td>
+            <td>jam vs. misalignment vs. clash — the recovery-selector must separate these from the force/torque trace; they look alike visually yet demand different recoveries within the budget.</td>
+          </tr>
+          <tr>
+            <td class="col-h">3 · Fragile place / stack<br><span style="color:var(--faint);font-weight:400;font-size:11px">glass → rack, plate → slot</span></td>
+            <td>Ceiling + recovery <em>outside</em> tight insertion — does the idea survive contact-rich seating with no hole to enter?</td>
+            <td>approach · contact · settle / seat</td>
+            <td>glass / ceramic<br>~15–35<br>sturdy mug / metal plate<br>~150+</td>
+            <td>rack-slot offset, uneven seating surface</td>
+            <td>over-press / edge-load / tip — there is no hole to jam in; failure is excess normal force while settling, so a rising normal-load with no settle is the signal. "Press harder" is maximally destructive here.</td>
+          </tr>
+        </tbody>
+      </table>
+      <caption>Task 1 is the controlled unit test; Task 2 is the recovery stress test, where injected pose perturbations manufacture the jams; Task 3 checks the ceiling-plus-recovery idea outside peg-in-hole, where escalating force is exactly the wrong move.</caption>
+    </div>
+    <p>Every task is run on <strong>both grippers</strong> — the Franka Panda and the Robotiq 2F-140, with grasps seeded by GraspGen — so each task is really a 2&nbsp;×&nbsp;2 grid of {gripper} × {fragile, robust}. Gripper becomes a generalization axis rather than a hidden default, and the multi-step task additionally stresses whether one identity-derived budget holds as the embodiment changes.</p>
+  </section>
+
+  <!-- 10 -->
+  <section id="evaluation">
+    <h2><span class="num">10</span>Evaluation</h2>
+    <h3>Metrics</h3>
+    <ul>
+      <li><strong>Closed-loop multi-attempt success</strong> — fraction of episodes seated within <code class="inl">K</code> attempts. The headline number; success after recovery is the point.</li>
+      <li><strong>Breakage rate</strong> — fraction of episodes with <code class="inl">|F_contact| &gt; F_break</code>. The non-circular fragility metric.</li>
+      <li><strong>Budget appropriateness</strong> — distribution of <code class="inl">m = F_break − F_max</code>; over-budget rate (<code class="inl">F_max &gt; F_break</code>) and under-budget rate (no seat possible).</li>
+      <li><strong>Recovery efficacy</strong> — success conditional on a recovery being invoked; attempts-to-success.</li>
+      <li><strong>Force economy</strong> — peak and time-integrated contact force per success.</li>
+      <li><strong>Clamp fidelity</strong> — clamp-vs-peak-contact gap (overshoot beyond <code class="inl">F_max</code>), as a controller sanity check.</li>
+      <li><strong>Cross-gripper transfer</strong> — does the identity-derived <code class="inl">F_max</code> hold on both grippers? Report success and breakage per gripper, plus the consistency of <code class="inl">F_max</code> and breakage between Panda and 2F-140 on matched objects.</li>
+    </ul>
+    <h3>Baselines</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Baseline</th><th>Ceiling source</th><th>Recovery source</th><th>Recovery input</th><th>Expected success</th><th>Expected breakage</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="col-h">No-ceiling skill</td><td>none (unbounded)</td><td>retry as-is</td><td>—</td><td class="yes">high</td><td class="no">high on fragile</td></tr>
+          <tr><td class="col-h">Fixed global ceiling</td><td>one F_max for all objects</td><td>retry as-is</td><td>—</td><td class="part">forced tradeoff</td><td class="part">depends on the single value</td></tr>
+          <tr><td class="col-h">Press-harder (Tactile-VLA-style)</td><td>per-object F_max</td><td>increase force</td><td>force</td><td class="yes">high on robust</td><td class="no">high on fragile — by design</td></tr>
+          <tr><td class="col-h">Heuristic recovery (no LLM)</td><td>per-object F_max</td><td>hand-coded rules</td><td>force</td><td class="part">moderate</td><td class="yes">low (budget respected)</td></tr>
+          <tr><td class="col-h">Vision-LLM recovery (REFLECT/AHA proxy)</td><td>per-object F_max</td><td>frozen LLM</td><td>rendered-frame caption</td><td class="part">under-discriminates jams</td><td class="yes">low</td></tr>
+          <tr><td class="col-h">Oracle ceiling (upper bound)</td><td><code>F_break − ε</code> (cheats)</td><td>ours</td><td>force</td><td class="yes">ceiling</td><td class="yes">~0</td></tr>
+          <tr><td class="col-h"><strong>Ours</strong></td><td>frozen LLM (identity)</td><td>frozen LLM (menu)</td><td>force signature</td><td class="yes">target ≈ oracle</td><td class="yes">target low</td></tr>
+        </tbody>
+      </table>
+      <caption>Ablations: signature richness (features dropped one at a time), frozen-LLM vs. heuristic vs. oracle, attempt budget K, per-axis vs. scalar ceiling, held-out object descriptions, and single-gripper (train + test on Panda only) vs. both grippers.</caption>
+    </div>
+    <div class="callout">
+      <span class="lab">Argumentative thread — what "winning" looks like</span>
+      <p>The result we are after is narrow and falsifiable: <strong>our system matches the oracle on success while keeping breakage near zero, and the press-harder baseline matches us on robust parts but breaks fragile ones.</strong> If a hand-coded heuristic recovery does as well as the LLM, that is a real and reportable negative result about whether semantics are needed; if the vision-LLM proxy keeps up on jam-type failures, that weakens the force-grounding claim. Both are designed to be visible.</p>
+    </div>
+  </section>
+
+  <!-- 11 -->
+  <section id="compute">
+    <h2><span class="num">11</span>Compute &amp; feasibility</h2>
+    <p>The study is deliberately single-GPU. Isaac Lab runs thousands of parallel environments (target 1–4k) for FORGE-style PPO; with <strong>no rendering required</strong> — observations are proprioception, pose, and F/T, not images — simulation throughput is high and there is no vision sim-to-real gap to defend. A FORGE-class skill per task is plausibly trainable in hours-to-a-day on a single RTX 4090 / L40 / A100. Grasps are seeded by GraspGen (real-time inference) for both grippers, so the skill budget is one policy per gripper × task — six skills for three tasks — while the frozen LLM layer is shared across all of them; the cross-gripper cost lands on RL training, not on the semantic layer.</p>
+    <p>The LLM is frozen and called at most twice per episode (budget + one recovery; more if multiple failures). A local 7–8B instruct model or a hosted API both work; cost is negligible beside the RL run, and budget-setter outputs can be cached per object identity since the call is near-deterministic. Concretely: training dominates compute, the LLM dominates nothing, and the whole pipeline fits one workstation.</p>
+  </section>
+
+  <!-- 12 -->
+  <section id="risks">
+    <h2><span class="num">12</span>Risks &amp; mitigations</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td class="col-h">Contact force overshoots the command clamp (stiff impedance, fast approach) → breakage even with a correct F_max.</td><td>Low controller stiffness, near-contact velocity limits, an optional hard contact-force kill at <code class="inl">F_max</code>, and reporting the clamp-vs-contact gap as a metric rather than assuming it is zero.</td></tr>
+          <tr><td class="col-h">Sim contact forces are unreliable (penetration, stiffness artifacts) → noisy fragility metric.</td><td>Use Factory's SDF-based contact, validate force traces against quasi-static expectations, prefer relative thresholds, and report sensitivity of breakage rate to contact-solver settings.</td></tr>
+          <tr><td class="col-h">The signature leaks something F_break-derived → the metric becomes circular.</td><td>Signature is a pure function of observable F/T + kinematics; an explicit assertion (see §7) blocks <code class="inl">F_break</code> from the inputs; ablate signature richness to show what is actually used.</td></tr>
+          <tr><td class="col-h">Budget-setting collapses to a lookup table → uninteresting.</td><td>Evaluate on held-out objects, novel materials, and paraphrased/adversarial descriptions; compare the frozen LLM against a memorized table to isolate generalization as the value.</td></tr>
+          <tr><td class="col-h">"Press harder" is a strawman.</td><td>It is a published behavior (Tactile-VLA), and we additionally run a competent heuristic recovery and a vision-LLM recovery as stronger baselines.</td></tr>
+          <tr><td class="col-h">No real robot limits the claims.</td><td>Scope is explicitly a simulation study of the <em>semantic layer</em>; FORGE-style force conditioning is independently known to transfer, and hardware is deferred, not implied.</td></tr>
+          <tr><td class="col-h">Results are an artifact of one gripper.</td><td>Run every task on both GraspGen grippers (Franka Panda, Robotiq 2F-140) and report per gripper; treat cross-gripper transfer of the identity-derived <code class="inl">F_max</code> as an explicit test. Cost is bounded — skills are per-gripper, but the LLM layer is shared.</td></tr>
+          <tr><td class="col-h">LLM emits an unsafe ceiling.</td><td>Controller clamps to a fixed global hard cap and validates JSON ranges before any number reaches the loop — safety never depends on LLM correctness.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 13 -->
+  <section id="open">
+    <h2><span class="num">13</span>Open decisions</h2>
+    <ul>
+      <li><strong>Where the ceiling binds:</strong> command clamp only, or command clamp plus a contact-force kill switch — and whether the kill counts as a failure or a near-miss.</li>
+      <li><strong>Ceiling shape:</strong> a single scalar <code class="inl">F_max</code> per object vs. a per-axis vector (insertion vs. lateral), as hinted in the JSON example.</li>
+      <li><strong>Gripper conditioning:</strong> keep the budget-setter gripper-blind (to test whether <code class="inl">F_max</code> is invariant across Panda and 2F-140) or condition it on the gripper; and whether the force signature is normalized per gripper or expressed in gripper-agnostic units.</li>
+      <li><strong>Recovery menu:</strong> a small fixed discrete set vs. a parameterized continuous space, and how large the menu can grow before the LLM choice stops being auditable.</li>
+      <li><strong>Signature representation:</strong> hand-designed features vs. a learned text tokenization of the F/T window; how many steps <code class="inl">N</code>; how to keep it compact.</li>
+      <li><strong>LLM choice:</strong> hosted API vs. local small model, and how to make budget-setting reproducible across model versions.</li>
+      <li><strong>F_break distribution:</strong> per-class fixed vs. per-instance randomized, and how much spread before identity stops being predictive.</li>
+      <li><strong>Recovery memory:</strong> does the selector see history across retries, or is each call stateless?</li>
+      <li><strong>Multi-step credit:</strong> one episode-level ceiling vs. per-subtask ceilings for tasks like planetary assembly.</li>
+      <li><strong>Breakage semantics:</strong> terminal hard failure vs. a continuous penalty past <code class="inl">F_break</code>.</li>
+    </ul>
+  </section>
+
+  <!-- 14 -->
+  <section id="refs">
+    <h2><span class="num">14</span>References</h2>
+    <ol class="refs">
+      <li><span class="t">Factory: Fast Contact for Robotic Assembly.</span> Narang, Storey, Akinola, Macklin, Reist, Wawrzyniak, Guo, Moravanszky, State, Lu, Handa, Fox. RSS 2022. <a href="https://arxiv.org/abs/2205.03532">arXiv:2205.03532</a></li>
+      <li><span class="t">IndustReal: Transferring Contact-Rich Assembly Tasks from Simulation to Reality.</span> Tang et al. RSS 2023. <a href="https://arxiv.org/abs/2305.17110">arXiv:2305.17110</a></li>
+      <li><span class="t">AutoMate: Specialist and Generalist Assembly Policies over Diverse Geometries.</span> Tang, Akinola, Xu, Wen, Handa, Van Wyk, Fox, Sukhatme, Ramos, Narang. RSS 2024. <a href="https://arxiv.org/abs/2407.08028">arXiv:2407.08028</a></li>
+      <li><span class="t">FORGE: Force-Guided Exploration for Robust Contact-Rich Manipulation under Uncertainty.</span> Noseworthy, Tang, Wen, Handa, Kessens, Roy, Fox, Ramos, Narang, Akinola. IEEE RA-L 2025. <a href="https://arxiv.org/abs/2408.04587">arXiv:2408.04587</a></li>
+      <li><span class="t">Tactile-VLA: Unlocking Vision-Language-Action Model's Physical Knowledge for Tactile Generalization.</span> Huang, Wang, Lin, Hu, Wen, Gao. 2025. <a href="https://arxiv.org/abs/2507.09160">arXiv:2507.09160</a></li>
+      <li><span class="t">PaCo-VLA: Passivity-Shielded Compliance Prior for Contact-Rich Vision-Language-Action Manipulation.</span> Cao et al. 2026. <a href="https://arxiv.org/abs/2606.00515">arXiv:2606.00515</a></li>
+      <li><span class="t">REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction.</span> Liu, Bahety, Song. CoRL 2023. <a href="https://arxiv.org/abs/2306.15724">arXiv:2306.15724</a></li>
+      <li><span class="t">DoReMi: Grounding Language Model by Detecting and Recovering from Plan-Execution Misalignment.</span> Guo, Wang, Zha, Jiang, Chen. 2023. <a href="https://arxiv.org/abs/2307.00329">arXiv:2307.00329</a></li>
+      <li><span class="t">AHA: A Vision-Language-Model for Detecting and Reasoning Over Failures in Robotic Manipulation.</span> Duan, Pumacay, Kumar, Wang, Tian, Yuan, Krishna, Fox, Mandlekar, Guo. 2024. <a href="https://arxiv.org/abs/2410.00371">arXiv:2410.00371</a></li>
+      <li><span class="t">Isaac Lab: A GPU-Accelerated Simulation Framework for Multi-Modal Robot Learning.</span> Mittal et al. 2025. <a href="https://arxiv.org/abs/2511.04831">arXiv:2511.04831</a></li>
+      <li><span class="t">Orbit: A Unified Simulation Framework for Interactive Robot Learning Environments.</span> Mittal, Yu, Yu, Liu, Rudin, Hoeller, Yuan, Singh, Guo, Mazhar, Mandlekar, Babich, State, Hutter, Garg. IEEE RA-L 2023 (predecessor to Isaac Lab). <a href="https://arxiv.org/abs/2301.04195">arXiv:2301.04195</a></li>
+      <li><span class="t">GraspGen: A Diffusion-based Framework for 6-DOF Grasping.</span> Murali et al. (NVIDIA) 2025. Source of the two parallel-jaw grippers (Franka Panda, Robotiq 2F-140) and the grasp generator used to seed grasps. <a href="https://arxiv.org/abs/2507.13097">arXiv:2507.13097</a> · dataset: <a href="https://huggingface.co/datasets/nvidia/PhysicalAI-Robotics-GraspGen">nvidia/PhysicalAI-Robotics-GraspGen</a></li>
+      <li><span class="t">ForceVLA: Enhancing VLA Models with a Force-aware MoE for Contact-Rich Manipulation.</span> Yu et al. 2025 (additional force-VLA context). <a href="https://arxiv.org/abs/2505.22159">arXiv:2505.22159</a></li>
+      <li><span class="t">CompliantVLA-adaptor: VLM-Guided Variable Impedance Action for Safe Contact-Rich Manipulation.</span> Zhang, Huang et al. 2026 (VLM + force-threshold safety, related). <a href="https://arxiv.org/abs/2601.15541">arXiv:2601.15541</a></li>
+    </ol>
+  </section>
+
+  <p class="foot">Self-contained proposal · simulation-only scope · no real-robot claims, no fracture modeling. Force authority is enforced by the fast-loop clamp; the language model only proposes a budget and selects a recovery within it.</p>
+
+</div>
+</body>
+</html>
