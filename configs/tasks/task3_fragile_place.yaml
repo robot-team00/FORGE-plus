@@ -1,0 +1,50 @@
+# Task 3: Fragile place / stack
+# Tests ceiling + recovery OUTSIDE tight insertion.
+# "Press harder" is maximally destructive here.
+
+name: task3_fragile_place
+description: "Place fragile objects (glass, ceramic) into rack/slot — no hole to insert into"
+
+objects:
+  fragile:
+    - key: glass_bowl
+      f_break_range_n: [12, 35]
+    - key: ceramic_plate
+      f_break_range_n: [14, 38]
+  robust:
+    - key: metal_plate
+      f_break_range_n: [120, 220]
+    - key: sturdy_mug
+      f_break_range_n: [110, 200]
+
+subphases:
+  - approach
+  - contact
+  - settle
+
+disturbances:
+  type: seating_surface
+  modes:
+    - slot_offset_mm: [-4.0, 4.0]
+    - uneven_surface_tilt_deg: [0.0, 3.0]
+  injection_probability: 0.5
+
+success_criterion:
+  type: settled
+  normal_force_stable_n: 2.0      # settled when normal force < threshold
+  duration_ms: 200.0
+
+failure_modes:
+  - over_press       # rising normal force, no settle → pressing too hard
+  - edge_load        # lateral force spike (tipped onto edge)
+  - tip              # large torque → object tipping
+
+max_steps: 1500
+max_attempts: 5
+
+grippers:
+  - franka_panda
+  - robotiq_2f140
+
+insertion_axis: z   # approach/seating axis (normal to surface)
+note: "No hole — failure is excess normal force, not jam. 'Press harder' is worst possible recovery."

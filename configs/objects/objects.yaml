@@ -1,0 +1,103 @@
+# Object registry — human-readable version of forge_plus/envs/object_configs.py
+# The F_break fields are EVALUATOR ONLY — never exposed to the agent.
+
+objects:
+
+  # ---- Task 1: single insertion ----
+  abs_round_connector:
+    identity:
+      name: "Ø8mm ABS round connector"
+      material: ABS
+      class: round_connector
+      nominal_mass_g: 6.2
+      geometry_tags: [thin_wall, press_fit]
+    f_break_mean_n: 38.0
+    f_break_std_n: 5.0
+    f_break_min_n: 20.0
+    compatible_tasks: [task1_single_insertion]
+
+  steel_peg:
+    identity:
+      name: "Ø10mm steel precision peg"
+      material: steel
+      class: precision_peg
+      nominal_mass_g: 42.0
+      geometry_tags: [solid, clearance_fit]
+    f_break_mean_n: 230.0
+    f_break_std_n: 20.0
+    f_break_min_n: 180.0
+    compatible_tasks: [task1_single_insertion]
+
+  # ---- Task 2: multi-step assembly ----
+  resin_planet_gear:
+    identity:
+      name: "Ø22mm resin planet gear (12T)"
+      material: photopolymer resin
+      class: planet_gear
+      nominal_mass_g: 8.5
+      geometry_tags: [tooth_mesh, press_fit_bore, brittle]
+    f_break_mean_n: 48.0
+    f_break_std_n: 8.0
+    f_break_min_n: 28.0
+    compatible_tasks: [task2_multi_step_assembly]
+
+  metal_planet_gear:
+    identity:
+      name: "Ø22mm aluminium planet gear (12T)"
+      material: aluminium
+      class: planet_gear
+      nominal_mass_g: 18.0
+      geometry_tags: [tooth_mesh, press_fit_bore]
+    f_break_mean_n: 210.0
+    f_break_std_n: 18.0
+    f_break_min_n: 165.0
+    compatible_tasks: [task2_multi_step_assembly]
+
+  # ---- Task 3: fragile place / stack ----
+  glass_bowl:
+    identity:
+      name: "Ø120mm borosilicate glass bowl"
+      material: borosilicate glass
+      class: bowl
+      nominal_mass_g: 210.0
+      geometry_tags: [brittle, curved_rim, no_hole]
+    f_break_mean_n: 22.0
+    f_break_std_n: 4.0
+    f_break_min_n: 12.0
+    compatible_tasks: [task3_fragile_place]
+
+  ceramic_plate:
+    identity:
+      name: "Ø200mm ceramic plate"
+      material: stoneware ceramic
+      class: plate
+      nominal_mass_g: 380.0
+      geometry_tags: [brittle, flat_seating, no_hole]
+    f_break_mean_n: 26.0
+    f_break_std_n: 5.0
+    f_break_min_n: 14.0
+    compatible_tasks: [task3_fragile_place]
+
+  metal_plate:
+    identity:
+      name: "200×150mm aluminium tray"
+      material: aluminium
+      class: tray
+      nominal_mass_g: 320.0
+      geometry_tags: [flat_seating, robust, no_hole]
+    f_break_mean_n: 180.0
+    f_break_std_n: 25.0
+    f_break_min_n: 120.0
+    compatible_tasks: [task3_fragile_place]
+
+  sturdy_mug:
+    identity:
+      name: "Ø90mm stoneware mug (thick-walled)"
+      material: stoneware
+      class: mug
+      nominal_mass_g: 290.0
+      geometry_tags: [thick_wall, robust_for_ceramics]
+    f_break_mean_n: 160.0
+    f_break_std_n: 20.0
+    f_break_min_n: 110.0
+    compatible_tasks: [task3_fragile_place]

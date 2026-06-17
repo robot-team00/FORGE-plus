@@ -1,0 +1,42 @@
+# Task 1: Single insertion under a force ceiling
+# Isolates budget-setting + clamp — the unit test of the whole idea.
+# Protect the fragile part while still seating the robust one.
+
+name: task1_single_insertion
+description: "Single peg/connector insertion into a socket under a per-object force ceiling"
+
+objects:
+  fragile:
+    key: abs_round_connector
+    f_break_range_n: [20, 55]
+  robust:
+    key: steel_peg
+    f_break_range_n: [180, 280]
+
+subphases:
+  - approach
+  - insert
+  - seat
+
+disturbances:
+  type: pose_offset
+  lateral_offset_mm: [-3.0, 3.0]  # uniform range
+  depth_offset_mm: [-1.0, 1.0]
+
+success_criterion:
+  type: insertion_depth
+  threshold_mm: 10.0
+
+failure_modes:
+  - wedge_jam        # steady lateral bias + rising axial
+  - friction_jam     # axial-only, no displacement
+  - misalignment     # large lateral offset from initial pose
+
+max_steps: 2000
+max_attempts: 5
+
+grippers:
+  - franka_panda
+  - robotiq_2f140
+
+insertion_axis: z
