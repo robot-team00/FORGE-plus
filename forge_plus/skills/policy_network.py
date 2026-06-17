@@ -5,8 +5,8 @@ Linear Modulation). The force budget is a first-class input, not appended
 as a raw scalar — FiLM allows it to modulate the entire feature map.
 
 Observation layout (dim = obs_dim):
-  [joint_pos(7), joint_vel(7), ee_pos(3), ee_quat(4), ft_wrench(6), phase_onehot(6)]
-  Total: 33 dims + task-specific additions
+  [joint_pos(7), joint_vel(7), ee_pos(3), ee_quat(4), ft_wrench(6), phase_onehot(7)]
+  Total: 34 dims + task-specific additions (phase_onehot == len(TaskPhase))
 
 Action layout (dim = act_dim):
   [delta_ee_pos(3), delta_ee_quat(4)] — delta EE pose command, 7 dims default
@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 @dataclass
 class PolicyConfig:
-    obs_dim: int = 33
+    obs_dim: int = 34
     act_dim: int = 7
     hidden_dim: int = 256
     num_layers: int = 4

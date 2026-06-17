@@ -63,3 +63,14 @@ def test_clamp_fidelity_metric():
     fidelity = ForceClamp.measure_clamp_fidelity(commanded, actual, 20.0)
     assert fidelity["max_overshoot_n"] == pytest.approx(2.0)
     assert fidelity["overshoot_rate"] == pytest.approx(0.4)  # 2/5 steps exceeded
+
+
+def test_overshoot_finite_when_f_max_zero():
+    # A degenerate F_max=0 must not blow the overshoot fraction up to ~1e6.
+    clamp = ForceClamp(f_max_n=0.0)
+    clamped, overshoot = clamp.clamp(Wrench(0, 0, 10, 0, 0, 0))
+    assert abs(clamped.fz) < 1e-6          # everything clamped to zero
+    assert overshoot == pytest.approx(1.0)  # fully saturated, finite
+    # And a zero command at a zero ceiling is not an overshoot.
+    _, zero_overshoot = clamp.clamp(Wrench(0, 0, 0, 0, 0, 0))
+    assert zero_overshoot == 0.0

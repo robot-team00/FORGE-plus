@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from forge_plus.control.force_clamp import Wrench
-from forge_plus.envs.base_assembly_env import EnvObservation
+from forge_plus.envs.base_assembly_env import EnvObservation, TaskPhase
 from forge_plus.skills.policy_network import ForceConditionedPolicy, PolicyConfig
 
 
@@ -107,9 +107,13 @@ class FORGESkill:
 
     def _encode_obs(self, obs: EnvObservation) -> np.ndarray:
         """Flatten observation into a fixed-size vector."""
-        phase_onehot = np.zeros(6)
-        phase_idx = min(obs.phase.value.__hash__() % 6, 5)
-        phase_onehot[phase_idx] = 1.0
+        # Deterministic phase index. NOTE: do NOT use hash(phase.value) — str
+        # hashing is salted per process (PYTHONHASHSEED), which would make the
+        # encoding non-reproducible and inconsistent between training and eval,
+        # and a modulo into too few slots collides distinct phases.
+        phases = list(TaskPhase)
+        phase_onehot = np.zeros(len(phases))
+        phase_onehot[phases.index(obs.phase)] = 1.0
 
         ft = obs.ft_wrench
         ft_vec = np.array([ft.fx, ft.fy, ft.fz, ft.tx, ft.ty, ft.tz])
@@ -120,7 +124,7 @@ class FORGESkill:
             obs.ee_pos,              # 3
             obs.ee_quat,             # 4
             ft_vec,                  # 6
-            phase_onehot,            # 6
+            phase_onehot,            # len(TaskPhase) == 7
         ])
         return obs_vec.astype(np.float32)
 

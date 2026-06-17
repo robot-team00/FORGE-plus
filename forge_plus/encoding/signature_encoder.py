@@ -86,10 +86,20 @@ class SignatureEncoder:
             torque_z_Nm=float(np.mean(torque)),
         )
 
-        # Non-circularity guard — F_break must never appear in the signature
-        sig_dict = sig.as_dict()
-        assert "F_break" not in sig_dict, "BUG: F_break leaked into force signature"
-        assert "f_break" not in str(sig_dict).lower(), "BUG: f_break variant leaked into signature"
+        # Non-circularity guard — F_break must never enter the signature, on the
+        # input or the output side. The input check is the load-bearing one: it
+        # catches the realistic regression where a breaking-force field is added
+        # to ContactStep. (Checking only the fixed output keys can never fail and
+        # gives false confidence.)
+        forbidden = ("break",)
+        input_fields = " ".join(ContactStep._fields).lower()
+        assert not any(tok in input_fields for tok in forbidden), (
+            "BUG: a breaking-force field leaked into the encoder input contract "
+            f"(ContactStep fields: {ContactStep._fields})"
+        )
+        assert not any(tok in str(sig.as_dict()).lower() for tok in forbidden), (
+            "BUG: a breaking-force value leaked into the force signature"
+        )
 
         return sig
 

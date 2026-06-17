@@ -91,6 +91,15 @@ class BaseAssemblyEnv(ABC):
         ...
 
     @abstractmethod
+    def observe(self) -> EnvObservation:
+        """Return the current observation without resetting or re-randomizing.
+
+        Used between recovery attempts so the next attempt continues from the
+        recovered state rather than wiping it with a fresh reset.
+        """
+        ...
+
+    @abstractmethod
     def get_contact_force_magnitude(self) -> float:
         """Return the last measured peak contact force (N) — observable."""
         ...

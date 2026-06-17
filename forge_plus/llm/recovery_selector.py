@@ -8,12 +8,15 @@ we reject it and keep the original.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from forge_plus.llm.client import LLMClient
+
+log = logging.getLogger(__name__)
 
 RECOVERY_MENU = [
     "retract_and_reapproach",
@@ -46,14 +49,22 @@ class RecoveryResponse(BaseModel):
 
     action: str
     params: dict[str, Any] = Field(default_factory=dict)
-    keep_F_max_N: float
+    # Defaulted because RecoverySelector overwrites it with the true budget;
+    # a default also keeps an LLM that omits the field from crashing the episode.
+    keep_F_max_N: float = 0.0
     rationale: str = ""
 
     @field_validator("action")
     @classmethod
     def action_in_menu(cls, v: str) -> str:
         if v not in RECOVERY_MENU:
-            # Gracefully fall back to first menu item rather than crashing
+            # Gracefully fall back to first menu item rather than crashing, but
+            # surface it: a silent swap hides LLM failures from post-hoc analysis.
+            log.warning(
+                "RecoverySelector: LLM returned out-of-menu action %r; "
+                "falling back to %r",
+                v, RECOVERY_MENU[0],
+            )
             return RECOVERY_MENU[0]
         return v
 

@@ -13,9 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from forge_plus.control.force_clamp import GLOBAL_HARD_CAP_N
 from forge_plus.llm.client import LLMClient
-
-GLOBAL_HARD_CAP_N: float = 120.0  # controller-level absolute ceiling
 
 
 class ObjectIdentity(BaseModel):
@@ -94,15 +93,20 @@ class BudgetSetter:
         }
 
     def _validate_response(self, raw: dict[str, Any]) -> BudgetResponse:
-        # Pre-clamp before pydantic sees the values — we clamp rather than reject
-        clamped = dict(raw)
-        clamped["F_max_N"] = min(float(clamped.get("F_max_N", 0)), self.global_hard_cap_n)
-        if "per_axis_N" in clamped and isinstance(clamped["per_axis_N"], dict):
-            clamped["per_axis_N"] = {
-                k: min(float(v), self.global_hard_cap_n)
-                for k, v in clamped["per_axis_N"].items()
-            }
+        # Pre-clamp before pydantic sees the values — we clamp rather than reject.
+        # The numeric coercion is inside the try so a non-numeric LLM value
+        # (string/None/list) yields the same clear error instead of an
+        # unwrapped float() crash.
         try:
+            clamped = dict(raw)
+            f_max = min(float(clamped.get("F_max_N", 0)), self.global_hard_cap_n)
+            clamped["F_max_N"] = f_max
+            if isinstance(clamped.get("per_axis_N"), dict):
+                # Per-axis limits are subsidiary to the scalar ceiling: never
+                # let an axis exceed F_max (nor the global hard cap).
+                clamped["per_axis_N"] = {
+                    k: min(float(v), f_max) for k, v in clamped["per_axis_N"].items()
+                }
             resp = BudgetResponse.model_validate(clamped)
         except Exception as exc:
             raise ValueError(f"BudgetSetter: invalid LLM response {raw!r}: {exc}") from exc

@@ -86,8 +86,12 @@ def sample_episode_config(args, rng: np.random.Generator):
     )
 
 
-def compute_reward(obs, outcome, contact_n: float, f_max_n: float, f_break_n: float) -> float:
-    """FORGE-style reward: task completion + force penalty + ceiling violation penalty."""
+def compute_reward(obs, outcome, contact_n: float, f_max_n: float) -> float:
+    """FORGE-style reward: task completion + force penalty + ceiling violation penalty.
+
+    Deliberately does NOT take F_break: the policy must never see the hidden
+    breaking force (non-circularity). It is shaped only by F_max and observables.
+    """
     from forge_plus.envs.base_assembly_env import TaskOutcome
 
     if outcome == TaskOutcome.SUCCESS:
@@ -184,7 +188,7 @@ def main() -> None:
     from forge_plus.skills.policy_network import PolicyConfig, ForceConditionedPolicy, ValueNetwork
     from forge_plus.skills.forge_skill import FORGESkill, SkillConfig
 
-    policy_cfg = PolicyConfig(obs_dim=33, act_dim=7)
+    policy_cfg = PolicyConfig(obs_dim=34, act_dim=7)
     policy = ForceConditionedPolicy(policy_cfg).to(device)
     value_net = ValueNetwork(policy_cfg).to(device)
     actor_opt = Adam(policy.parameters(), lr=args.lr)
@@ -230,7 +234,7 @@ def main() -> None:
 
         obs, outcome = env.step(clamped_w)
         contact_n = env.get_contact_force_magnitude()
-        reward = compute_reward(obs, outcome, contact_n, f_cmd, episode_cfg.f_break_n)
+        reward = compute_reward(obs, outcome, contact_n, f_cmd)
         done = env.is_done()
 
         buf_obs.append(obs_norm)

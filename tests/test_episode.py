@@ -1,6 +1,8 @@
 """Integration tests for the full episode runner."""
 
+import numpy as np
 import pytest
+import torch
 from forge_plus.episode import EpisodeRunner, EpisodeTermination
 from forge_plus.envs.base_assembly_env import EpisodeConfig
 from forge_plus.envs.mock_assembly_env import MockAssemblyEnv, MockEnvConfig
@@ -14,6 +16,9 @@ from forge_plus.skills.policy_network import PolicyConfig
 
 
 def _make_runner(budget_n=30.0, recovery_action="retract_and_reapproach", jam_prob=0.0):
+    # Seed so the (untrained, stochastic) policy is reproducible across runs.
+    torch.manual_seed(0)
+    np.random.seed(0)
     client = MockLLMClient(budget_n=budget_n, recovery_action=recovery_action)
     env = MockAssemblyEnv(MockEnvConfig(jam_probability=jam_prob))
     skill = FORGESkill(SkillConfig(policy_cfg=PolicyConfig()))
@@ -41,7 +46,9 @@ def _make_cfg(obj_key="steel_peg", f_break=200.0, seed=0):
 def test_episode_completes_without_jam():
     runner = _make_runner(jam_prob=0.0, budget_n=30.0)
     result = runner.run(_make_cfg(f_break=200.0))
-    assert result.termination in EpisodeTermination.__members__.values()
+    # Budget (30 N) is far below F_break (200 N), so the part must never break.
+    assert result.termination != EpisodeTermination.BROKEN
+    assert result.broke is False
     assert result.total_steps > 0
 
 
@@ -53,13 +60,13 @@ def test_f_max_never_exceeds_global_cap():
 
 
 def test_broken_when_f_break_exceeded():
-    # Set budget higher than F_break — the mock env will detect breakage
-    # The mock env may or may not break depending on physics; check invariants
+    # Budget (100 N) far exceeds F_break (1 N), so the commanded force drives the
+    # contact force past the breaking threshold — the env must report BROKEN.
     runner = _make_runner(budget_n=100.0)
-    cfg = _make_cfg(f_break=1.0)  # very fragile — should break quickly
+    cfg = _make_cfg(f_break=1.0)  # very fragile — breaks almost immediately
     result = runner.run(cfg)
-    # Either broke or some other terminal state (depends on mock physics)
-    assert result.termination in list(EpisodeTermination)
+    assert result.termination == EpisodeTermination.BROKEN
+    assert result.broke is True
 
 
 def test_safety_margin_computed():
