@@ -274,12 +274,29 @@ cache: true
 ```
 Requires `ANTHROPIC_API_KEY` in the environment.
 
-**Local model via vLLM / llama.cpp:**
-```yaml
-backend: openai_compatible
-base_url: http://localhost:8000/v1
-model: meta-llama/Llama-3.1-8B-Instruct
+**Local model (offline, no API key):**
+
+```bash
+# Recommended: Ollama + Qwen2.5-7B
+ollama pull qwen2.5:7b-instruct
+ollama serve
+
+PYTHONPATH=. python scripts/run_episode.py \
+    --object abs_round_connector --task task1 \
+    --backend local
 ```
+
+Override the server or model from the command line:
+
+```bash
+PYTHONPATH=. python scripts/run_episode.py \
+    --backend local \
+    --local-url http://localhost:8000/v1 \
+    --local-model Qwen/Qwen2.5-14B-Instruct \
+    --object glass_bowl --task task3
+```
+
+Or copy `configs/llm/local.yaml` and edit `base_url` / `model` for vLLM or llama.cpp — see that file for commented-out alternatives.
 
 **Mock (for testing, no API key):**
 ```yaml
