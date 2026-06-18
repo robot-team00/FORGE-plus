@@ -30,7 +30,7 @@ import sys
 def _needs_isaac() -> bool:
     """Return True if the real Isaac Lab GPU path will be used."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--mock-env", action="store_true", default=True)
+    p.add_argument("--mock-env", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--num-envs", type=int, default=1)
     ns, _ = p.parse_known_args()
     return not (ns.mock_env or ns.num_envs == 1)
@@ -72,8 +72,10 @@ def parse_args() -> argparse.Namespace:
                    help="Range of F_cmd values to sample during training")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--checkpoint-dir", default="checkpoints")
-    p.add_argument("--mock-env", action="store_true", default=True,
-                   help="Use mock environment (no Isaac Lab required)")
+    p.add_argument("--mock-env", action=argparse.BooleanOptionalAction, default=False,
+                   help="Use the mock CPU environment instead of Isaac Lab. "
+                        "Opt-in: real Isaac Lab GPU training is the default. "
+                        "Note: --num-envs 1 also falls back to the mock env.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log-interval", type=int, default=10_000)
     return p.parse_args()
