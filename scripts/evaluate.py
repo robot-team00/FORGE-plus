@@ -6,14 +6,39 @@ then prints the metrics table from §10.
 
 Usage:
     python scripts/evaluate.py --task task1 --n-episodes 100
-    python scripts/evaluate.py --all-tasks --n-episodes 200 --backend mock
+    python scripts/evaluate.py --all-tasks --n-episodes 200 --env mock
+    python scripts/evaluate.py --task task1 --env isaac --num-envs 1024 --n-episodes 200
     python scripts/evaluate.py --task task1 --baseline oracle --n-episodes 50
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import sys
+
+# ── Bootstrap: SimulationApp must be the very first Isaac import ──────────────
+#
+# Isaac Sim registers carb/omni into sys.path inside SimulationApp.__init__.
+# Any import of isaaclab.* before that call fails with:
+#   ModuleNotFoundError: No module named 'carb'
+#
+# We pre-parse --env before any other setup so we know whether we need
+# to boot Isaac Sim before the rest of the imports.
+def _needs_isaac() -> bool:
+    """Return True if the real Isaac Lab GPU path will be used."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--env", default="mock")
+    ns, _ = p.parse_known_args()
+    return ns.env == "isaac"
+
+
+if _needs_isaac():
+    # noqa: E402 — must precede all isaaclab imports
+    from isaacsim import SimulationApp  # type: ignore[import]
+    _SIM_APP = SimulationApp({"headless": True})
+
+# ── Safe to import everything else now ───────────────────────────────────────
+import json  # noqa: E402
 import logging
 import random
 from pathlib import Path
@@ -26,6 +51,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--task", choices=["task1", "task2", "task3", "all"], default="task1")
     p.add_argument("--gripper", choices=["franka_panda", "robotiq_2f140", "both"], default="both")
     p.add_argument("--n-episodes", type=int, default=50)
+    p.add_argument(
+        "--env",
+        choices=["mock", "isaac"],
+        default="mock",
+        help=(
+            "Physics backend for eval: "
+            "'mock' (fast CPU, no GPU required, useful for sanity checks) or "
+            "'isaac' (real Isaac Lab GPU sim — required for paper eval numbers). "
+            "Isaac Lab requires a CUDA GPU and SimulationApp to be running."
+        ),
+    )
+    p.add_argument(
+        "--num-envs",
+        type=int,
+        default=1,
+        help="Parallel Isaac Lab envs (--env isaac only; ignored with --env mock)",
+    )
+    p.add_argument(
+        "--device",
+        default="cuda:0",
+        help="Torch/Isaac Lab device (--env isaac only)",
+    )
     p.add_argument(
         "--baseline",
         choices=["ours", "no_ceiling", "fixed_global", "press_harder", "heuristic", "vision_llm", "oracle", "all"],
@@ -42,6 +89,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
+
+
+def build_env(args: argparse.Namespace):
+    """Instantiate the physics environment selected by --env.
+
+    The Isaac Lab path requires SimulationApp to already be running (handled
+    at module import time above). The mock path has no GPU dependency.
+    """
+    if args.env == "isaac":
+        from forge_plus.envs.isaac_lab_env import IsaacLabAssemblyEnv, IsaacLabEnvConfig
+        cfg = IsaacLabEnvConfig(num_envs=args.num_envs, device=args.device)
+        log.info(f"Using IsaacLabAssemblyEnv: num_envs={args.num_envs}, device={args.device}")
+        return IsaacLabAssemblyEnv(cfg)
+    else:
+        from forge_plus.envs.mock_assembly_env import MockAssemblyEnv, MockEnvConfig
+        log.info("Using MockAssemblyEnv (--env mock)")
+        return MockAssemblyEnv(MockEnvConfig())
 
 
 def build_episode_configs(task: str, gripper: str, n_episodes: int, seed: int):
@@ -77,7 +141,6 @@ def build_episode_configs(task: str, gripper: str, n_episodes: int, seed: int):
 
 
 def run_evaluation(args: argparse.Namespace) -> None:
-    from forge_plus.envs.mock_assembly_env import MockAssemblyEnv, MockEnvConfig
     from forge_plus.evaluation.baselines import BaselineRunner, BaselineType
     from forge_plus.evaluation.metrics import compute_metrics, print_metrics_table
     from forge_plus.episode import EpisodeRunner
@@ -91,7 +154,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    env = MockAssemblyEnv(MockEnvConfig())
+    env = build_env(args)
     skill = FORGESkill(SkillConfig(policy_cfg=PolicyConfig()))
     rec_exec = RecoveryActionExecutor()
 
