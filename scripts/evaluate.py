@@ -188,9 +188,12 @@ def run_evaluation(args: argparse.Namespace) -> None:
 
     all_results = {}
 
-    baselines_to_run = (
-        list(BaselineType) if args.baseline == "all" else [BaselineType(args.baseline)]
-    )
+    if args.baseline == "all":
+        baselines_to_run = list(BaselineType)
+    elif args.baseline == "ours":
+        baselines_to_run = []          # "ours" is not a BaselineType; handled separately below
+    else:
+        baselines_to_run = [BaselineType(args.baseline)]
 
     # Run baselines
     for bl_type in baselines_to_run:
