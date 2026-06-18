@@ -337,3 +337,9 @@ Target training throughput: 1–4k parallel environments on a single RTX 4090 / 
 - **No fracture modeling.** Breakage is decided by a hidden scalar `F_break` compared against peak contact force — rigid-body physics only.
 - **Clamping the command does not bound the contact force.** Impedance overshoot can exceed `F_max`. This is mitigated by low controller stiffness and near-contact velocity limits, and tracked as the `clamp_fidelity` metric.
 - **Mock LLM returns fixed values.** The mock client always returns `F_max = 30 N` regardless of object. Meaningful budget-setting requires the real Anthropic or local model backend.
+
+## Headless Rendering
+
+Isaac Sim viewport rendering requires `NVIDIA_DRIVER_CAPABILITIES=all` set in the RunPod container environment **before** pod start. Blackwell (sm_120) GPUs also have a broken Vulkan ICD and cannot render regardless of capability settings.
+
+See [docs/rendering.md](docs/rendering.md) for the complete setup guide, GPU compatibility table, and troubleshooting steps.

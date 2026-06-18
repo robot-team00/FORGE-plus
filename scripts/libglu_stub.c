@@ -1,0 +1,42 @@
+/* Minimal libGLU stub for Isaac Sim RTX NeuRay plugin.
+ * Compile: gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig
+ */
+void gluPerspective(void) {}
+void gluLookAt(void) {}
+void gluOrtho2D(void) {}
+void gluProject(void) {}
+void gluUnProject(void) {}
+void gluErrorString(void) {}
+void gluGetString(void) {}
+void gluBuild2DMipmaps(void) {}
+void gluNewQuadric(void) {}
+void gluDeleteQuadric(void) {}
+void gluSphere(void) {}
+void gluCylinder(void) {}
+void gluDisk(void) {}
+void gluPartialDisk(void) {}
+void gluNewTess(void) {}
+void gluDeleteTess(void) {}
+void gluTessVertex(void) {}
+void gluTessBeginPolygon(void) {}
+void gluTessEndPolygon(void) {}
+void gluTessBeginContour(void) {}
+void gluTessEndContour(void) {}
+void gluTessProperty(void) {}
+void gluTessNormal(void) {}
+void gluTessCallback(void) {}
+void gluNurbsSurface(void) {}
+void gluNewNurbsRenderer(void) {}
+void gluDeleteNurbsRenderer(void) {}
+void gluBeginSurface(void) {}
+void gluEndSurface(void) {}
+void gluBeginCurve(void) {}
+void gluEndCurve(void) {}
+void gluBeginTrim(void) {}
+void gluEndTrim(void) {}
+void gluPwlCurve(void) {}
+void gluNurbsCurve(void) {}
+void gluLoadSamplingMatrices(void) {}
+void gluNurbsProperty(void) {}
+void gluGetNurbsProperty(void) {}
+void gluNurbsCallback(void) {}
