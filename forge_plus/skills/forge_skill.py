@@ -159,7 +159,10 @@ class FORGESkill:
         )
 
     def load(self, path: str) -> None:
-        ckpt = torch.load(path, map_location=self.device)
+        # weights_only=False: the checkpoint stores the PolicyConfig dataclass and
+        # the normalizer state alongside tensors. PyTorch 2.6 made torch.load default
+        # to weights_only=True, which rejects those non-tensor globals.
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.policy.load_state_dict(ckpt["policy_state_dict"])
         if "normalizer" in ckpt:
             self.normalizer.load_state_dict(ckpt["normalizer"])
