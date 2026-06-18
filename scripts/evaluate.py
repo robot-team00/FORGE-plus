@@ -85,6 +85,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--local-model", default="qwen2.5:7b-instruct",
                    help="Model name served at --local-url (--backend local)")
     p.add_argument("--checkpoint-dir", default="checkpoints")
+    p.add_argument("--checkpoint", default=None,
+                   help="Explicit checkpoint .pt to load. If omitted, resolves to "
+                        "<checkpoint-dir>/<task>_<gripper>.pt.")
     p.add_argument("--output-dir", default="results")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true")
@@ -155,7 +158,29 @@ def run_evaluation(args: argparse.Namespace) -> None:
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     env = build_env(args)
-    skill = FORGESkill(SkillConfig(policy_cfg=PolicyConfig()))
+
+    # Resolve the trained checkpoint. A single FORGESkill is shared across the
+    # eval run, so for --gripper both / --task all we fall back to the default
+    # gripper; pass --checkpoint to load a specific file.
+    if args.checkpoint is not None:
+        ckpt_path = Path(args.checkpoint)
+    else:
+        ckpt_gripper = args.gripper if args.gripper != "both" else "franka_panda"
+        ckpt_task = args.task if args.task != "all" else "task1"
+        ckpt_path = Path(args.checkpoint_dir) / f"{ckpt_task}_{ckpt_gripper}.pt"
+    if not ckpt_path.exists():
+        log.warning(
+            "Checkpoint %s not found — evaluating with RANDOM policy weights. "
+            "Train a skill first or pass --checkpoint.", ckpt_path,
+        )
+    else:
+        log.info("Loading skill checkpoint: %s", ckpt_path)
+    skill = FORGESkill(SkillConfig(
+        policy_cfg=PolicyConfig(),
+        checkpoint_path=str(ckpt_path),
+        device=args.device if args.env == "isaac" else "cpu",
+        deterministic=True,  # eval: act greedily, not stochastically
+    ))
     rec_exec = RecoveryActionExecutor()
 
     episode_cfgs = build_episode_configs(args.task, args.gripper, args.n_episodes, args.seed)
