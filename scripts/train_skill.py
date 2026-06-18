@@ -15,7 +15,34 @@ use --mock-env which runs a lightweight CPU simulation.
 from __future__ import annotations
 
 import argparse
-import json
+import sys
+
+# ── Bootstrap: SimulationApp must be the very first Isaac import ──────────────
+#
+# Isaac Sim registers the carb/omni packages into sys.path inside
+# SimulationApp.__init__. Any `import isaaclab.*` or `import omni.*` before
+# that call results in ModuleNotFoundError: No module named 'carb'.
+#
+# We pre-parse --mock-env / --num-envs before any other setup so we know
+# whether to launch Isaac Sim before the rest of the imports.
+#
+# The mock env path never imports isaaclab, so it skips this entirely.
+def _needs_isaac() -> bool:
+    """Return True if the real Isaac Lab GPU path will be used."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--mock-env", action="store_true", default=True)
+    p.add_argument("--num-envs", type=int, default=1)
+    ns, _ = p.parse_known_args()
+    return not (ns.mock_env or ns.num_envs == 1)
+
+
+if _needs_isaac():
+    # noqa: E402 — intentional top-level import that must precede isaaclab
+    from isaacsim import SimulationApp  # type: ignore[import]
+    _SIM_APP = SimulationApp({"headless": True})
+
+# ── Safe to import everything else now ───────────────────────────────────────
+import json  # noqa: E402
 import logging
 import os
 import time
