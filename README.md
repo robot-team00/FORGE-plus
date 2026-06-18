@@ -22,6 +22,16 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ---
 
+## Simulation preview
+
+25 Franka Panda arms training in parallel — one frame captured from the Isaac Sim headless renderer on a RunPod RTX 2000 Ada pod:
+
+![Isaac Sim render: 5×5 grid of Franka arms at insertion stations](docs/render_preview.png)
+
+*Run `scripts/render_preview.py` to regenerate. See [`docs/rendering.md`](docs/rendering.md) for setup.*
+
+---
+
 ## Architecture
 
 ![Two-layer architecture diagram](docs/architecture.svg)
