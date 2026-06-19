@@ -120,3 +120,74 @@ python scripts/train_skill.py --task task1 --num-envs 1024
 | `libGLU.so.1: No such file or directory` | Missing libGLU stub | Build stub: `gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig` |
 | `check_env.py` passes but render still fails | `check_env` only checks file existence, not Vulkan init | Run the Xvfb + DISPLAY=:1 test above; check `vkCreateInstance` result directly |
 | `ModuleNotFoundError: No module named 'carb'` | `SimulationApp` not imported first | See `scripts/train_skill.py` bootstrap pattern (PR #17) |
+
+---
+
+## Rendering a Video
+
+To produce a video, extend `render_preview.py` — **do not write a new render script from scratch**. The scene setup, camera position, and lighting are already debugged in that file. Only the capture loop needs to change.
+
+Minimal pattern:
+
+```python
+import os, subprocess, time, tempfile
+from pathlib import Path
+
+# --- (copy everything from render_preview.py through warmup step 8) ---
+
+FRAMES = 120   # ~4 s at 30 fps
+OUT_DIR = Path("/tmp/render_frames")
+OUT_DIR.mkdir(exist_ok=True)
+
+print("Rendering frames...")
+for i in range(FRAMES):
+    rep.orchestrator.step(rt_subframes=4)
+    for _ in range(5):
+        app.update()
+    data = rgb.get_data()
+    from PIL import Image
+    Image.fromarray(data[:, :, :3]).save(OUT_DIR / f"frame_{i:04d}.png")
+    if i % 30 == 0:
+        print(f"  frame {i}/{FRAMES}")
+
+app.close()
+
+# Stitch with ffmpeg
+subprocess.run([
+    "ffmpeg", "-y", "-r", "30",
+    "-i", str(OUT_DIR / "frame_%04d.png"),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "docs/render_preview.mp4"
+], check=True)
+print("Done → docs/render_preview.mp4")
+```
+
+---
+
+## Instanced USD Assets and Camera Framing
+
+> ⚠️ **Repeated mistake across sessions:** never use `stage.Traverse()` or any mesh-bounds detection to position the camera. It silently returns nothing for instanced assets (like the Franka panda loaded via `GetReferences().AddReference(...)`), causing the camera to fall back to a bad guess and produce bright-white (dome sky) or near-black frames.
+
+**The camera position for the 5×5 FORGE-plus grid is hardcoded in `render_preview.py` and must not be changed:**
+
+| Parameter | Value |
+|---|---|
+| position | `(0, -6.5, 4.5)` |
+| rotation XYZ | `(-32, 0, 0)` |
+| focal_length | `14.0` (wide-angle) |
+
+This was manually tuned to frame all 25 stations with `SPACING=1.4 m`. Use it as-is.
+
+**Why `stage.Traverse()` fails for the Franka:** the arm is referenced via `pxr.Usd.Prim.GetReferences().AddReference(FRANKA_USD)`. When a prim is instanced, `stage.Traverse()` skips its subtree by default. No amount of filtering or bbox computation will find the robot's geometry this way.
+
+**If you get bright-white frames** (mean pixel value > 200, low variance): the camera is looking at the DomeLight background. This means either the hardcoded position was overridden or the scene center shifted. Fix: restore `position=(0, -6.5, 4.5)`, `rotation=(-32, 0, 0)`.
+
+**If you get black frames**: Xvfb or Vulkan issue — see the Troubleshooting table above.
+
+**Asset file check — do this first:**
+
+```bash
+ls -lh /workspace/FORGE-plus/assets/franka/panda_instanceable.usd
+```
+
+If the file is missing, `render_preview.py` silently falls back to a procedural 3-link arm (visible but not photo-realistic). The video will still render — just without the real Franka mesh.
