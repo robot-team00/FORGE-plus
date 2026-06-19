@@ -226,14 +226,14 @@ class FrankaInsertionEnv(DirectRLEnv):
         self.scene.rigid_objects["peg"] = self._peg
 
         # ---- Ground plane + lighting ----
-        sim_utils.GroundPlaneCfg().func("/World/GroundPlane", sim_utils.GroundPlaneCfg())
+# PATCH GP:         sim_utils.GroundPlaneCfg().func("/World/GroundPlane", sim_utils.GroundPlaneCfg())
         sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8)).func(
             "/World/DomeLight", sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
         )
 
         # Clone + filter
         self.scene.clone_environments(copy_from_source=False)
-        self.scene.filter_collisions(global_prim_paths=["/World/GroundPlane"])
+        self.scene.filter_collisions(global_prim_paths=[])  # PATCH GP: no ground plane
 
     # ------------------------------------------------------------------
     # RL interface
