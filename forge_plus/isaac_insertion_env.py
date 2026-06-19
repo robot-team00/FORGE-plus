@@ -124,7 +124,7 @@ class FrankaInsertionEnv(DirectRLEnv):
             )
             # PATCH: override USD to local file (Nucleus unavailable)
             robot_cfg.spawn.usd_path = "/workspace/FORGE-plus/assets/franka/panda_instanceable.usd"
-            robot_cfg.spawn.activate_contact_sensors = True
+            robot_cfg.spawn.activate_contact_sensors = False  # PATCH: disabled for eval (causes segfault with instanceable USD)
         else:
             robot_cfg = ArticulationCfg(
                 prim_path="/World/envs/env_.*/Robot",
@@ -189,7 +189,7 @@ class FrankaInsertionEnv(DirectRLEnv):
                 size=(0.9, 0.6, 0.4),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.35, 0.2)),
+# PATCH MDL:                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.35, 0.2)),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.2)),
         )
@@ -203,7 +203,7 @@ class FrankaInsertionEnv(DirectRLEnv):
                 size=(0.06, 0.06, 0.05),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.9, 0.9)),
+# PATCH MDL:                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.9, 0.9)),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.425)),
         )
@@ -218,7 +218,7 @@ class FrankaInsertionEnv(DirectRLEnv):
                 height=0.10,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 0.9)),
+# PATCH MDL:                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 0.9)),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.55)),
         )
