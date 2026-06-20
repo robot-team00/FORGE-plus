@@ -1,0 +1,173 @@
+"""FrankaPlaceEnv - Task 3 fragile place/stack DirectRLEnv (real physics).
+
+The Franka lowers its hand onto a kinematic rack/surface; a ContactSensor
+measures the contact force. A hidden per-instance F_break (evaluator only)
+defines breakage. Success = gentle contact (force in a small band) sustained
+for a short window. Over-pressing (force > F_break) breaks the part -- "press
+harder" is maximally destructive here.
+
+F_cmd is sampled per env and exposed to the FORGE policy via FiLM (env.f_cmd_norm);
+the reward penalizes exceeding F_cmd, while breakage uses the hidden F_break.
+Control is 7-dim delta joint-position (no IK dependency -> robust to boot).
+Obs(34) = joint_pos(7)+joint_vel(7)+ee_pos(3)+ee_quat(4)+ft_wrench(6)+phase(7).
+"""
+from __future__ import annotations
+import torch
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationCfg
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.utils import configclass
+
+
+@configclass
+class PlaceEnvCfg(DirectRLEnvCfg):
+    sim: SimulationCfg = SimulationCfg(dt=1.0 / 120.0, render_interval=4)
+    episode_length_s: float = 6.0
+    decimation: int = 2
+    observation_space: int = 34
+    action_space: int = 7
+    state_space: int = 0
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=2.5, replicate_physics=True)
+    action_scale: float = 0.05
+    rack_top_z: float = 0.45
+    f_cmd_lo: float = 10.0
+    f_cmd_hi: float = 100.0
+    settle_force_n: float = 3.0
+    settle_steps: int = 20
+    contact_eps_n: float = 0.5
+
+
+class FrankaPlaceEnv(DirectRLEnv):
+    cfg: PlaceEnvCfg
+    NUM_PHASES = 7
+
+    def __init__(self, cfg, render_mode=None, **kw):
+        super().__init__(cfg, render_mode=render_mode, **kw)
+        self._actions = torch.zeros(self.num_envs, 7, device=self.device)
+        self._phase = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._f_cmd = torch.zeros(self.num_envs, device=self.device)
+        self._f_break = torch.zeros(self.num_envs, device=self.device)
+        self._settle_ctr = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._broke = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._succeeded = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._ee_idx = self._robot.find_bodies("panda_hand")[0][0]
+        self._sample_episode(torch.arange(self.num_envs, device=self.device))
+
+    def _setup_scene(self):
+        try:
+            from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
+            robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+            robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
+            robot_cfg.spawn.activate_contact_sensors = True
+        except Exception as e:
+            raise RuntimeError(f"FRANKA_PANDA_CFG unavailable: {e}")
+        self._robot = Articulation(robot_cfg)
+        self.scene.articulations["robot"] = self._robot
+
+        table = RigidObject(RigidObjectCfg(
+            prim_path="/World/envs/env_.*/Table",
+            spawn=sim_utils.CuboidCfg(size=(0.9, 0.6, 0.4),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg()),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.2))))
+        self.scene.rigid_objects["table"] = table
+
+        rack = RigidObject(RigidObjectCfg(
+            prim_path="/World/envs/env_.*/Rack",
+            spawn=sim_utils.CuboidCfg(size=(0.12, 0.12, 0.05),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg()),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.425))))
+        self.scene.rigid_objects["rack"] = rack
+
+        self._contact = ContactSensor(ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/panda_hand",
+            update_period=0.0, history_length=1, debug_vis=False,
+            filter_prim_paths_expr=["/World/envs/env_.*/Rack"]))
+        self.scene.sensors["contact"] = self._contact
+
+        sim_utils.DomeLightCfg(intensity=2000.0).func("/World/Light", sim_utils.DomeLightCfg(intensity=2000.0))
+        self.scene.clone_environments(copy_from_source=False)
+
+    def _sample_episode(self, ids):
+        n = len(ids)
+        self._f_cmd[ids] = torch.rand(n, device=self.device) * (self.cfg.f_cmd_hi - self.cfg.f_cmd_lo) + self.cfg.f_cmd_lo
+        frag = torch.rand(n, device=self.device) < 0.5
+        fb = torch.where(frag,
+                         torch.rand(n, device=self.device) * 20 + 15,
+                         torch.rand(n, device=self.device) * 110 + 150)
+        self._f_break[ids] = fb
+
+    def _contact_force(self):
+        f = self._contact.data.net_forces_w
+        if f is None:
+            return torch.zeros(self.num_envs, device=self.device)
+        if f.dim() == 3:
+            return torch.norm(f, dim=-1).amax(dim=1)
+        return torch.norm(f, dim=-1)
+
+    def f_cmd_norm(self):
+        return (self._f_cmd / 120.0).unsqueeze(-1)
+
+    def _pre_physics_step(self, actions):
+        self._actions = actions.clamp(-1, 1)
+
+    def _apply_action(self):
+        jt = self._robot.data.joint_pos[:, :7] + self._actions * self.cfg.action_scale
+        self._robot.set_joint_position_target(jt, joint_ids=list(range(7)))
+
+    def _get_observations(self):
+        jp = self._robot.data.joint_pos[:, :7]
+        jv = self._robot.data.joint_vel[:, :7]
+        ee_p = self._robot.data.body_pos_w[:, self._ee_idx, :] - self.scene.env_origins
+        ee_q = self._robot.data.body_quat_w[:, self._ee_idx, :]
+        cf = self._contact_force().unsqueeze(-1)
+        ft = torch.cat([torch.zeros(self.num_envs, 2, device=self.device), cf,
+                        torch.zeros(self.num_envs, 3, device=self.device)], dim=-1)
+        ph = torch.zeros(self.num_envs, self.NUM_PHASES, device=self.device)
+        ph.scatter_(1, self._phase.unsqueeze(1), 1.0)
+        return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, ph], dim=-1)}
+
+    def _get_rewards(self):
+        ee_z = self._robot.data.body_pos_w[:, self._ee_idx, 2] - self.scene.env_origins[:, 2]
+        cf = self._contact_force()
+        target_z = self.cfg.rack_top_z + 0.10
+        height_err = (ee_z - target_z).clamp(min=0.0)
+        in_contact = cf > self.cfg.contact_eps_n
+        gentle = in_contact & (cf < self.cfg.settle_force_n)
+        r = -0.5 * height_err - 0.02 * cf
+        r = r - (cf > self._f_cmd).float() * 1.0
+        r = r + gentle.float() * 0.5
+        r = r - self._broke.float() * 10.0 + self._succeeded.float() * 10.0
+        return r
+
+    def _get_dones(self):
+        cf = self._contact_force()
+        self._broke = cf > self._f_break
+        gentle = (cf > self.cfg.contact_eps_n) & (cf < self.cfg.settle_force_n)
+        self._settle_ctr = torch.where(gentle, self._settle_ctr + 1, torch.zeros_like(self._settle_ctr))
+        self._succeeded = self._settle_ctr >= self.cfg.settle_steps
+        terminated = self._broke | self._succeeded
+        truncated = self.episode_length_buf >= self.max_episode_length - 1
+        return terminated, truncated
+
+    def _reset_idx(self, env_ids):
+        super()._reset_idx(env_ids)
+        jp = self._robot.data.default_joint_pos[env_ids]
+        jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
+        self._robot.write_joint_state_to_sim(jp, jv, env_ids=env_ids)
+        self._phase[env_ids] = 0
+        self._settle_ctr[env_ids] = 0
+        self._broke[env_ids] = False
+        self._succeeded[env_ids] = False
+        self._sample_episode(env_ids)
+
+
+import gymnasium as gym
+gym.register(id="FORGE-Place-v0",
+             entry_point="forge_plus.isaac_place_env:FrankaPlaceEnv",
+             kwargs={"cfg": PlaceEnvCfg()})
