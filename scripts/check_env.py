@@ -58,7 +58,7 @@ def main():
     all_ok &= check("libGLU.so.1", bool(glu_found), glu_found or "not found — run: gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig")
 
     # venv check
-    venv_python = "/workspace/FORGE-plus/.venv/bin/python"
+    venv_python = "/workspace/.venv/bin/python"
     all_ok &= check("venv", os.path.exists(venv_python), venv_python)
 
     print()

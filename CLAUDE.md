@@ -8,13 +8,13 @@ Full root-cause writeup + troubleshooting: **docs/ISAAC_RTX_RENDERING.md**
 
 ### After every pod (re)start, run once:
 
-    cd /workspace/FORGE-plus
+    cd /workspace/FORGE-plus_main      # or your task clone
     bash scripts/setup_runtime.sh     # restores libEGL (Vulkan), shader cache, Xvfb :1
 
 ### Render the eval rollout (photorealistic Franka Panda, RTX path-traced):
 
-    cd /workspace/FORGE-plus
-    DISPLAY=:1 .venv/bin/python scripts/render_eval_video.py
+    cd /workspace/FORGE-plus_main      # or your task clone
+    DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py
     # -> docs/eval_episode.mp4  (1920x1080, 30fps)
     # NOTE: the FIRST render after a restart is SLOW (~8 min) because Isaac compiles
     # the RTX pipeline shaders once; the cache then persists and later runs are fast.
@@ -34,7 +34,7 @@ Full root-cause writeup + troubleshooting: **docs/ISAAC_RTX_RENDERING.md**
 5. Use **assets/franka/franka.usd** (has real meshes). franka_visuals.usd has NO geometry.
    Reference it under a *parent* Xform and put your translate/rotate/scale on the parent,
    or you hit "xformOp:translate already exists" (the asset already has root xform ops).
-6. Run Isaac/video code with **.venv/bin/python** - the JupyterLab kernel python lacks pxr/imageio.
+6. Run Isaac/video code with **/workspace/.venv/bin/python** (the venv is shared at /workspace/.venv, outside the repo) - the JupyterLab kernel python lacks pxr/imageio.
 
 ## Environment
 - GPU: NVIDIA RTX 2000 Ada (sm_89), driver 570.172.08. Isaac Sim 5.1.0. Vulkan 1.4.303.

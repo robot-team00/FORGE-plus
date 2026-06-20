@@ -14,11 +14,11 @@ isaacsim-extscache-kit wheel via HTTP range requests (no full download).
 Idempotent: does nothing if the cache is already present.
 
 Run with the Isaac venv python:
-  /workspace/FORGE-plus/.venv/bin/python scripts/fetch_shadercache.py
+  /workspace/.venv/bin/python scripts/fetch_shadercache.py
 """
 import os, sys, glob, subprocess
 
-VENV_SP = "/workspace/FORGE-plus/.venv/lib/python3.11/site-packages"
+VENV_SP = "/workspace/.venv/lib/python3.11/site-packages"
 WHEEL = ("https://pypi.nvidia.com/isaacsim-extscache-kit/"
          "isaacsim_extscache_kit-5.1.0.0-cp311-none-manylinux_2_35_x86_64.whl")
 EXT_GLOB = os.path.join(VENV_SP, "isaacsim/extscache/omni.gpu_foundation.shadercache.vulkan-*")
