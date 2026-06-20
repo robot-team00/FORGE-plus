@@ -140,9 +140,11 @@ class FrankaPlaceEnv(DirectRLEnv):
         height_err = (ee_z - target_z).clamp(min=0.0)
         in_contact = cf > self.cfg.contact_eps_n
         gentle = in_contact & (cf < self._f_cmd)
-        r = -0.5 * height_err - 0.02 * cf
-        r = r - (cf > self._f_cmd).float() * 1.0
-        r = r + gentle.float() * 0.5
+        # reach the surface, then strongly reward GENTLE in-budget contact so the
+        # policy is pulled into placing (not hovering); only penalize over-budget.
+        r = -0.5 * height_err
+        r = r + gentle.float() * 2.0
+        r = r - (cf > self._f_cmd).float() * 0.5
         r = r - self._broke.float() * 10.0 + self._succeeded.float() * 10.0
         return r
 
