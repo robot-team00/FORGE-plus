@@ -34,6 +34,25 @@ def main():
     p.add_argument("--ckpt", default=None)
     args = p.parse_args()
     dev = torch.device(args.device)
+    # --- optional W&B logging (key from /workspace/.jr_notes, not printed) ---
+    USE_WANDB = False
+    try:
+        import re, wandb
+        txt = open("/workspace/.jr_notes").read()
+        key = None
+        for ln in txt.splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#") or ln.startswith(("ghp_", "github_pat_")):
+                continue
+            if re.fullmatch(r"[0-9A-Za-z]{40}", ln):
+                key = ln; break
+        if key:
+            os.environ["WANDB_API_KEY"] = key
+            wandb.init(project="forge-plus-task3", name=f"place_{args.gripper}", config=vars(args))
+            USE_WANDB = True
+            print("wandb logging ON", flush=True)
+    except Exception as e:
+        print("wandb off:", str(e)[:80], flush=True)
     ckpt = args.ckpt or f"checkpoints/task3_{args.gripper}.pt"
     os.makedirs(os.path.dirname(ckpt), exist_ok=True)
 
@@ -94,6 +113,8 @@ def main():
             fps = (it + 1) * args.rollout * N / (time.perf_counter() - t0)
             print(f"it {it} rew {R.mean().item():.3f} ret {bRet.mean().item():.2f} "
                   f"succ {succ:.3f} brk {brk:.3f} fps {fps:.0f}", flush=True)
+            if USE_WANDB:
+                wandb.log({"rew": R.mean().item(), "ret": bRet.mean().item(), "succ": succ, "brk": brk}, step=it)
             torch.save({"policy_state_dict": policy.state_dict(), "policy_cfg": pcfg}, ckpt)
     torch.save({"policy_state_dict": policy.state_dict(), "policy_cfg": pcfg}, ckpt)
     print("TRAIN_DONE ->", ckpt, flush=True)

@@ -138,7 +138,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         target_z = self.cfg.rack_top_z + 0.10
         height_err = (ee_z - target_z).clamp(min=0.0)
         in_contact = cf > self.cfg.contact_eps_n
-        gentle = in_contact & (cf < self.cfg.settle_force_n)
+        gentle = in_contact & (cf < self._f_cmd)
         r = -0.5 * height_err - 0.02 * cf
         r = r - (cf > self._f_cmd).float() * 1.0
         r = r + gentle.float() * 0.5
@@ -148,7 +148,7 @@ class FrankaPlaceEnv(DirectRLEnv):
     def _get_dones(self):
         cf = self._contact_force()
         self._broke = cf > self._f_break
-        gentle = (cf > self.cfg.contact_eps_n) & (cf < self.cfg.settle_force_n)
+        gentle = (cf > self.cfg.contact_eps_n) & (cf < self._f_cmd)
         self._settle_ctr = torch.where(gentle, self._settle_ctr + 1, torch.zeros_like(self._settle_ctr))
         self._succeeded = self._settle_ctr >= self.cfg.settle_steps
         terminated = self._broke | self._succeeded
