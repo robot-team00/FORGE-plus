@@ -11,10 +11,10 @@ independent bugs that had to be fixed so nobody re-breaks them.
 ## TL;DR runbook
 
 ```bash
-cd /workspace/FORGE-plus
+cd /workspace/FORGE-plus_main      # or your task clone
 git pull                          # get latest scripts + this doc
 bash scripts/setup_runtime.sh     # restore libEGL (Vulkan) + shader cache + Xvfb :1  (idempotent)
-DISPLAY=:1 .venv/bin/python scripts/render_eval_video.py   # -> docs/eval_episode.mp4
+DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py   # -> docs/eval_episode.mp4
 ```
 
 - First render after a pod restart is **slow (~8 min)**: Isaac compiles the full RTX
@@ -105,10 +105,10 @@ xform ops (`xformOp:translate already exists`).
 |---|---|---|
 | `vkCreateInstance ... ERROR_INCOMPATIBLE_DRIVER` | libEGL.so.1 missing | `bash scripts/setup_runtime.sh` (or apt install libegl1 ...) |
 | `Cannot load shader file ...GenerateMipMap...` | Vulkan dead OR shader cache stub | setup_runtime.sh (covers both) |
-| `Shader caches are missing from the application` | gpu_foundation cache stub | `.venv/bin/python scripts/fetch_shadercache.py` |
+| `Shader caches are missing from the application` | gpu_foundation cache stub | `/workspace/.venv/bin/python scripts/fetch_shadercache.py` |
 | `[VID] frame N EMPTY buffer` repeating | no `rep.orchestrator.step()` OR Vulkan dead | check both fixes #1 and #3 |
 | Empty grey frame (renders, no objects) | camera looking at floor | use `look_at=` not `rotation=` |
 | Table/peg render but no arm | wrong asset (franka_visuals.usd) | use `franka.usd` under a parent Xform |
 | `xformOp:translate already exists` | transforms on the referenced prim | put transforms on a parent Xform |
 | First render hangs ~8 min at GPU 100% | one-time RTX shader compile | normal; wait. Cache persists for next time |
-| `No module named 'pxr'/'imageio'` | used kernel python | use `.venv/bin/python` |
+| `No module named 'pxr'/'imageio'` | used kernel python | use `/workspace/.venv/bin/python` |

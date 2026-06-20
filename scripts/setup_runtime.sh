@@ -10,8 +10,9 @@
 #   2. Xvfb on :1 (Vulkan needs an X display in this headless container).
 # The Isaac shader cache lives under .venv (persists); we verify/restore it too.
 set -u
-REPO="/workspace/FORGE-plus"
-VENV_PY="$REPO/.venv/bin/python"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+VENV="/workspace/.venv"
+VENV_PY="$VENV/bin/python"
 L=/usr/lib/x86_64-linux-gnu
 
 echo "[setup] 1/3 GLVND (libEGL.so.1) ..."
@@ -51,4 +52,4 @@ DISPLAY=:1 vulkaninfo --summary 2>/dev/null | grep -E "deviceName|driverName" ||
   echo "[setup]   (vulkaninfo not conclusive - install vulkan-tools to verify)"
 
 echo "[setup] DONE. Render with:"
-echo "    cd $REPO && DISPLAY=:1 .venv/bin/python scripts/render_eval_video.py"
+echo "    cd $REPO && DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py"
