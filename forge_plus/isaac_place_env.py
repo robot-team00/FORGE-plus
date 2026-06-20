@@ -136,7 +136,7 @@ class FrankaPlaceEnv(DirectRLEnv):
     def _get_rewards(self):
         ee_z = self._robot.data.body_pos_w[:, self._ee_idx, 2] - self.scene.env_origins[:, 2]
         cf = self._contact_force()
-        target_z = self.cfg.rack_top_z + 0.06
+        target_z = self.cfg.rack_top_z  # zero-point AT surface -> pull into contact
         height_err = (ee_z - target_z).clamp(min=0.0)
         in_contact = cf > self.cfg.contact_eps_n
         gentle = in_contact & (cf < self._f_cmd)
