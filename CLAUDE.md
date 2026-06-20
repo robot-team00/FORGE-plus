@@ -41,7 +41,7 @@ Full root-cause writeup + troubleshooting: **docs/ISAAC_RTX_RENDERING.md**
 
     cd /workspace/FORGE-plus_main      # or your task clone
     DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py
-    # -> docs/eval_episode.mp4  (1920x1080, 30fps)
+    # -> docs/eval_episode.mp4  (1920x1080, 24fps)
     # NOTE: the FIRST render after a restart is SLOW (~8 min) because Isaac compiles
     # the RTX pipeline shaders once; the cache then persists and later runs are fast.
 
