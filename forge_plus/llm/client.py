@@ -133,6 +133,7 @@ class OpenAICompatibleClient(LLMClient):
         kwargs: dict[str, Any] = dict(
             model=self._model,
             max_tokens=self._max_tokens,
+            temperature=0.0,  # greedy decoding: reproducible budgets/recoveries
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_text},
