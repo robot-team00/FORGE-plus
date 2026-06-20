@@ -21,6 +21,8 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.utils import configclass
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+from isaaclab.utils.math import subtract_frame_transforms
 
 
 @configclass
@@ -33,6 +35,7 @@ class PlaceEnvCfg(DirectRLEnvCfg):
     state_space: int = 0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=2.5, replicate_physics=True)
     action_scale: float = 0.08
+    ee_action_scale: float = 0.02
     rack_top_z: float = 0.38
     f_cmd_lo: float = 10.0
     f_cmd_hi: float = 100.0
@@ -57,6 +60,10 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._ee_idx = self._robot.find_bodies("panda_hand")[0][0]
         self._arm_ids = self._robot.find_joints(["panda_joint[1-7]"])[0]
         self._jt_target = self._robot.data.default_joint_pos[:, self._arm_ids].clone()
+        self._jacobi_idx = self._ee_idx - 1  # fixed base: jacobian body index
+        self._ik = DifferentialIKController(
+            DifferentialIKControllerCfg(command_type="position", use_relative_mode=True, ik_method="dls"),
+            num_envs=self.num_envs, device=self.device)
         self._sample_episode(torch.arange(self.num_envs, device=self.device))
 
     def _setup_scene(self):
@@ -87,7 +94,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self.scene.rigid_objects["rack"] = rack
 
         self._contact = ContactSensor(ContactSensorCfg(
-            prim_path="/World/envs/env_.*/Robot/panda_hand",
+            prim_path="/World/envs/env_.*/Robot/panda_(hand|leftfinger|rightfinger)",
             update_period=0.0, history_length=1, debug_vis=False,
             filter_prim_paths_expr=["/World/envs/env_.*/Rack"]))
         self.scene.sensors["contact"] = self._contact
@@ -118,8 +125,16 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._actions = actions.clamp(-1, 1)
 
     def _apply_action(self):
-        self._jt_target = self._jt_target + self._actions * self.cfg.action_scale
-        self._robot.set_joint_position_target(self._jt_target, joint_ids=self._arm_ids)
+        # FORGE-style task-space control: action[:, :3] = delta EE position (m).
+        jac = self._robot.root_physx_view.get_jacobians()[:, self._jacobi_idx, :, :7]
+        root_pos = self._robot.data.root_pos_w
+        root_quat = self._robot.data.root_quat_w
+        ee_pos_w = self._robot.data.body_pos_w[:, self._ee_idx]
+        ee_quat_w = self._robot.data.body_quat_w[:, self._ee_idx]
+        ee_pos_b, ee_quat_b = subtract_frame_transforms(root_pos, root_quat, ee_pos_w, ee_quat_w)
+        self._ik.set_command(self._actions[:, :3] * self.cfg.ee_action_scale, ee_pos_b, ee_quat_b)
+        joint_des = self._ik.compute(ee_pos_b, ee_quat_b, jac, self._robot.data.joint_pos[:, :7])
+        self._robot.set_joint_position_target(joint_des, joint_ids=self._arm_ids)
 
     def _get_observations(self):
         jp = self._robot.data.joint_pos[:, :7]
