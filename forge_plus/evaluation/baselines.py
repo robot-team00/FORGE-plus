@@ -86,7 +86,9 @@ class BaselineRunner:
 
                 if outcome == TaskOutcome.BROKEN:
                     net = obs.contact_step.insert_pos_mm - attempt_start_insert
-                    result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, net))
+                    fmode = self.env.current_failure_mode()
+                    result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, net, failure_mode=fmode))
+                    result.failure_mode = fmode
                     result.termination = EpisodeTermination.BROKEN
                     self._finalize(result, all_contact, f_max_n)
                     return result
@@ -95,12 +97,15 @@ class BaselineRunner:
 
             if outcome == TaskOutcome.SUCCESS:
                 result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, None, peak, net))
+                result.failure_mode = None
                 result.termination = EpisodeTermination.SUCCESS
                 break
 
             # Recovery / next attempt
             recovery_action = self._choose_recovery(attempt_idx, obs, f_max_n)
-            result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, recovery_action, peak, net))
+            fmode = self.env.current_failure_mode()
+            result.failure_mode = fmode
+            result.attempts.append(AttemptRecord(attempt_idx, steps, outcome, recovery_action, peak, net, failure_mode=fmode))
 
             if recovery_action == "abort":
                 result.termination = EpisodeTermination.FAIL_ABORTED

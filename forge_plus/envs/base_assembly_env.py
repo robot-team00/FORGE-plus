@@ -109,6 +109,14 @@ class BaseAssemblyEnv(ABC):
         """True if the task sub-phase is complete (success or stuck)."""
         ...
 
+    def current_failure_mode(self) -> str | None:
+        """Last failure-mode label, if the env classifies failures.
+
+        Place/stack envs override this (over_press / edge_load / tip).
+        Insertion envs leave it as None.
+        """
+        return None
+
     @property
     @abstractmethod
     def current_phase(self) -> TaskPhase:

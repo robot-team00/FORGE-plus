@@ -62,6 +62,9 @@ class EvaluationMetrics:
     gripper_breakage_rates: dict[str, float] = field(default_factory=dict)
     f_max_consistency_n: float = 0.0      # |mean(F_max_panda) - mean(F_max_robotiq)|
 
+    # Failure-mode breakdown (place/stack: over_press | edge_load | tip | under_seat)
+    failure_mode_distribution: dict[str, float] = field(default_factory=dict)
+
     # Meta
     n_episodes: int = 0
     n_fragile: int = 0
@@ -158,6 +161,16 @@ def compute_metrics(
         panda_fmax = np.mean([r.f_max_n for r in results if r.gripper == "franka_panda"])
         robotiq_fmax = np.mean([r.f_max_n for r in results if r.gripper == "robotiq_2f140"])
         m.f_max_consistency_n = float(abs(panda_fmax - robotiq_fmax))
+
+    fm_counts: dict[str, int] = {}
+    for r in results:
+        fm = getattr(r, "failure_mode", None)
+        if fm and not r.succeeded:
+            fm_counts[fm] = fm_counts.get(fm, 0) + 1
+    total_fm = sum(fm_counts.values())
+    m.failure_mode_distribution = (
+        {k: v / total_fm for k, v in fm_counts.items()} if total_fm else {}
+    )
 
     return m
 

@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         choices=["ours", "no_ceiling", "fixed_global", "press_harder", "heuristic", "vision_llm", "oracle", "all"],
         default="all",
     )
-    p.add_argument("--backend", choices=["anthropic", "local", "mock"], default="mock",
+    p.add_argument("--backend", choices=["anthropic", "local", "mock", "heuristic"], default="mock",
                    help="LLM backend (mock for testing, anthropic or local for real runs)")
     p.add_argument("--local-url", default="http://localhost:11434/v1",
                    help="Base URL for local OpenAI-compatible server (--backend local)")
@@ -106,6 +106,15 @@ def build_env(args: argparse.Namespace):
         log.info(f"Using IsaacLabAssemblyEnv: num_envs={args.num_envs}, device={args.device}")
         return IsaacLabAssemblyEnv(cfg)
     else:
+        from forge_plus.envs.routing_env import is_place_task
+        if args.task == "all":
+            from forge_plus.envs.routing_env import RoutingAssemblyEnv
+            log.info("Using RoutingAssemblyEnv (mock insertion + place/stack)")
+            return RoutingAssemblyEnv()
+        if is_place_task(args.task):
+            from forge_plus.envs.place_stack_env import PlaceStackEnv, PlaceStackEnvConfig
+            log.info("Using PlaceStackEnv (--task %s)", args.task)
+            return PlaceStackEnv(PlaceStackEnvConfig())
         from forge_plus.envs.mock_assembly_env import MockAssemblyEnv, MockEnvConfig
         log.info("Using MockAssemblyEnv (--env mock)")
         return MockAssemblyEnv(MockEnvConfig())
@@ -118,7 +127,7 @@ def build_episode_configs(task: str, gripper: str, n_episodes: int, seed: int):
     task_objects = {
         "task1": ["abs_round_connector", "steel_peg"],
         "task2": ["resin_planet_gear", "metal_planet_gear"],
-        "task3": ["glass_bowl", "ceramic_plate", "metal_plate"],
+        "task3": ["glass_bowl", "ceramic_plate", "metal_plate", "sturdy_mug"],
     }
     grippers = ["franka_panda", "robotiq_2f140"] if gripper == "both" else [gripper]
     tasks = ["task1", "task2", "task3"] if task == "all" else [task]

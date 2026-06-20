@@ -193,6 +193,104 @@ class MockLLMClient(LLMClient):
         raise ValueError(f"Unknown call type in MockLLMClient: {call_type}")
 
 
+
+class HeuristicLLMClient(LLMClient):
+    """Deterministic, identity-driven stand-in for a frozen reasoning LLM.
+
+    Unlike MockLLMClient (constant budget), this reasons from the *object
+    identity* the way a capable LLM would, and from the *force signature* for
+    recovery. It lets the full Task-3 pipeline run -- and the budget report be
+    meaningful -- with no API key.
+
+    Budget rule (identity only -- never sees F_break): a material-class base
+    ceiling, scaled down for brittleness / thin walls and up for thick walls /
+    robustness. The point the benchmark probes: a borosilicate glass bowl gets a
+    far lower ceiling than a thick stoneware mug, from identity alone.
+    """
+
+    _MATERIAL_BASE_N = {
+        "glass": 16.0,
+        "ceramic": 18.0,
+        "resin": 42.0,
+        "abs": 45.0,
+        "stoneware": 60.0,
+        "alumin": 85.0,
+        "steel": 110.0,
+    }
+
+    def name(self) -> str:
+        return "heuristic"
+
+    def call(self, user_payload: dict[str, Any]) -> dict[str, Any]:
+        call_type = user_payload.get("call", "")
+        if call_type == "set_force_ceiling":
+            return self._set_budget(user_payload)
+        if call_type == "select_recovery":
+            return self._select_recovery(user_payload)
+        raise ValueError(f"Unknown call type in HeuristicLLMClient: {call_type}")
+
+    def _set_budget(self, payload: dict[str, Any]) -> dict[str, Any]:
+        obj = payload.get("object", {})
+        material = str(obj.get("material", "")).lower()
+        tags = [str(t).lower() for t in obj.get("geometry_tags", [])]
+        cap = float(payload.get("global_hard_cap_N", 120.0))
+
+        base = 50.0
+        for key, val in self._MATERIAL_BASE_N.items():
+            if key in material:
+                base = val
+                break
+
+        brittle = "brittle" in tags
+        if brittle:
+            base *= 0.62
+        if "thin_wall" in tags:
+            base *= 0.80
+        if "curved_rim" in tags:
+            base *= 0.90
+        if "thick_wall" in tags:
+            base *= 1.10
+        if any(t.startswith("robust") for t in tags):
+            base *= 1.05
+
+        f_max = max(0.0, min(base, cap))
+        confidence = 0.85 if (brittle or base < 25) else 0.7
+        rationale = (
+            f"{material or 'unknown material'}"
+            + (", brittle" if brittle else "")
+            + f"; identity-only ceiling {f_max:.1f} N"
+            + (" (fragile -- keep low; press-harder would break it)" if f_max < 25 else "")
+        )
+        return {
+            "F_max_N": round(f_max, 1),
+            "per_axis_N": {"insertion": round(f_max, 1), "lateral": round(f_max * 0.4, 1)},
+            "confidence": confidence,
+            "rationale": rationale,
+        }
+
+    def _select_recovery(self, payload: dict[str, Any]) -> dict[str, Any]:
+        sig = payload.get("signature", {})
+        attempt = int(payload.get("attempt", 0))
+        f_max = payload.get("F_max_N", 0.0)
+        lateral_bias = str(sig.get("lateral_bias", "none"))
+        torque_z = abs(float(sig.get("torque_z_Nm", 0.0)))
+        slip = int(sig.get("slip_events", 0))
+        peak_lat = float(sig.get("peak_lateral_N", 0.0))
+
+        if attempt >= 4:
+            action, why = "abort", "repeated failures; abort rather than risk the part"
+        elif lateral_bias != "none" or peak_lat > 2.0:
+            action, why = "rotate_align", "lateral bias at contact (edge-load) -> realign to surface"
+        elif torque_z > 0.3:
+            action, why = "rotate_align", "EE torque (tipping) -> realign before re-placing"
+        elif slip > 0:
+            action, why = "regrasp", "grasp slip detected -> re-centre the part"
+        else:
+            action, why = "retract_and_reapproach", "lift off and re-approach within the same budget"
+
+        return {"action": action, "params": {}, "keep_F_max_N": f_max, "rationale": why}
+
+
 def build_client(cfg: dict[str, Any]) -> LLMClient:
     """Factory from config dict."""
     backend = cfg.get("backend", "anthropic")
@@ -220,4 +318,6 @@ def build_client(cfg: dict[str, Any]) -> LLMClient:
             budget_n=cfg.get("budget_n", 30.0),
             recovery_action=cfg.get("recovery_action", "retract_and_reapproach"),
         )
+    elif backend == "heuristic":
+        return HeuristicLLMClient()
     raise ValueError(f"Unknown LLM backend: {backend}")

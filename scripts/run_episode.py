@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gripper", choices=["franka_panda", "robotiq_2f140"], default="franka_panda")
     p.add_argument("--k-max", type=int, default=5, help="Max recovery attempts")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--backend", choices=["anthropic", "local", "mock"], default="mock")
+    p.add_argument("--backend", choices=["anthropic", "local", "mock", "heuristic"], default="mock")
     p.add_argument("--local-url", default="http://localhost:11434/v1",
                    help="Base URL for local OpenAI-compatible server (--backend local)")
     p.add_argument("--local-model", default="qwen2.5:7b-instruct",
@@ -44,6 +44,8 @@ def main() -> None:
     )
 
     from forge_plus.envs.mock_assembly_env import MockAssemblyEnv, MockEnvConfig
+    from forge_plus.envs.place_stack_env import PlaceStackEnv, PlaceStackEnvConfig
+    from forge_plus.envs.routing_env import is_place_task
     from forge_plus.envs.object_configs import OBJECT_REGISTRY
     from forge_plus.envs.base_assembly_env import EpisodeConfig
     from forge_plus.episode import EpisodeRunner
@@ -83,7 +85,8 @@ def main() -> None:
         llm_cfg["base_url"] = args.local_url
         llm_cfg["model"] = args.local_model
     llm_client = build_client(llm_cfg)
-    env = MockAssemblyEnv(MockEnvConfig())
+    env = (PlaceStackEnv(PlaceStackEnvConfig()) if is_place_task(args.task)
+           else MockAssemblyEnv(MockEnvConfig()))
     skill = FORGESkill(SkillConfig(policy_cfg=PolicyConfig()))
     rec_exec = RecoveryActionExecutor()
 
