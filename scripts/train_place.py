@@ -39,7 +39,7 @@ def main():
     try:
         import re, wandb
         txt = open("/workspace/.jr_notes").read()
-        m = re.search(r"^WANDB_API_KEY=(\\S+)", txt, re.M)
+        m = re.search(r"^WANDB_API_KEY=(\S+)", txt, re.M)
         key = m.group(1) if m else None
         if key:
             os.environ["WANDB_API_KEY"] = key
