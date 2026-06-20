@@ -88,7 +88,7 @@ class BudgetSetter:
                 "confidence (float 0-1), rationale (string). "
                 f"F_max_N must be between 0 and {self.global_hard_cap_n}. "
                 "Do not reference F_break — you have no access to it. "
-                "Reason only from the object identity provided. As calibration guidance, typical SAFE sustained contact forces that avoid any damage, by material class: brittle glass or thin ceramic ~8-18 N; rigid plastics ~25-45 N; thick stoneware or wood ~40-80 N; metals ~80-115 N. Any object whose fragility tags include 'brittle' (e.g. glass, ceramic, resin) is fragile: use the 8-18 N band regardless of its size or wall thickness. Pick a conservative value inside the band that matches this object's material, wall thickness and fragility tags. For place or stack tasks excess normal force is the dominant failure, so prefer the lower end of the band."
+                "Reason only from the object identity provided."
             ),
         }
 
