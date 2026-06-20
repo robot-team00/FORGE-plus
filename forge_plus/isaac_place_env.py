@@ -32,8 +32,8 @@ class PlaceEnvCfg(DirectRLEnvCfg):
     action_space: int = 7
     state_space: int = 0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=2.5, replicate_physics=True)
-    action_scale: float = 0.05
-    rack_top_z: float = 0.45
+    action_scale: float = 0.08
+    rack_top_z: float = 0.38
     f_cmd_lo: float = 10.0
     f_cmd_hi: float = 100.0
     settle_force_n: float = 3.0
@@ -55,6 +55,8 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._broke = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._succeeded = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._ee_idx = self._robot.find_bodies("panda_hand")[0][0]
+        self._arm_ids = self._robot.find_joints(["panda_joint[1-7]"])[0]
+        self._jt_target = self._robot.data.default_joint_pos[:, self._arm_ids].clone()
         self._sample_episode(torch.arange(self.num_envs, device=self.device))
 
     def _setup_scene(self):
@@ -81,7 +83,7 @@ class FrankaPlaceEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(size=(0.12, 0.12, 0.05),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg()),
-            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.425))))
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.355))))
         self.scene.rigid_objects["rack"] = rack
 
         self._contact = ContactSensor(ContactSensorCfg(
@@ -103,12 +105,11 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._f_break[ids] = fb
 
     def _contact_force(self):
-        f = self._contact.data.net_forces_w
-        if f is None:
+        fm = getattr(self._contact.data, "force_matrix_w", None)
+        if fm is None:
             return torch.zeros(self.num_envs, device=self.device)
-        if f.dim() == 3:
-            return torch.norm(f, dim=-1).amax(dim=1)
-        return torch.norm(f, dim=-1)
+        # fm: (N, n_bodies, n_filters, 3) -> per-env rack contact-force magnitude
+        return torch.norm(fm, dim=-1).reshape(self.num_envs, -1).sum(dim=1)
 
     def f_cmd_norm(self):
         return (self._f_cmd / 120.0).unsqueeze(-1)
@@ -117,8 +118,8 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._actions = actions.clamp(-1, 1)
 
     def _apply_action(self):
-        jt = self._robot.data.joint_pos[:, :7] + self._actions * self.cfg.action_scale
-        self._robot.set_joint_position_target(jt, joint_ids=list(range(7)))
+        self._jt_target = self._jt_target + self._actions * self.cfg.action_scale
+        self._robot.set_joint_position_target(self._jt_target, joint_ids=self._arm_ids)
 
     def _get_observations(self):
         jp = self._robot.data.joint_pos[:, :7]
@@ -135,7 +136,7 @@ class FrankaPlaceEnv(DirectRLEnv):
     def _get_rewards(self):
         ee_z = self._robot.data.body_pos_w[:, self._ee_idx, 2] - self.scene.env_origins[:, 2]
         cf = self._contact_force()
-        target_z = self.cfg.rack_top_z + 0.10
+        target_z = self.cfg.rack_top_z + 0.06
         height_err = (ee_z - target_z).clamp(min=0.0)
         in_contact = cf > self.cfg.contact_eps_n
         gentle = in_contact & (cf < self._f_cmd)
@@ -164,6 +165,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._settle_ctr[env_ids] = 0
         self._broke[env_ids] = False
         self._succeeded[env_ids] = False
+        self._jt_target[env_ids] = self._robot.data.default_joint_pos[env_ids][:, self._arm_ids]
         self._sample_episode(env_ids)
 
 
