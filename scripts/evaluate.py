@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
                    help="LLM backend (mock for testing, anthropic or local for real runs)")
     p.add_argument("--local-url", default="http://localhost:11434/v1",
                    help="Base URL for local OpenAI-compatible server (--backend local)")
-    p.add_argument("--local-model", default="qwen2.5:7b-instruct",
+    p.add_argument("--local-model", default="llama3.1:8b",
                    help="Model name served at --local-url (--backend local)")
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--checkpoint", default=None,

@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--backend", choices=["anthropic", "local", "mock", "heuristic"], default="mock")
     p.add_argument("--local-url", default="http://localhost:11434/v1",
                    help="Base URL for local OpenAI-compatible server (--backend local)")
-    p.add_argument("--local-model", default="qwen2.5:7b-instruct",
+    p.add_argument("--local-model", default="llama3.1:8b",
                    help="Model name served at --local-url (--backend local)")
     p.add_argument("--verbose", action="store_true", default=True)
     p.add_argument("--show-json", action="store_true", help="Print full episode result as JSON")

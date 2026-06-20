@@ -1,7 +1,7 @@
 # Offline local LLM — Ollama (recommended) or vLLM / llama.cpp
 #
 # Quickstart with Ollama:
-#   ollama pull qwen2.5:7b-instruct
+#   ollama pull llama3.1:8b
 #   ollama serve
 #   PYTHONPATH=. python scripts/run_episode.py --backend local
 
@@ -9,7 +9,7 @@ backend: local
 
 # Ollama defaults (override for other servers — see alternatives below)
 base_url: http://localhost:11434/v1
-model: qwen2.5:7b-instruct
+model: llama3.1:8b
 max_tokens: 512
 cache: true       # budget-setter calls are near-deterministic; safe to cache per (object, task)
 

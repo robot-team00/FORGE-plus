@@ -307,7 +307,7 @@ def build_client(cfg: dict[str, Any]) -> LLMClient:
         # reliably honour response_format; we fall back to regex extraction).
         return OpenAICompatibleClient(
             base_url=cfg.get("base_url", "http://localhost:11434/v1"),
-            model=cfg.get("model", "qwen2.5:7b-instruct"),
+            model=cfg.get("model", "llama3.1:8b"),
             max_tokens=cfg.get("max_tokens", 512),
             cache=cfg.get("cache", True),
             use_json_mode=cfg.get("use_json_mode", backend == "openai_compatible"),
