@@ -39,11 +39,8 @@ def main():
     try:
         import re, wandb
         txt = open("/workspace/.jr_notes").read()
-        cands = re.findall(r"(?<![A-Za-z0-9_])[0-9a-f]{40}(?![A-Za-z0-9_])", txt)
-        if not cands:
-            cands = [t for t in re.findall(r"(?<![A-Za-z0-9_])[0-9A-Za-z]{40}(?![A-Za-z0-9_])", txt)
-                     if not t.startswith(("ghp", "github"))]
-        key = cands[0] if cands else None
+        m = re.search(r"^WANDB_API_KEY=(\\S+)", txt, re.M)
+        key = m.group(1) if m else None
         if key:
             os.environ["WANDB_API_KEY"] = key
             wandb.init(project="forge-plus-task3", name=f"place_{args.gripper}", config=vars(args))
