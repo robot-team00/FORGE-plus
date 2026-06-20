@@ -353,3 +353,4 @@ Target training throughput: 1–4k parallel environments on a single RTX 4090 / 
 Isaac Sim viewport rendering requires `NVIDIA_DRIVER_CAPABILITIES=all` set in the RunPod container environment **before** pod start. Blackwell (sm_120) GPUs also have a broken Vulkan ICD and cannot render regardless of capability settings.
 
 See [docs/rendering.md](docs/rendering.md) for the complete setup guide, GPU compatibility table, and troubleshooting steps.
+\n\n## Shared pod layout (RunPod)\n\nOn the shared pod, the heavy/shared things live **outside the repo** so all task clones (`FORGE-plus_main`, `FORGE-plus_task1`, `FORGE-plus_task3`) use one copy:\n\n- Python/Isaac venv: **`/workspace/.venv`** (run `/workspace/.venv/bin/python`).\n- Franka assets: **`/workspace/assets/franka/`** (USDs + `Props/` + `Materials/`).\n\nThese are git-ignored. After a pod (re)start run `bash scripts/setup_runtime.sh` (restores libEGL + shader cache + Xvfb). See `docs/ISAAC_RTX_RENDERING.md`.\n

@@ -51,7 +51,7 @@ SPACING = 1.4  # metres between stations
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-FRANKA_USD = os.path.join(REPO_ROOT, "assets", "franka", "franka_visuals.usd")
+FRANKA_USD = "/workspace/assets/franka/franka_visuals.usd"
 FRAMEDIR = os.path.join(REPO_ROOT, "frames")  # temp frame dir, gitignored
 
 stage = omni.usd.get_context().get_stage()

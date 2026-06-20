@@ -80,7 +80,7 @@ Diagnosis: (a) `rep.create.camera(rotation=(-25,0,0))` looks ~straight down (Omn
 cameras default to -Z); (b) `franka_visuals.usd` contains materials but NO mesh geometry.
 
 Fix: (a) use `rep.create.camera(position=(1.7,-1.9,1.45), look_at=(0,0,0.62), focal_length=22)`;
-(b) point `FRANKA_USD` at `assets/franka/franka.usd` (real meshes via `Props/`), and
+(b) point `FRANKA_USD` at `/workspace/assets/franka/franka.usd` (real meshes via `Props/`), and
 reference it under a parent `Xform` (`/World/Station_XX/FrankaRoot/Franka`) so the animation
 transforms go on the parent - referencing `franka.usd` directly clashes with its own root
 xform ops (`xformOp:translate already exists`).

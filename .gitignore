@@ -9,3 +9,7 @@ num_envs_out.txt
 .runtime_libs/
 frames_eval/
 *.log
+assets/
+docs/*.mp4
+tmp_forge_traj.npz
+.ipynb_checkpoints/

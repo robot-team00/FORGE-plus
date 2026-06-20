@@ -93,7 +93,7 @@ class FrankaInsertionEnv(DirectRLEnv):
             # Fall back: define inline ArticulationCfg using Isaac Sim bundled USD
             import os
             candidates = [
-                "/workspace/FORGE-plus/assets/franka/franka.usd",
+                "/workspace/assets/franka/franka.usd",
                 "/workspace/IsaacLab/source/isaaclab_assets/data/Robots/FrankaEmika/panda.usd",
                 "/isaac-sim/standalone_examples/api/omni.isaac.franka/usd/franka.usd",
                 "/root/.local/share/ov/pkg/isaac_sim-*/standalone_examples/api/omni.isaac.franka/usd/franka.usd",
@@ -123,7 +123,7 @@ class FrankaInsertionEnv(DirectRLEnv):
                 prim_path="/World/envs/env_.*/Robot"
             )
             # PATCH: override USD to local file (Nucleus unavailable)
-            robot_cfg.spawn.usd_path = "/workspace/FORGE-plus/assets/franka/panda_instanceable.usd"
+            robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
             robot_cfg.spawn.activate_contact_sensors = False  # PATCH: disabled for eval (causes segfault with instanceable USD)
         else:
             robot_cfg = ArticulationCfg(

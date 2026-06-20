@@ -49,7 +49,7 @@ SPACING = 1.4  # metres between stations
 # Falls back to procedural proxy geometry if the file is missing.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-FRANKA_USD = os.path.join(REPO_ROOT, "assets", "franka", "panda_instanceable.usd")
+FRANKA_USD = "/workspace/assets/franka/panda_instanceable.usd"
 
 stage = omni.usd.get_context().get_stage()
 

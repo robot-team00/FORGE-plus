@@ -31,7 +31,7 @@ Full root-cause writeup + troubleshooting: **docs/ISAAC_RTX_RENDERING.md**
    Bare app.update() never populates the annotator on this build => empty frames forever.
 4. The camera uses **look_at=(...)**, NOT rotation=(...). Default Omniverse cameras look
    straight down at the floor, so rotation=(-25,0,0) renders an empty grey frame.
-5. Use **assets/franka/franka.usd** (has real meshes). franka_visuals.usd has NO geometry.
+5. Use **/workspace/assets/franka/franka.usd** (shared assets, outside the repo; has real meshes). franka_visuals.usd has NO geometry.
    Reference it under a *parent* Xform and put your translate/rotate/scale on the parent,
    or you hit "xformOp:translate already exists" (the asset already has root xform ops).
 6. Run Isaac/video code with **/workspace/.venv/bin/python** (the venv is shared at /workspace/.venv, outside the repo) - the JupyterLab kernel python lacks pxr/imageio.

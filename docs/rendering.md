@@ -187,7 +187,7 @@ This was manually tuned to frame all 25 stations with `SPACING=1.4 m`. Use it as
 **Asset file check — do this first:**
 
 ```bash
-ls -lh /workspace/FORGE-plus/assets/franka/panda_instanceable.usd
+ls -lh /workspace/assets/franka/panda_instanceable.usd
 ```
 
 If the file is missing, `render_preview.py` silently falls back to a procedural 3-link arm (visible but not photo-realistic). The video will still render — just without the real Franka mesh.

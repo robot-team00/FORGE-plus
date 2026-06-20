@@ -34,10 +34,10 @@ SPACING = 1.4
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT  = os.path.dirname(SCRIPT_DIR)
-FRANKA_USD = os.path.join(REPO_ROOT, "assets", "franka", "franka.usd")
+FRANKA_USD = "/workspace/assets/franka/franka.usd"
 
 FRAMEDIR = "/workspace/frames_eval"
-OUTPUT   = "/workspace/FORGE-plus/docs/eval_episode.mp4"
+OUTPUT   = os.path.join(REPO_ROOT, "docs", "eval_episode.mp4")
 os.makedirs(FRAMEDIR, exist_ok=True)
 for _f in Path(FRAMEDIR).glob("*.png"):
     _f.unlink()
