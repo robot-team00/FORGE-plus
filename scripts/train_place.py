@@ -32,6 +32,7 @@ def main():
     p.add_argument("--clip", type=float, default=0.2)
     p.add_argument("--device", default="cuda")
     p.add_argument("--ckpt", default=None)
+    p.add_argument("--run", default=None, help="run id; default = today's date")
     args = p.parse_args()
     dev = torch.device(args.device)
     # --- optional W&B logging (key from /workspace/.jr_notes, not printed) ---
@@ -48,7 +49,9 @@ def main():
             print("wandb logging ON", flush=True)
     except Exception as e:
         print("wandb off:", str(e)[:80], flush=True)
-    ckpt = args.ckpt or f"checkpoints/task3_{args.gripper}.pt"
+    import datetime as _dt
+    run = args.run or (_dt.date.today().isoformat() + "_run")
+    ckpt = args.ckpt or f"runs/{run}/checkpoints/{args.gripper}.pt"
     os.makedirs(os.path.dirname(ckpt), exist_ok=True)
 
     cfg = PlaceEnvCfg(); cfg.scene.num_envs = args.num_envs; cfg.gripper = args.gripper

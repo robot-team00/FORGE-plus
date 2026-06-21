@@ -11,7 +11,9 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, FancyBboxPatch
 import imageio.v2 as imageio
 
+import sys
 ROOT = "/workspace/FORGE-plus_task3"
+RUN = sys.argv[1] if len(sys.argv) > 1 else "2026-06-21_forge-baseline"
 GRIPPERS = [("franka_panda", "Franka Panda"), ("robotiq_2f140", "Robotiq 2F-140")]
 RACK_TOP = 0.60
 FPS = 20
@@ -80,7 +82,7 @@ def draw_frame(g_label, eez, cf, fmax, fbreak, reason, dstep, t, Tend):
 
 frames = []
 for gid, glabel in GRIPPERS:
-    fp = "/workspace/_scratch/rollout_%s.npz" % gid
+    fp = "%s/runs/%s/rollouts/%s.npz" % (ROOT, RUN, gid)
     if not os.path.exists(fp):
         print("skip (no rollout):", gid); continue
     d = np.load(fp)
@@ -98,7 +100,8 @@ for gid, glabel in GRIPPERS:
         for _ in range(int(FPS*1.2)):
             frames.append(frames[-1])
 
-os.makedirs(os.path.join(ROOT, "docs"), exist_ok=True)
-out = os.path.join(ROOT, "docs", "eval_episode.mp4")
+
+os.makedirs(os.path.join(ROOT, "runs", RUN, "videos"), exist_ok=True)
+out = os.path.join(ROOT, "runs", RUN, "videos", "eval_episode.mp4")
 imageio.mimsave(out, frames, fps=FPS, quality=8)
 print("RENDER_DONE ->", out, "frames", len(frames), flush=True)
