@@ -31,7 +31,7 @@ DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py   # -> docs/
 ```
 
 - First render after a pod restart is **slow (~8 min)**: Isaac compiles the full RTX
-  pipeline shaders once. The cache persists under `.venv`, so later renders are fast.
+  pipeline shaders once. With the persistent-cache env (see "Persistent shader cache across pod restarts" below) that compile is written to `/workspace/persist` and reused by every future pod; without it it lands on ephemeral `/root` and is lost on the next pod.
 - Verify Vulkan any time with: `DISPLAY=:1 vulkaninfo --summary | grep deviceName`
   (should print "NVIDIA RTX 2000 Ada Generation").
 
@@ -43,8 +43,37 @@ DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py   # -> docs/
 |---|---|---|---|
 | GLVND libs (libEGL.so.1 ...) | `/usr/lib` (apt) | NO (ephemeral) | `setup_runtime.sh` (apt install) |
 | Isaac shader cache | `.venv/.../extscache` | YES (/workspace) | `fetch_shadercache.py` if ever missing |
+| Runtime-compiled RTX shaders | `$HOME` + CUDA/GL caches | NO by default (ephemeral `/root`) | redirected to `/workspace/persist` (see below) |
 | Script fixes + this doc | `/workspace/FORGE-plus_main` | YES (/workspace) | git |
 | Xvfb display :1 | process | NO | `setup_runtime.sh` |
+
+---
+
+## Persistent shader cache across pod restarts
+
+The shipped precompiled shader caches in `.venv/.../extscache` persist on `/workspace`, but they are
+READ-ONLY and incomplete. The GPU-specific shaders Isaac compiles at runtime (the ~8 min on the first
+render) are written by Kit/Replicator and the NVIDIA driver into caches under `$HOME` and the CUDA/GL
+cache dirs, which default to **ephemeral `/root`** -- so every fresh pod throws them away and recompiles,
+and where a shader cannot be recompiled it fails outright (e.g. the `SubsurfaceContext` crash, cause #5).
+
+Fix: redirect those writable caches onto `/workspace` so the compile happens ONCE and is reused.
+`render_eval_video.py` sets these before importing Isaac, and `setup_runtime.sh` exports them and
+creates the dirs:
+
+| Env var | Points at | Persists |
+|---|---|---|
+| `HOME=/workspace/persist/ovhome` | `~/.cache/ov`, `~/.nv`, `~/.nvidia-omniverse` | Kit/OV + Vulkan pipeline cache |
+| `CUDA_CACHE_PATH=/workspace/persist/shadercache/cuda` | CUDA JIT cache | compute kernels |
+| `__GL_SHADER_DISK_CACHE_PATH=/workspace/persist/shadercache/gl` | GL/driver shader cache | driver shaders |
+
+After this lands, do ONE full warm-up render on any pod; `/workspace/persist` then makes every later
+pod fast and crash-free (valid as long as the GPU model + driver are unchanged -- RTX 2000 Ada / 570.172.08).
+
+Why the `.rgs.hlsl` shader SOURCES are absent: the Isaac Sim pip install is a runtime/compiled-only
+distribution. It ships precompiled, content-hash-keyed shader-cache blobs (`*.v` files), never
+`.hlsl`/`.rgs.hlsl` source -- those exist only in the full Omniverse Kit SDK. So a missing shader is
+fixed by persisting the runtime compile (above), not by adding sources.
 
 ---
 
@@ -113,16 +142,16 @@ Diagnosis: the restored GPU-foundation shader cache is missing the subsurface ra
 `BackLighting.rgs.hlsl`. As soon as a material needs subsurface scattering the renderer binds a shader
 that was never compiled into the cache and crashes. `fetch_shadercache.py` does not recover this one.
 
-Fix: disable RTX subsurface scattering at startup, before the first render. `render_eval_video.py`
-does this right after importing replicator:
+Fix: disable RTX subsurface scattering at BOOT, before the renderer initializes, via the
+`SimulationApp` args in `render_eval_video.py`:
 
 ```python
-import carb
-carb.settings.get_settings().set("/rtx/raytracing/subsurface/enabled", False)
+app = SimulationApp({..., "extra_args": ["--/rtx/raytracing/subsurface/enabled=false"]})
 ```
 
-**DO NOT remove this line** - without it a fresh pod crashes on the first render. (Disabling subsurface
-is invisible in this scene: the Franka/table/peg use no subsurface materials.)
+**DO NOT remove this** - without it a fresh pod crashes on the first render. Setting it after boot via
+`carb.settings` also works but is later than ideal; the extra_args form fires before any shader bind.
+(Disabling subsurface is invisible in this scene: the Franka/table/peg use no subsurface materials.)
 
 ---
 

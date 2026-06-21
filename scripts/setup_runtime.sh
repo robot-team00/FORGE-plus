@@ -15,6 +15,14 @@ VENV="/workspace/.venv"
 VENV_PY="$VENV/bin/python"
 L=/usr/lib/x86_64-linux-gnu
 
+echo "[setup] 0/3 persistent shader/compute cache on /workspace ..."
+export HOME=/workspace/persist/ovhome
+export CUDA_CACHE_PATH=/workspace/persist/shadercache/cuda
+export __GL_SHADER_DISK_CACHE=1
+export __GL_SHADER_DISK_CACHE_PATH=/workspace/persist/shadercache/gl
+mkdir -p "$HOME" "$CUDA_CACHE_PATH" "$__GL_SHADER_DISK_CACHE_PATH"
+echo "[setup]   HOME -> $HOME (Kit/OV + driver shader caches now persist on /workspace)"
+
 echo "[setup] 1/3 GLVND (libEGL.so.1) ..."
 if [ ! -e "$L/libEGL.so.1" ]; then
   apt-get update -qq 2>/dev/null
