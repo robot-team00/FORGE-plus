@@ -48,7 +48,7 @@ DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py   # -> docs/
 
 ---
 
-## The four root causes (all fixed; do not regress)
+## The five root causes (all fixed; do not regress)
 
 ### 1. Vulkan was dead - missing GLVND `libEGL.so.1`
 Symptom: at boot `[gpu.foundation.plugin] Cannot load shader file 'rtx/system/GenerateMipMap.comp.hlsl'`,
@@ -105,6 +105,27 @@ xform ops (`xformOp:translate already exists`).
 
 ---
 
+### 5. SubsurfaceContext C++ crash (subsurface shader missing from cache)
+Symptom: Vulkan, shaders, and camera all fine, but RTX path tracing aborts with a `SubsurfaceContext`
+C++ crash partway through rendering (often on the first lit frame); the GPU stays busy until it dies.
+
+Diagnosis: the restored GPU-foundation shader cache is missing the subsurface ray-gen shader
+`BackLighting.rgs.hlsl`. As soon as a material needs subsurface scattering the renderer binds a shader
+that was never compiled into the cache and crashes. `fetch_shadercache.py` does not recover this one.
+
+Fix: disable RTX subsurface scattering at startup, before the first render. `render_eval_video.py`
+does this right after importing replicator:
+
+```python
+import carb
+carb.settings.get_settings().set("/rtx/raytracing/subsurface/enabled", False)
+```
+
+**DO NOT remove this line** - without it a fresh pod crashes on the first render. (Disabling subsurface
+is invisible in this scene: the Franka/table/peg use no subsurface materials.)
+
+---
+
 ## Files
 
 | File | Purpose |
@@ -130,3 +151,4 @@ xform ops (`xformOp:translate already exists`).
 | `xformOp:translate already exists` | transforms on the referenced prim | put transforms on a parent Xform |
 | First render hangs ~8 min at GPU 100% | one-time RTX shader compile | normal; wait. Cache persists for next time |
 | `No module named 'pxr'/'imageio'` | used kernel python | use `/workspace/.venv/bin/python` |
+| `SubsurfaceContext` crash mid-render | subsurface shader `BackLighting.rgs.hlsl` missing from cache | keep the subsurface-disable line in `render_eval_video.py` (cause #5) |

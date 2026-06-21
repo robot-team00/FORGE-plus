@@ -27,6 +27,10 @@ print("Isaac Sim booted.", flush=True)
 import omni.usd                           # noqa: E402
 from pxr import Gf, UsdGeom, UsdLux      # noqa: E402
 import omni.replicator.core as rep        # noqa: E402
+# Disable RTX subsurface scattering -- prevents a SubsurfaceContext C++ crash when the
+# subsurface ray-gen shader BackLighting.rgs.hlsl is missing from the GPU-foundation cache.
+import carb as _carb  # noqa: E402
+_carb.settings.get_settings().set("/rtx/raytracing/subsurface/enabled", False)
 
 # -- 3. Scene parameters --
 N_ROWS, N_COLS = 1, 1
