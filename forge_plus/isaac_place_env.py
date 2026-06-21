@@ -39,6 +39,7 @@ class PlaceEnvCfg(DirectRLEnvCfg):
     place_z: float = 0.63      # hand-z at contact with rack (env-rel)
     lam: float = 0.025         # FORGE action clip (m): max force = kp*lam
     act_range: float = 0.05    # relative action offset from fixed part (m)
+    gripper: str = "franka_panda"  # or "robotiq_2f140" (modelled via contact compliance)
     rack_top_z: float = 0.63
     f_cmd_lo: float = 10.0
     f_cmd_hi: float = 100.0
@@ -67,6 +68,8 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._set_reset = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._home_ee_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._offset_scale = 0.25
+        _gmap = {"franka_panda": (4000.0, 500.0), "robotiq_2f140": (1800.0, 1100.0)}
+        self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
         self._cf_filt = torch.zeros(self.num_envs, device=self.device)
         self._cf_alpha = 0.15
         self._az_filt = torch.full((self.num_envs,), -1.0, device=self.device)
@@ -86,6 +89,8 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._sample_episode(torch.arange(self.num_envs, device=self.device))
 
     def _setup_scene(self):
+        _gmap = {"franka_panda": (4000.0, 500.0), "robotiq_2f140": (1800.0, 1100.0)}
+        self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
         try:
             from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -114,7 +119,7 @@ class FrankaPlaceEnv(DirectRLEnv):
 
         rack = RigidObject(RigidObjectCfg(
             prim_path="/World/envs/env_.*/Rack",
-            spawn=sim_utils.CuboidCfg(size=(0.12, 0.12, 0.05), activate_contact_sensors=True, physics_material=sim_utils.RigidBodyMaterialCfg(compliant_contact_stiffness=4000.0, compliant_contact_damping=500.0),
+            spawn=sim_utils.CuboidCfg(size=(0.12, 0.12, 0.05), activate_contact_sensors=True, physics_material=sim_utils.RigidBodyMaterialCfg(compliant_contact_stiffness=self._grip_ks, compliant_contact_damping=self._grip_kd),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg()),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.38, 0.0, 0.575))))
@@ -218,6 +223,8 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._succeeded = self._settle_ctr >= self.cfg.settle_steps
         terminated = self._broke | self._succeeded
         truncated = self.episode_length_buf >= self.max_episode_length - 1
+        self.extras["succ_mask"] = self._succeeded.clone()
+        self.extras["brk_mask"] = self._broke.clone()
         self.extras["n_succ"] = float(self._succeeded.sum().item())
         self.extras["n_brk"] = float(self._broke.sum().item())
         return terminated, truncated

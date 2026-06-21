@@ -51,7 +51,7 @@ def main():
     ckpt = args.ckpt or f"checkpoints/task3_{args.gripper}.pt"
     os.makedirs(os.path.dirname(ckpt), exist_ok=True)
 
-    cfg = PlaceEnvCfg(); cfg.scene.num_envs = args.num_envs
+    cfg = PlaceEnvCfg(); cfg.scene.num_envs = args.num_envs; cfg.gripper = args.gripper
     env = FrankaPlaceEnv(cfg)
     N = env.num_envs
     pcfg = PolicyConfig(obs_dim=34, act_dim=7)
