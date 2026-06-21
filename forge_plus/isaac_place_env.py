@@ -45,6 +45,7 @@ class PlaceEnvCfg(DirectRLEnvCfg):
     f_cmd_hi: float = 100.0
     settle_force_n: float = 3.0
     settle_steps: int = 3
+    warmup_substeps: int = 10   # reset-transient reject window (physics substeps)
     contact_eps_n: float = 0.2
 
 
@@ -72,6 +73,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
         self._cf_filt = torch.zeros(self.num_envs, device=self.device)
         self._cf_alpha = 0.15
+        self._warmup = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._az_filt = torch.full((self.num_envs,), -1.0, device=self.device)
         self._phase = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._f_cmd = torch.zeros(self.num_envs, device=self.device)
@@ -165,7 +167,10 @@ class FrankaPlaceEnv(DirectRLEnv):
         # FORGE controller: target = fixed place pose + relative action, clipped to
         # +/- lam of the EE so contact force is bounded by kp*lam (gentle by design).
         r = self._robot
-        self._cf_filt = (1.0 - self._cf_alpha) * self._cf_filt + self._cf_alpha * self._raw_contact_force()
+        _raw = self._raw_contact_force()
+        _live = (self._warmup == 0)
+        self._cf_filt = torch.where(_live, (1.0 - self._cf_alpha) * self._cf_filt + self._cf_alpha * _raw, torch.zeros_like(self._cf_filt))
+        self._warmup = (self._warmup - 1).clamp(min=0)
         jac = r.root_physx_view.get_jacobians()[:, self._jacobi_idx, :, :7]
         ee_pos_w = r.data.body_pos_w[:, self._ee_idx]
         ee_quat_w = r.data.body_quat_w[:, self._ee_idx]
@@ -217,7 +222,7 @@ class FrankaPlaceEnv(DirectRLEnv):
 
     def _get_dones(self):
         cf = self._contact_force()
-        grace = self.episode_length_buf > 3  # ignore reset contact transient
+        grace = (self.episode_length_buf > 3) & (self._warmup == 0)  # ignore reset contact transient
         self._broke = (cf > self._f_break) & grace
         gentle = (cf > self.cfg.contact_eps_n) & (cf < self._f_cmd)
         self._settle_ctr = torch.where(gentle, self._settle_ctr + 1, torch.zeros_like(self._settle_ctr))
@@ -241,6 +246,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._succeeded[env_ids] = False
         self._set_reset[env_ids] = True
         self._cf_filt[env_ids] = 0.0
+        self._warmup[env_ids] = self.cfg.warmup_substeps
         self._az_filt[env_ids] = -1.0
         self._jt_target[env_ids] = self._robot.data.default_joint_pos[env_ids][:, self._arm_ids]
         self._sample_episode(env_ids)
