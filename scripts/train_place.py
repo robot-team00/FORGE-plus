@@ -64,6 +64,7 @@ def main():
     t0 = time.perf_counter()
     for it in range(args.iterations):
         O, Fc, A, LP, R, D, V = [], [], [], [], [], [], []
+        ep_succ = 0.0; ep_brk = 0.0; ep_end = 0.0
         for _ in range(args.rollout):
             fcmd = env.f_cmd_norm().to(dev)
             with torch.no_grad():
@@ -74,6 +75,7 @@ def main():
             res = env.step(act)
             O.append(obs); Fc.append(fcmd); A.append(act); LP.append(lp)
             R.append(res[1]); D.append((res[2] | res[3]).float()); V.append(val)
+            ep_succ += res[4].get("n_succ", 0.0); ep_brk += res[4].get("n_brk", 0.0); ep_end += float(res[2].sum().item())
             obs = res[0]["policy"]
         with torch.no_grad():
             last_v = value(obs, env.f_cmd_norm().to(dev)).squeeze(-1)
@@ -99,12 +101,12 @@ def main():
                 aloss = -torch.min(a1, a2).mean()
                 vloss = F.mse_loss(value(bO[j], bFc[j]).squeeze(-1), bRet[j])
                 ent = dist.entropy().sum(-1).mean()
-                loss = aloss + 0.5 * vloss - 0.01 * ent
+                loss = aloss + 0.5 * vloss - 0.0005 * ent
                 aopt.zero_grad(); copt.zero_grad(); loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 aopt.step(); copt.step()
         if it % 5 == 0:
-            succ = env._succeeded.float().mean().item(); brk = env._broke.float().mean().item()
+            succ = ep_succ / max(ep_end, 1.0); brk = ep_brk / max(ep_end, 1.0)
             fps = (it + 1) * args.rollout * N / (time.perf_counter() - t0)
             print(f"it {it} rew {R.mean().item():.3f} ret {bRet.mean().item():.2f} "
                   f"succ {succ:.3f} brk {brk:.3f} fps {fps:.0f}", flush=True)
