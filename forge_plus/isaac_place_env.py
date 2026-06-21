@@ -88,6 +88,17 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._ik = DifferentialIKController(
             DifferentialIKControllerCfg(command_type="position", use_relative_mode=True, ik_method="dls"),
             num_envs=self.num_envs, device=self.device)
+        import json as _json, os as _os
+        with open(_os.path.join(_os.path.dirname(__file__), "llm", "budget_cache.json")) as _bf:
+            _bc = _json.load(_bf)["objects"]
+        _ks = list(_bc.keys())
+        self._obj_keys = _ks
+        self._n_obj_cls = len(_ks)
+        self._obj_fmean = torch.tensor([_bc[k]["f_break_mean_n"] for k in _ks], device=self.device)
+        self._obj_fstd = torch.tensor([_bc[k]["f_break_std_n"] for k in _ks], device=self.device)
+        self._obj_fmin = torch.tensor([_bc[k]["f_break_min_n"] for k in _ks], device=self.device)
+        self._obj_budget = torch.tensor([_bc[k]["f_max_llm_n"] for k in _ks], device=self.device)
+        self._obj_cls = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._sample_episode(torch.arange(self.num_envs, device=self.device))
 
     def _setup_scene(self):
@@ -138,14 +149,15 @@ class FrankaPlaceEnv(DirectRLEnv):
 
     def _sample_episode(self, ids):
         n = len(ids)
-        frag = torch.rand(n, device=self.device) < 0.5
-        fb = torch.where(frag,
-                         torch.rand(n, device=self.device) * 20 + 15,
-                         torch.rand(n, device=self.device) * 110 + 150)
+        cls = torch.randint(0, self._n_obj_cls, (n,), device=self.device)
+        fb = self._obj_fmean[cls] + self._obj_fstd[cls] * torch.randn(n, device=self.device)
+        fb = torch.maximum(fb, self._obj_fmin[cls])
         self._f_break[ids] = fb
-        # F_cmd (the budget shown to the policy) is a SAFE, feasible fraction of
-        # F_break, as the LLM supervisor sets F_max below the breaking force.
-        self._f_cmd[ids] = fb * (0.5 + 0.35 * torch.rand(n, device=self.device))
+        # F_cmd is the offline-LLM supervisor's identity-derived force ceiling
+        # (cached in llm/budget_cache.json; the LLM never sees F_break). Budgets
+        # sit safely below F_break, lowest for brittle/glass/ceramic parts.
+        self._f_cmd[ids] = self._obj_budget[cls]
+        self._obj_cls[ids] = cls
 
     def _raw_contact_force(self):
         nf = getattr(self._contact.data, "net_forces_w", None)
