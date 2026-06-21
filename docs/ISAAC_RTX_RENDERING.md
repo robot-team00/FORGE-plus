@@ -1,10 +1,23 @@
 # Headless Isaac Sim RTX rendering on the FORGE-plus pod
 
-**Status: WORKING** (fixed 2026-06-20, pod `kmvgljds0ebce8`, NVIDIA RTX 2000 Ada / sm_89, Isaac Sim 5.1.0).
+**Status: WORKING** (fixed 2026-06-20, NVIDIA RTX 2000 Ada / sm_89, Isaac Sim 5.1.0).
+
+> **The pod is disposable; the `/workspace` network volume is not.** The RunPod pod gets
+> restarted/replaced regularly and gets a new ID each time, so never rely on a specific pod ID or
+> URL. Everything that matters persists on the shared `/workspace` network storage (the repo
+> clones, `/workspace/.venv`, the Isaac shader cache, `/workspace/assets`). After a fresh pod boots,
+> the only missing pieces are ephemeral OS bits (GLVND apt libs, the Xvfb display) that
+> `scripts/setup_runtime.sh` restores.
 
 This pod can now produce a photorealistic, RTX path-traced render of the Franka Panda
 eval rollout: `docs/eval_episode.mp4`. This doc explains how, and the four
 independent bugs that had to be fixed so nobody re-breaks them.
+
+> **WARNING - most common regression: do NOT disable `rep.orchestrator.step()`.** Multiple
+> sessions have "cleaned up" the renderer by commenting out `rep.orchestrator.step(rt_subframes=N)`,
+> assuming it is the old RTX-hang workaround. It is NOT optional: on this build it is the only thing
+> that drives the Replicator SDG graph, so removing it makes every captured frame an EMPTY/black
+> buffer (root cause #3 below). Keep it. If frames come back empty, check this call FIRST.
 
 ---
 
@@ -72,6 +85,11 @@ Diagnosis: `render_eval_video.py` originally avoided `rep.orchestrator.step()`
 Replicator annotator from ever capturing - bare `app.update()` does not run the SDG graph.
 
 Fix: call `rep.orchestrator.step(rt_subframes=12)` before each `rgb.get_data()`.
+
+**DO NOT remove or comment out `rep.orchestrator.step()`.** This is a recurring regression:
+sessions mistake it for the obsolete RTX-hang workaround and delete it, which silently breaks
+capture (empty/black frames) while Vulkan, shaders, and the GPU all still look healthy. The old
+hang is gone (fixed by root causes #1 and #2); the step call must stay.
 
 ### 4. Camera at the floor + wrong Franka asset
 Symptoms: (a) a perfectly rendered but EMPTY grey frame; (b) table/peg render but no arm.
