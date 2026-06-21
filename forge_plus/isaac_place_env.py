@@ -36,11 +36,11 @@ class PlaceEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=2.5, replicate_physics=True)
     action_scale: float = 0.08
     ee_action_scale: float = 0.02
-    place_z: float = 0.63      # hand-z at contact with rack (env-rel)
+    place_z: float = 0.665      # hand-z at contact with rack (env-rel)
     lam: float = 0.025         # FORGE action clip (m): max force = kp*lam
     act_range: float = 0.05    # relative action offset from fixed part (m)
     gripper: str = "franka_panda"  # or "robotiq_2f140" (modelled via contact compliance)
-    rack_top_z: float = 0.63
+    rack_top_z: float = 0.665
     f_cmd_lo: float = 10.0
     f_cmd_hi: float = 100.0
     settle_force_n: float = 3.0
@@ -68,7 +68,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._set_reset = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._home_ee_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._offset_scale = 0.25
-        _gmap = {"franka_panda": (4000.0, 500.0), "robotiq_2f140": (1800.0, 1100.0)}
+        _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
         self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
         self._cf_filt = torch.zeros(self.num_envs, device=self.device)
         self._cf_alpha = 0.15
@@ -89,7 +89,7 @@ class FrankaPlaceEnv(DirectRLEnv):
         self._sample_episode(torch.arange(self.num_envs, device=self.device))
 
     def _setup_scene(self):
-        _gmap = {"franka_panda": (4000.0, 500.0), "robotiq_2f140": (1800.0, 1100.0)}
+        _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
         self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
         try:
             from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
@@ -122,7 +122,7 @@ class FrankaPlaceEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(size=(0.12, 0.12, 0.05), activate_contact_sensors=True, physics_material=sim_utils.RigidBodyMaterialCfg(compliant_contact_stiffness=self._grip_ks, compliant_contact_damping=self._grip_kd),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg()),
-            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.38, 0.0, 0.575))))
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.38, 0.0, 0.610))))
         self.scene.rigid_objects["rack"] = rack
 
         self._contact = ContactSensor(ContactSensorCfg(
@@ -217,7 +217,8 @@ class FrankaPlaceEnv(DirectRLEnv):
 
     def _get_dones(self):
         cf = self._contact_force()
-        self._broke = cf > self._f_break
+        grace = self.episode_length_buf > 3  # ignore reset contact transient
+        self._broke = (cf > self._f_break) & grace
         gentle = (cf > self.cfg.contact_eps_n) & (cf < self._f_cmd)
         self._settle_ctr = torch.where(gentle, self._settle_ctr + 1, torch.zeros_like(self._settle_ctr))
         self._succeeded = self._settle_ctr >= self.cfg.settle_steps
