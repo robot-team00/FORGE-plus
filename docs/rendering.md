@@ -41,7 +41,7 @@ ldconfig
 ### 3. Verify environment
 
 ```bash
-cd /workspace/FORGE-plus
+cd /workspace/FORGE-plus_main
 source .venv/bin/activate
 python scripts/check_env.py
 ```
@@ -69,7 +69,7 @@ Xvfb :1 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
 sleep 2
 
 # Capture a still frame (render_preview.png)
-cd /workspace/FORGE-plus
+cd /workspace/FORGE-plus_main
 source .venv/bin/activate
 DISPLAY=:1 timeout 600 python scripts/render_preview.py
 ```
