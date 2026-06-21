@@ -30,7 +30,7 @@ DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py   # -> docs/
 |---|---|---|---|
 | GLVND libs (libEGL.so.1 ...) | `/usr/lib` (apt) | NO (ephemeral) | `setup_runtime.sh` (apt install) |
 | Isaac shader cache | `.venv/.../extscache` | YES (/workspace) | `fetch_shadercache.py` if ever missing |
-| Script fixes + this doc | `/workspace/FORGE-plus` | YES (/workspace) | git |
+| Script fixes + this doc | `/workspace/FORGE-plus_main` | YES (/workspace) | git |
 | Xvfb display :1 | process | NO | `setup_runtime.sh` |
 
 ---
