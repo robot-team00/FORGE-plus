@@ -34,7 +34,7 @@ os.environ["DISPLAY"] = ":1"
 
 # -- 2. Boot Isaac Sim (EXACT same args as render_grid_video.py) --
 from isaacsim import SimulationApp  # noqa: E402
-app = SimulationApp({"headless": True, "width": 1920, "height": 1080, "extra_args": ["--/rtx/raytracing/subsurface/enabled=false"]})
+app = SimulationApp({"headless": True, "width": 1920, "height": 1080})
 print("Isaac Sim booted.", flush=True)
 
 import omni.usd                           # noqa: E402
@@ -182,7 +182,7 @@ for _w in range(110):
 def _grab():
     for _try in range(12):
         try:
-            rep.orchestrator.step(rt_subframes=12)
+            rep.orchestrator.step(rt_subframes=4)
             raw = rgb.get_data()
             if raw is not None and len(raw) > 0:
                 d = np.frombuffer(raw, dtype=np.uint8).reshape(1080, 1920, 4)
