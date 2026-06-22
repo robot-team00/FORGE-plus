@@ -11,6 +11,19 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 
+# -- Persistent shader/compute cache (see docs/ISAAC_RTX_RENDERING.md) --
+# The RunPod pod is disposable; only /workspace survives restarts. Isaac/Kit and the NVIDIA
+# driver write compiled RTX shaders under $HOME and the CUDA/GL cache dirs, which default to
+# ephemeral /root. Redirect them onto /workspace so the (~8 min) shader compile is done ONCE
+# and reused by every future pod. MUST be set before importing isaacsim.
+_PCACHE = "/workspace/persist"
+os.environ["HOME"] = _PCACHE + "/ovhome"
+os.environ["CUDA_CACHE_PATH"] = _PCACHE + "/shadercache/cuda"
+os.environ["__GL_SHADER_DISK_CACHE"] = "1"
+os.environ["__GL_SHADER_DISK_CACHE_PATH"] = _PCACHE + "/shadercache/gl"
+for _d in (os.environ["HOME"], os.environ["CUDA_CACHE_PATH"], os.environ["__GL_SHADER_DISK_CACHE_PATH"]):
+    os.makedirs(_d, exist_ok=True)
+
 # -- 1. Xvfb --
 try:
     subprocess.Popen(["Xvfb", ":1", "-screen", "0", "1920x1080x24"])
@@ -21,16 +34,14 @@ os.environ["DISPLAY"] = ":1"
 
 # -- 2. Boot Isaac Sim (EXACT same args as render_grid_video.py) --
 from isaacsim import SimulationApp  # noqa: E402
-app = SimulationApp({"headless": True, "width": 1920, "height": 1080})
+app = SimulationApp({"headless": True, "width": 1920, "height": 1080, "extra_args": ["--/rtx/raytracing/subsurface/enabled=false"]})
 print("Isaac Sim booted.", flush=True)
 
 import omni.usd                           # noqa: E402
 from pxr import Gf, UsdGeom, UsdLux      # noqa: E402
 import omni.replicator.core as rep        # noqa: E402
-# Disable RTX subsurface scattering -- prevents a SubsurfaceContext C++ crash when the
-# subsurface ray-gen shader BackLighting.rgs.hlsl is missing from the GPU-foundation cache.
-import carb as _carb  # noqa: E402
-_carb.settings.get_settings().set("/rtx/raytracing/subsurface/enabled", False)
+# RTX subsurface scattering is disabled at BOOT via extra_args in the SimulationApp call above
+# (set before the renderer initializes). See docs/ISAAC_RTX_RENDERING.md cause #5.
 
 # -- 3. Scene parameters --
 N_ROWS, N_COLS = 1, 1
