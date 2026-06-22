@@ -180,16 +180,12 @@ for _w in range(110):
 
 # -- _grab(): EXACT copy from render_grid_video.py --
 def _grab():
+    """Grab an RGB frame, retrying if the buffer is empty (matches render_grid_video.py)."""
     for _try in range(12):
-        try:
-            rep.orchestrator.step(rt_subframes=4)
-            raw = rgb.get_data()
-            if raw is not None and len(raw) > 0:
-                d = np.frombuffer(raw, dtype=np.uint8).reshape(1080, 1920, 4)
-                return d
-        except Exception as e:
-            print(f"[VID] grab err {_try}: {e}", flush=True)
-        for _ in range(8): app.update()
+        d = np.asarray(rgb.get_data())
+        if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
+            return d
+        rep.orchestrator.step(rt_subframes=2)
         for _ in range(8):
             app.update()
         _time.sleep(0.4)
@@ -264,6 +260,9 @@ for k in range(FRAMES):
     for _ in range(10):
         app.update()
     _time.sleep(0.03)
+    rep.orchestrator.step(rt_subframes=4)
+    for _ in range(10):
+        app.update()
 
     d = _grab()
     if d is None:
