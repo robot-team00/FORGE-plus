@@ -1,230 +1,191 @@
 #!/usr/bin/env python3
-"""
-render_task3.py - RTX render of task3 block-stacking eval episode.
-Based on FORGE-plus_main/scripts/render_eval_video.py (proven working renderer).
-Key fix vs task3 broken script: extra_args subsurface disable at boot.
-Loads /tmp/forge_traj_task3.npz -> docs/eval_episode_task3.mp4
-"""
-import os, subprocess, time as _time, math
+# render_task3.py v5
+# ROOT CAUSE FOUND (via v5-diag): rep.orchestrator.step() at k=0 schedules
+# a deferred render callback. When k=1's env.step() -> app.update() fires,
+# that callback tries to render again, but rendering needs app.update() to
+# process -> circular deadlock. NEVER saw DIAG k=1 D (env.step DONE).
+# FIX: Remove rep.orchestrator.step() entirely from the render loop.
+# Annotators update on every app.update() (driven by env.step internally).
+import os, sys, subprocess, time as _time
 import numpy as np
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 
-# -- Persistent shader/compute cache (MUST be set before importing isaacsim) --
-_PCACHE = "/workspace/persist"
-os.environ["HOME"]                        = _PCACHE + "/ovhome"
-os.environ["CUDA_CACHE_PATH"]             = _PCACHE + "/shadercache/cuda"
-os.environ["__GL_SHADER_DISK_CACHE"]      = "1"
-os.environ["__GL_SHADER_DISK_CACHE_PATH"] = _PCACHE + "/shadercache/gl"
+_PC = "/workspace/persist"
+os.environ.update({
+    "HOME": _PC + "/ovhome",
+    "CUDA_CACHE_PATH": _PC + "/shadercache/cuda",
+    "__GL_SHADER_DISK_CACHE": "1",
+    "__GL_SHADER_DISK_CACHE_PATH": _PC + "/shadercache/gl",
+    "MPLBACKEND": "Agg",
+    "DISPLAY": ":1",
+})
 for _d in (os.environ["HOME"], os.environ["CUDA_CACHE_PATH"],
            os.environ["__GL_SHADER_DISK_CACHE_PATH"]):
     os.makedirs(_d, exist_ok=True)
 
-# -- 1. Xvfb (display :99 is task3; :1 belongs to task1 -- do not touch) --
-try:
-    subprocess.Popen(["Xvfb", ":99", "-screen", "0", "1920x1080x24"])
-    _time.sleep(2)
-except Exception:
-    pass
-os.environ["DISPLAY"] = ":99"
+sys.path.insert(0, "/workspace/FORGE-plus_task3")
 
-# -- 2. Boot Isaac Sim with extra_args -- disables subsurface at boot (cause #5) --
-from isaacsim import SimulationApp  # noqa: E402
-app = SimulationApp({"headless": True, "width": 1920, "height": 1080,
-                     "extra_args": ["--/rtx/raytracing/subsurface/enabled=false"]})
-print("[VID] Isaac Sim booted.", flush=True)
+# enable_async=false: prevent isaacsim.core.throttling from toggling
+# asyncRendering=True on timeline stop. With this flag, app.update() is
+# synchronous so annotator data is committed before it returns.
+_EXTRA = [
+    "--/exts/isaacsim.core.throttling/enable_async=false",
+    "--/rtx/raytracing/subsurface/enabled=false",
+    "--/rtx/reflections/enabled=false",
+    "--/rtx/translucency/enabled=false",
+    "--/rtx/directLighting/sampledLighting/enabled=false",
+    "--/rtx/indirectDiffuse/enabled=false",
+    "--/rtx/ambientOcclusion/enabled=false",
+    "--/rtx/raytracing/lightcache/spatialCache/enabled=false",
+]
+from isaacsim import SimulationApp
+app = SimulationApp({"headless": True, "width": 960, "height": 540,
+                     "extra_args": _EXTRA})
+print("booted", flush=True)
 
-import omni.usd                               # noqa: E402
-from pxr import Gf, UsdGeom, UsdLux           # noqa: E402
-import omni.replicator.core as rep            # noqa: E402
+import torch, carb
+import omni.usd
+from pxr import Gf, UsdGeom
+import omni.replicator.core as rep
+from forge_plus.isaac_place_env import FrankaPlaceEnv, PlaceEnvCfg
+from forge_plus.skills.policy_network import ForceConditionedPolicy
+print("imports ok", flush=True)
 
-# -- 3. Paths --
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT  = os.path.dirname(SCRIPT_DIR)
-FRANKA_USD = "/workspace/assets/franka/franka_visuals.usd"
-TRAJ       = "/tmp/forge_traj_task3.npz"
-FRAMEDIR   = "/workspace/frames_task3"
-OUTPUT     = os.path.join(REPO_ROOT, "docs", "eval_episode_task3.mp4")
+S = carb.settings.get_settings()
+for _k in ["/rtx/reflections/enabled", "/rtx/translucency/enabled",
+            "/rtx/indirectDiffuse/enabled", "/rtx/ambientOcclusion/enabled",
+            "/rtx/directLighting/sampledLighting/enabled"]:
+    S.set(_k, False)
 
-os.makedirs(FRAMEDIR, exist_ok=True)
-for _f in Path(FRAMEDIR).glob("*.png"):
-    _f.unlink()
-Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
+cfg = PlaceEnvCfg()
+cfg.scene.num_envs = 1
+cfg.gripper = "franka_panda"
+env = FrankaPlaceEnv(cfg)
+print("env built", flush=True)
 
-FRAMES = 200
-FPS    = 24
+ckpt = torch.load("/workspace/FORGE-plus_task3/checkpoints/task3_franka_panda.pt",
+                  map_location=env.device, weights_only=False)
+policy = ForceConditionedPolicy(ckpt["policy_cfg"]).to(env.device)
+policy.load_state_dict(ckpt["policy_state_dict"])
+policy.eval()
+print("policy loaded", flush=True)
 
-# -- Load trajectory from eval_rollout_task3.py --
-print(f"[VID] loading trajectory: {TRAJ}", flush=True)
-traj       = np.load(TRAJ)
-joints_arr = traj["joints"]    # (N_STEPS, 7)
-ee_arr     = traj["ee"]        # (N_STEPS, 3)
-N_STEPS    = len(joints_arr)
-print(f"[VID] trajectory: {N_STEPS} steps", flush=True)
+out  = env.reset()
+obs  = (out[0] if isinstance(out, tuple) else out)["policy"]
+orig = env.scene.env_origins[0].cpu().numpy()
 
 stage = omni.usd.get_context().get_stage()
+cam = UsdGeom.Camera.Define(stage, "/World/EvalCam")
+cam.CreateFocalLengthAttr(24.0)
+eye = Gf.Vec3d(float(orig[0])+1.7, float(orig[1])-1.9, float(orig[2])+1.45)
+tgt = Gf.Vec3d(float(orig[0])+0.4, float(orig[1])+0.0, float(orig[2])+0.62)
+up  = Gf.Vec3d(0, 0, 1)
+fwd = (tgt - eye).GetNormalized()
+rgt = Gf.Cross(fwd, up).GetNormalized()
+tup = Gf.Cross(rgt, fwd).GetNormalized()
+M   = Gf.Matrix4d(rgt[0],rgt[1],rgt[2],0,
+                  tup[0],tup[1],tup[2],0,
+                  -fwd[0],-fwd[1],-fwd[2],0,
+                  eye[0],eye[1],eye[2],1)
+UsdGeom.Xformable(cam).AddTransformOp().Set(M)
+print("camera defined", flush=True)
 
-# -- 4. Lighting (copied verbatim from render_grid_video.py) --
-dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-dome.CreateIntensityAttr(600)
-key = UsdLux.DistantLight.Define(stage, "/World/KeyLight")
-key.CreateIntensityAttr(2000)
-key.CreateAngleAttr(0.53)
-UsdGeom.Xformable(key).AddRotateXYZOp().Set(Gf.Vec3f(-45, 30, 0))
+# Warmup 1: initialize RTX pipeline
+for _ in range(110): app.update()
 
-# -- 5. Ground plane (copied verbatim) --
-gnd = UsdGeom.Mesh.Define(stage, "/World/Ground")
-gnd.CreatePointsAttr([(-20,-20,0),(20,-20,0),(20,20,0),(-20,20,0)])
-gnd.CreateFaceVertexCountsAttr([4])
-gnd.CreateFaceVertexIndicesAttr([0,1,2,3])
-gnd.CreateNormalsAttr([(0,0,1)]*4)
-
-# -- 6. Scene: table + rack + block + Franka --
-ox, oy = 0.0, 0.0
-
-table = UsdGeom.Cube.Define(stage, "/World/Station_00/Table")
-table.CreateSizeAttr(1.0)
-UsdGeom.Xformable(table).AddScaleOp().Set(Gf.Vec3f(0.8, 0.8, 0.375))
-UsdGeom.Xformable(table).AddTranslateOp().Set(Gf.Vec3d(ox + 0.2, oy, 0.1875))
-
-rack = UsdGeom.Cube.Define(stage, "/World/Station_00/Rack")
-rack.CreateSizeAttr(1.0)
-UsdGeom.Xformable(rack).AddScaleOp().Set(Gf.Vec3f(0.14, 0.14, 0.665))
-UsdGeom.Xformable(rack).AddTranslateOp().Set(Gf.Vec3d(ox + 0.48, oy, 0.3325))
-
-block_prim = UsdGeom.Cube.Define(stage, "/World/Station_00/Block")
-block_prim.CreateSizeAttr(0.05)
-block_op   = UsdGeom.Xformable(block_prim).AddTranslateOp()
-block_op.Set(Gf.Vec3d(0.35, 0.10, 0.42))
-
-root = stage.DefinePrim("/World/Station_00/Robot", "Xform")
-root.GetReferences().AddReference(FRANKA_USD)
-UsdGeom.Xformable(root).AddTranslateOp().Set(Gf.Vec3d(ox, oy, 0.40))
-rob_rot_op = UsdGeom.Xformable(root).AddRotateXYZOp()
-
-# -- Helpers --
-def sample_traj(k):
-    idx = int(k / max(FRAMES - 1, 1) * max(N_STEPS - 1, 1))
-    idx = min(idx, N_STEPS - 1)
-    return joints_arr[idx], ee_arr[idx]
-
-def robot_xform_vec(joints):
-    return Gf.Vec3f(
-        float(math.degrees(joints[1])) * 0.4,
-        float(math.degrees(joints[0])) * 0.5,
-        float(math.degrees(joints[3])) * 0.2,
-    )
-
-def block_pos_at(k, ee):
-    t = k / max(FRAMES - 1, 1)
-    ex, ey, ez = float(ee[0]), float(ee[1]), float(ee[2])
-    bx, by, bz = 0.35, 0.10, 0.42
-    rx, ry, rz = 0.48, 0.00, 0.665
-    if t < 0.35:
-        return Gf.Vec3d(bx, by, bz)
-    elif t < 0.60:
-        a = (t - 0.35) / 0.25
-        return Gf.Vec3d(bx + a*(ex-bx), by + a*(ey-by), bz + a*(ez-bz))
-    elif t < 0.85:
-        return Gf.Vec3d(ex, ey, ez)
-    else:
-        a = (t - 0.85) / 0.15
-        return Gf.Vec3d(ex + a*(rx-ex), ey + a*(ry-ey), ez + a*(rz-ez))
-
-# -- 7. Camera (exact matrix from render_eval_video.py main) --
-_CAM_PATH = "/World/EvalCamera"
-_cam_prim = UsdGeom.Camera.Define(stage, _CAM_PATH)
-_cam_prim.CreateFocalLengthAttr(22.0)
-_eye    = Gf.Vec3d(1.7, -1.9, 1.45)
-_target = Gf.Vec3d(0.0,  0.0, 0.62)
-_up     = Gf.Vec3d(0, 0, 1)
-_fwd    = (_target - _eye).GetNormalized()
-_rgt    = Gf.Cross(_fwd, _up).GetNormalized()
-_tup    = Gf.Cross(_rgt, _fwd).GetNormalized()
-_mat    = Gf.Matrix4d(
-    _rgt[0],_rgt[1],_rgt[2],0,
-    _tup[0],_tup[1],_tup[2],0,
-    -_fwd[0],-_fwd[1],-_fwd[2],0,
-    _eye[0],_eye[1],_eye[2],1
-)
-UsdGeom.Xformable(_cam_prim).AddTransformOp().Set(_mat)
-
-# -- 8. Warmup --
-print("[VID] eye (1.7,-1.9,1.45) USD camera", flush=True)
-for _ in range(90):
-    app.update()
-
-# -- 9. Render product + annotator (exact copy from render_grid_video.py) --
-rp  = rep.create.render_product(_CAM_PATH, (1920, 1080))
+rp  = rep.create.render_product("/World/EvalCam", (960, 540))
 rgb = rep.AnnotatorRegistry.get_annotator("rgb")
 rgb.attach([rp])
 
-# Monkey-patch _resize_data_for_overscan (None-safe)
-from omni.replicator.core.scripts.utils import annotator_utils as _ann_utils
-_orig_resize = _ann_utils._resize_data_for_overscan
-def _safe_resize(data, data_params):
-    dz = (data_params or {}).get("datawindow_overscan_z")
-    dx = (data_params or {}).get("datawindow_overscan_x")
-    if dz is None or dx is None:
-        return data
-    return _orig_resize(data, data_params)
-_ann_utils._resize_data_for_overscan = _safe_resize
-print("[VID] overscan patch applied", flush=True)
+try:
+    from omni.replicator.core.scripts.utils import annotator_utils as _au
+    _orig_fn = _au._resize_data_for_overscan
+    def _safe(d, p):
+        if not p or p.get("datawindow_overscan_z") is None: return d
+        return _orig_fn(d, p)
+    _au._resize_data_for_overscan = _safe
+    print("overscan patch ok", flush=True)
+except Exception as ex:
+    print("overscan skip: " + str(ex), flush=True)
 
-# Re-warm after attaching
-for _ in range(90):
-    app.update()
+# Warmup 2: settle render product (annotator will be populated after these)
+for _ in range(110): app.update()
+print("render product ready", flush=True)
 
-# -- _grab(): data-first, step on retry (matches render_grid_video.py) --
+FRAMEDIR = "/workspace/frames_task3"
+os.makedirs(FRAMEDIR, exist_ok=True)
+for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
+OUTPUT = "/workspace/FORGE-plus_task3/docs/eval_episode_task3.mp4"
+Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
+
 def _grab():
-    for _try in range(12):
-        d = np.asarray(rgb.get_data())
-        if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
-            return d
-        rep.orchestrator.step(rt_subframes=2)
-        for _ in range(8):
-            app.update()
+    # v5: no orchestrator.step() -- annotator updated by env.step's app.update()
+    # With enable_async=false, render is sync so buffer is committed immediately.
+    # Add 2 extra app.update() calls to ensure pipeline flush before reading.
+    app.update()
+    app.update()
+    d = np.asarray(rgb.get_data())
+    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
+        return d
+    # One more attempt after brief sleep
+    _time.sleep(0.1)
+    app.update()
+    d = np.asarray(rgb.get_data())
+    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
+        return d
+    return None
 
-# -- 11. Render loop --
-print(f"[VID] rendering {FRAMES} frames...", flush=True)
-saved = 0
-for k in range(FRAMES):
-    joints, ee = sample_traj(k)
-    block_op.Set(block_pos_at(k, ee))
-    rob_rot_op.Set(robot_xform_vec(joints))
-    rep.orchestrator.step(rt_subframes=4)
-    for _ in range(10):
-        app.update()
-    _time.sleep(0.5)
-    d = _grab()
-    if d is None:
-        print(f"[VID] frame {k} EMPTY buffer", flush=True)
+N = 220
+saved = 0; succ_cum = 0
+t0 = _time.time()
+
+for k in range(N):
+    fcmd = env.f_cmd_norm().to(env.device)
+    with torch.no_grad():
+        m, _ = policy(obs, fcmd)
+    act = torch.clamp(m, -1, 1)
+
+    # Physics step -- internally calls app.update() which drives render product
+    # NO orchestrator.step() here (deadlocks via deferred callback)
+    res = env.step(act)
+    obs  = res[0]["policy"]
+    info = res[4]
+
+    cf_val  = float(env._contact_force()[0].item())
+    succ_n  = float(info.get("n_succ", 0.0))
+    brk_n   = float(info.get("n_brk",  0.0))
+    succ_cum += int(succ_n)
+
+    data = _grab()
+    if data is None:
+        if k % 20 == 0: print("step %d EMPTY frame" % k, flush=True)
         continue
-    Image.fromarray(d[:, :, :3]).save(os.path.join(FRAMEDIR, f"f_{k:04d}.png"))
-    saved += 1
-    if k % 20 == 0:
-        print(f"[VID] frame {k}/{FRAMES}  saved={saved}", flush=True)
 
+    img = Image.fromarray(data[:, :, :3]).convert("RGB")
+    dr  = ImageDraw.Draw(img)
+    st  = "SUCCESS" if succ_n > 0 else ("BREAK" if brk_n > 0 else "contact")
+    dr.text((20, 20), "FORGE+ Task3 step %3d/%d" % (k+1, N), fill=(255,255,255))
+    dr.text((20, 40), "contact force: %5.2f N"   % cf_val,    fill=(120,255,120))
+    dr.text((20, 60), "state: %s successes: %d"  % (st, succ_cum), fill=(255,255,120))
+    img.save(os.path.join(FRAMEDIR, "f_%04d.png" % k))
+    saved += 1
+
+    if k % 20 == 0:
+        print("step %d saved=%d cf=%.2f succ=%d t=%.1fs" % (
+              k, saved, cf_val, succ_cum, _time.time()-t0), flush=True)
+
+print("SAVED_FRAMES %d" % saved, flush=True)
+env.close()
 app.close()
 
-# -- 12. ffmpeg encode --
 if saved >= 10:
-    print(f"[VID] encoding {saved} frames -> {OUTPUT}", flush=True)
-    ret = subprocess.run([
-        "ffmpeg", "-y",
-        "-framerate", str(FPS),
-        "-pattern_type", "glob",
-        "-i", os.path.join(FRAMEDIR, "f_*.png"),
-        "-vcodec", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "medium",
-        "-crf", "22",
-        OUTPUT,
-    ], capture_output=True, text=True)
+    ret = subprocess.run(["ffmpeg","-y","-framerate","24",
+                          "-i", os.path.join(FRAMEDIR,"f_%04d.png"),
+                          "-c:v","libx264","-pix_fmt","yuv420p","-crf","20",OUTPUT],
+                         capture_output=True, text=True)
     if ret.returncode == 0:
-        sz = os.path.getsize(OUTPUT) // 1024
-        print(f"[VID] MP4: {OUTPUT} ({sz} KB)", flush=True)
+        print("FFMPEG ok %dKB" % (os.path.getsize(OUTPUT)//1024), flush=True)
     else:
-        print(f"[VID] ffmpeg err: {ret.stderr[-800:]}", flush=True)
-else:
-    print(f"[VID] too few frames ({saved}), skip encode", flush=True)
+        print("FFMPEG err: " + ret.stderr[-500:], flush=True)
+print("RENDER_ALL_DONE", flush=True)
