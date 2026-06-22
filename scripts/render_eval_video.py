@@ -154,7 +154,7 @@ camera = rep.create.camera(
 
 # -- 8. Warmup (same as render_grid_video.py) --
 print("[VID] eye (0,-2,1.8) rot (-25,0,0)", flush=True)
-for _ in range(90):
+for _w in range(110):
     app.update()
 
 # -- 9. Render product + annotator (exact copy) --
@@ -175,7 +175,7 @@ print("[VID] overscan patch applied", flush=True)
 print(f"[VID] animating {len(peg_ops)} pegs, FRAMES={FRAMES}", flush=True)
 
 # Re-warm after attaching (same as render_grid_video.py)
-for _ in range(90):
+for _w in range(110):
     app.update()
 
 # -- _grab(): EXACT copy from render_grid_video.py --
