@@ -183,8 +183,8 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     table_top_z:   float = 0.40   # table surface height
     obj_rest_z:    float = 0.44   # object resting z on table (centre + half-height)
     pre_grasp_z:   float = 0.60   # hover above object before descend
-    transport_z:   float = 0.85   # safe altitude for horizontal swing
-    rack_z:        float = 0.78   # elevated rack height — reachable by the Franka
+    transport_z:   float = 0.80   # safe altitude for horizontal swing (reach margin)
+    rack_z:        float = 0.72   # elevated rack height — reachable by the Franka
                                   # (max reach ~1.0 m from a floor base) and below
                                   # transport_z so PLACE_DESCEND actually descends.
                                   # (was 1.10 m, which was beyond reach AND above
@@ -207,8 +207,10 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     settle_steps:     int   = 4
     warmup_substeps:  int   = 10
 
-    # Phase advance tolerances
-    reach_tol: float = 0.05   # EE proximity to phase waypoint (m)
+    # Phase advance tolerances. 0.08 (was 0.05) because the Jacobian-transpose OSC
+    # has a steady-state error of a few cm near reach-limited waypoints; 0.05 was
+    # too tight and stalled the LIFT/TRANSPORT advance.
+    reach_tol: float = 0.08   # EE proximity to phase waypoint (m)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -647,8 +649,8 @@ if ISAAC_AVAILABLE:
                 (c.table_x, 0.0,      c.pre_grasp_z),
                 (c.table_x, 0.0,      c.obj_rest_z),
                 (c.table_x, 0.0,      c.obj_rest_z),
-                (c.rack_x,  c.rack_y, c.transport_z),
-                (c.rack_x,  c.rack_y, c.transport_z),
+                (c.table_x, 0.0,      c.transport_z),   # LIFT: straight up at table
+                (c.rack_x,  c.rack_y, c.transport_z),   # TRANSPORT: over to the rack
                 (c.rack_x,  c.rack_y, c.rack_z),
                 (c.rack_x,  c.rack_y, c.rack_z),
             ]
