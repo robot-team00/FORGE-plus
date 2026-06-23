@@ -557,12 +557,26 @@ if ISAAC_AVAILABLE:
             )
             self._contact_data = self._contact_sensor
 
+            # Surface contact sensor — net force applied *to* the Object/Rack by the
+            # gripper. This is the physically meaningful fragile-contact force and is
+            # immune to the gripper's finger-on-finger self-contact (which pollutes
+            # the robot sensor's net_forces_w when the gripper closes on air).
+            self._surf_sensor = ContactSensor(
+                ContactSensorCfg(
+                    prim_path="/World/envs/env_.*/(Object|Rack)",
+                    update_period=0.0,
+                    history_length=1,
+                    track_air_time=False,
+                )
+            )
+
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
             self.scene.rigid_objects["table"]  = self._table
             self.scene.rigid_objects["object"] = self._obj
             self.scene.rigid_objects["rack"]   = self._rack
             self.scene.sensors["contact"]      = self._contact_sensor
+            self.scene.sensors["surf"]         = self._surf_sensor
             self.scene.clone_environments(copy_from_source=False)
 
             # Cache joint / body indices
@@ -582,18 +596,19 @@ if ISAAC_AVAILABLE:
 
         # ── Contact force helpers ─────────────────────────────────────────────
         def _raw_contact_force(self) -> torch.Tensor:
-            # Sensor readings live on `.data` (NOT the sensor object). Prefer the
-            # filtered force_matrix_w (force against Object+Rack only) so the closed
-            # gripper's finger-on-finger contact does not pollute the grasp force.
+            # Net force applied TO the Object/Rack by the gripper, read from the
+            # surface sensor's `.data.net_forces_w` (shape (N, bodies, 3)). This is
+            # the fragile-contact force and excludes gripper self-contact.
+            sdata = getattr(self._surf_sensor, "data", None)
+            snf = getattr(sdata, "net_forces_w", None) if sdata is not None else None
+            if snf is not None and snf.numel() > 0:
+                return torch.norm(snf, dim=-1).sum(dim=1)
+            # Fallback: robot sensor filtered to Object+Rack.
             data = getattr(self._contact_sensor, "data", None)
             fm = getattr(data, "force_matrix_w", None) if data is not None else None
             if fm is not None and fm.numel() > 0:
-                # (N, bodies, filters, 3) -> per-env total force on Object+Rack
                 return torch.norm(fm, dim=-1).sum(dim=(1, 2))
-            nf = getattr(data, "net_forces_w", None) if data is not None else None
-            if nf is None:
-                return torch.zeros(self.num_envs, device=self.device)
-            return torch.norm(nf, dim=-1).sum(dim=1)
+            return torch.zeros(self.num_envs, device=self.device)
 
         def _contact_force(self) -> torch.Tensor:
             """Low-pass filtered scalar contact force."""
