@@ -28,6 +28,9 @@ import argparse
 from isaacsim import SimulationApp
 _app = SimulationApp({"headless": True})  # noqa: E402
 
+import sys  # noqa: E402
+sys.path.insert(0, "/workspace/FORGE-plus_task3")  # make forge_plus discoverable under Isaac Sim Python  # noqa: E402
+
 import os
 import re
 import time
