@@ -158,7 +158,11 @@ def _load_or_query_budgets() -> dict[str, float]:
 class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: ignore[misc]
     # Simulation
     sim: object = SimulationCfg(dt=1.0 / 120.0, render_interval=4) if ISAAC_AVAILABLE else None
-    episode_length_s: float = 12.0   # pick+transport+place needs more time than place-only
+    episode_length_s: float = 30.0   # 600 steps: the lam-clipped OSC moves slowly
+                                     # (~80 steps/phase), so the full 7-phase pick-
+                                     # transport-place needs ~400+ steps. At 12 s
+                                     # (240 steps) episodes timed out at LIFT before
+                                     # ever reaching RELEASE -> no success signal.
     decimation: int = 2
 
     # Spaces — must match ForceConditionedPolicy defaults (obs_dim=34, act_dim=7)
