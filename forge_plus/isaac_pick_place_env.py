@@ -446,7 +446,7 @@ if ISAAC_AVAILABLE:
             from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
 
             # Robot
-            robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+            robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*//Robot")
             self._robot = Articulation(robot_cfg)
 
             # Table (low flat surface)
@@ -457,7 +457,7 @@ if ISAAC_AVAILABLE:
             ) if False else sim_utils.CuboidCfg(size=(0.6, 0.6, table_h))  # use primitive cuboid
             self._table = RigidObject(
                 RigidObjectCfg(
-                    prim_path="{ENV_REGEX_NS}/Table",
+                    prim_path="/World/envs/env_.*//Table",
                     spawn=table_spawn,
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.table_x, 0.0, table_h / 2.0),
@@ -468,7 +468,7 @@ if ISAAC_AVAILABLE:
             # Overhead rack / bar (thin cuboid at rack_z height)
             self._rack = RigidObject(
                 RigidObjectCfg(
-                    prim_path="{ENV_REGEX_NS}/Rack",
+                    prim_path="/World/envs/env_.*//Rack",
                     spawn=sim_utils.CuboidCfg(size=(0.50, 0.04, 0.02)),
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
@@ -479,7 +479,7 @@ if ISAAC_AVAILABLE:
             # Contact sensor (panda_hand for pick+place force measurement)
             self._contact_sensor = ContactSensor(
                 ContactSensorCfg(
-                    prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+                    prim_path="/World/envs/env_.*//Robot/panda_hand",
                     history_length=3,
                     track_air_time=False,
                 )
