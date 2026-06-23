@@ -778,6 +778,17 @@ if ISAAC_AVAILABLE:
                      - self.scene.env_origins[:, 2])
             tgt_z = self._phase_target_z_local()
             close = (ee_z - tgt_z).abs() < c.reach_tol
+            # Contact phases press a compliant surface and cannot reach the
+            # sub-surface waypoint z (the surface stops the fingers above it), so
+            # "reached" is satisfied by making contact rather than z-proximity.
+            # Without this, DESCEND never completes and the grasp/place phases are
+            # never entered → 0 breakage and 0 success forever.
+            contact_phase = (
+                (self._phase == int(PickPlacePhase.DESCEND)) |
+                (self._phase == int(PickPlacePhase.GRASP)) |
+                (self._phase == int(PickPlacePhase.PLACE_DESCEND))
+            )
+            close = close | (contact_phase & (cf > c.contact_eps_n))
 
             grasp_ok = ((self._phase == int(PickPlacePhase.GRASP)) & (cf > c.grasp_force_n)) |                        (self._phase != int(PickPlacePhase.GRASP))
             place_ok = ((self._phase == int(PickPlacePhase.PLACE_DESCEND)) & (cf > c.place_force_n)) |                        (self._phase != int(PickPlacePhase.PLACE_DESCEND))
