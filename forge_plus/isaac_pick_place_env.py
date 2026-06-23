@@ -447,8 +447,8 @@ if ISAAC_AVAILABLE:
 
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-        robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
-        robot_cfg.spawn.activate_contact_sensors = True
+            robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
+            robot_cfg.spawn.activate_contact_sensors = True
             self._robot = Articulation(robot_cfg)
 
             # Table (low flat surface)
