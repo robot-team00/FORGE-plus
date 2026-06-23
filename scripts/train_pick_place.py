@@ -123,7 +123,7 @@ def main() -> None:
 
     start_iter = 0
     if args.resume and os.path.isfile(args.resume):
-        ckpt_data = torch.load(args.resume, map_location=dev)
+        ckpt_data = torch.load(args.resume, map_location=dev, weights_only=False)
         policy.load_state_dict(ckpt_data["policy_state_dict"])
         print(f"[train] resumed from {args.resume}", flush=True)
 
@@ -225,7 +225,7 @@ def main() -> None:
                     step=it,
                 )
             torch.save(
-                {"policy_state_dict": policy.state_dict(), "policy_cfg": pcfg},
+                {"policy_state_dict": policy.state_dict(), "policy_cfg": dict(vars(pcfg))},
                 ckpt,
             )
 

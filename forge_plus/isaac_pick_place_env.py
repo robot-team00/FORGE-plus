@@ -184,7 +184,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     obj_rest_z:    float = 0.44   # object resting z on table (centre + half-height)
     pre_grasp_z:   float = 0.60   # hover above object before descend
     transport_z:   float = 0.85   # safe altitude for horizontal swing
-    rack_z:        float = 1.10   # overhead rack / bar height (~1.1 m)
+    rack_z:        float = 0.78   # elevated rack height — reachable by the Franka
+                                  # (max reach ~1.0 m from a floor base) and below
+                                  # transport_z so PLACE_DESCEND actually descends.
+                                  # (was 1.10 m, which was beyond reach AND above
+                                  #  transport, making "descend" impossible.)
 
     # Horizontal offsets from robot base in env frame
     table_x: float = 0.45   # table centre x
@@ -445,10 +449,26 @@ if ISAAC_AVAILABLE:
         def _setup_scene(self) -> None:
             from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
 
+            # Compliant-contact gains (also set in __init__, but _setup_scene runs
+            # first via super().__init__ — set here so they exist for the spawn cfgs).
+            _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
+            self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
+
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
             robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
             robot_cfg.spawn.activate_contact_sensors = True
+            # Disable the joint PD controllers on the proximal joints so the OSC
+            # (Jacobian-transpose effort targets) actually moves the arm instead of
+            # being overpowered back to the default pose. Mirrors FrankaPlaceEnv.
+            for _an in ("panda_shoulder", "panda_forearm"):
+                robot_cfg.actuators[_an].stiffness = 0.0
+                robot_cfg.actuators[_an].damping = 0.0
+            _jp = dict(robot_cfg.init_state.joint_pos)
+            _jp["panda_joint2"] = -0.73
+            _jp["panda_joint4"] = -2.46
+            _jp["panda_joint6"] = 2.85
+            robot_cfg.init_state.joint_pos = _jp
             self._robot = Articulation(robot_cfg)
 
             # Table (low flat surface)
@@ -467,23 +487,72 @@ if ISAAC_AVAILABLE:
                 )
             )
 
-            # Overhead rack / bar (thin cuboid at rack_z height)
+            # Graspable fragile object on the table (kinematic + compliant contact).
+            # Pressing it during DESCEND/GRASP yields a controllable contact force
+            # gated by F_cmd/F_break — mirrors the proven FrankaPlaceEnv physics so
+            # the grasp-force gate (cf > grasp_force_n) is actually reachable.
+            self._obj = RigidObject(
+                RigidObjectCfg(
+                    prim_path="/World/envs/env_.*/Object",
+                    spawn=sim_utils.CuboidCfg(
+                        size=(0.09, 0.09, 0.14),   # top ~0.51 m: meets the finger's
+                                                   # rest height so grasp contact is
+                                                   # reachable with a small press.
+                        activate_contact_sensors=True,
+                        physics_material=sim_utils.RigidBodyMaterialCfg(
+                            compliant_contact_stiffness=self._grip_ks,
+                            compliant_contact_damping=self._grip_kd,
+                        ),
+                        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                        collision_props=sim_utils.CollisionPropertiesCfg(),
+                    ),
+                    init_state=RigidObjectCfg.InitialStateCfg(
+                        # Raised so the object top (~0.55) sits above where the
+                        # saturated OSC parks the fingers (~0.51), guaranteeing the
+                        # fingers penetrate it → contact force ~kp*lam (~30 N) that
+                        # the policy modulates within the lam band.
+                        pos=(self.cfg.table_x, 0.0, self.cfg.obj_rest_z + 0.04),
+                    ),
+                )
+            )
+
+            # Overhead rack / bar (thin cuboid at rack_z height) — compliant contact
+            # so the PLACE_DESCEND place-force gate is also reachable.
             self._rack = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Rack",
-                    spawn=sim_utils.CuboidCfg(size=(0.50, 0.04, 0.02), rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), collision_props=sim_utils.CollisionPropertiesCfg()),
+                    spawn=sim_utils.CuboidCfg(
+                        size=(0.50, 0.20, 0.08),   # thick enough that the place
+                                                   # waypoint (rack_z) sits inside it
+                                                   # → fingers reliably contact on
+                                                   # PLACE_DESCEND.
+                        activate_contact_sensors=True,
+                        physics_material=sim_utils.RigidBodyMaterialCfg(
+                            compliant_contact_stiffness=self._grip_ks,
+                            compliant_contact_damping=self._grip_kd,
+                        ),
+                        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                        collision_props=sim_utils.CollisionPropertiesCfg(),
+                    ),
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
                     ),
                 )
             )
 
-            # Contact sensor (panda_hand for pick+place force measurement)
+            # Contact sensor on hand + fingers, filtered to the object and rack so
+            # net_forces_w reports the grasp/place contact force (panda_hand alone
+            # never touches either surface → was reading ~0 N).
             self._contact_sensor = ContactSensor(
                 ContactSensorCfg(
-                    prim_path="/World/envs/env_.*/Robot/panda_hand",
-                    history_length=3,
+                    prim_path="/World/envs/env_.*/Robot/panda_(hand|leftfinger|rightfinger)",
+                    update_period=0.0,
+                    history_length=1,
                     track_air_time=False,
+                    filter_prim_paths_expr=[
+                        "/World/envs/env_.*/Object",
+                        "/World/envs/env_.*/Rack",
+                    ],
                 )
             )
             self._contact_data = self._contact_sensor
@@ -491,6 +560,7 @@ if ISAAC_AVAILABLE:
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
             self.scene.rigid_objects["table"]  = self._table
+            self.scene.rigid_objects["object"] = self._obj
             self.scene.rigid_objects["rack"]   = self._rack
             self.scene.sensors["contact"]      = self._contact_sensor
             self.scene.clone_environments(copy_from_source=False)
@@ -512,7 +582,15 @@ if ISAAC_AVAILABLE:
 
         # ── Contact force helpers ─────────────────────────────────────────────
         def _raw_contact_force(self) -> torch.Tensor:
-            nf = getattr(self._contact_data, "net_forces_w", None)
+            # Sensor readings live on `.data` (NOT the sensor object). Prefer the
+            # filtered force_matrix_w (force against Object+Rack only) so the closed
+            # gripper's finger-on-finger contact does not pollute the grasp force.
+            data = getattr(self._contact_sensor, "data", None)
+            fm = getattr(data, "force_matrix_w", None) if data is not None else None
+            if fm is not None and fm.numel() > 0:
+                # (N, bodies, filters, 3) -> per-env total force on Object+Rack
+                return torch.norm(fm, dim=-1).sum(dim=(1, 2))
+            nf = getattr(data, "net_forces_w", None) if data is not None else None
             if nf is None:
                 return torch.zeros(self.num_envs, device=self.device)
             return torch.norm(nf, dim=-1).sum(dim=1)
@@ -523,10 +601,11 @@ if ISAAC_AVAILABLE:
 
         def _contact_wrench_6d(self) -> torch.Tensor:
             """6D force-torque for observation (ft_wrench slot)."""
-            nf = getattr(self._contact_data, "net_forces_w", None)
+            data = getattr(self._contact_sensor, "data", None)
+            nf = getattr(data, "net_forces_w", None) if data is not None else None
             if nf is None:
                 return torch.zeros(self.num_envs, 6, device=self.device)
-            flat = nf.view(self.num_envs, -1)
+            flat = nf.reshape(self.num_envs, -1)
             if flat.shape[1] >= 6:
                 return flat[:, :6]
             pad = torch.zeros(self.num_envs, 6 - flat.shape[1], device=self.device)
