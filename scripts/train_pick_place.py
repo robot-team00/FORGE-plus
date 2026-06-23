@@ -53,7 +53,7 @@ from forge_plus.skills.policy_network import (  # noqa: E402
 
 def main() -> None:
     p = argparse.ArgumentParser(description="FORGE-plus Task 3: pick-and-place PPO")
-    p.add_argument("--num-envs",   type=int,   default=512,
+    p.add_argument("--num_envs",   type=int,   default=512,
                    help="number of parallel Isaac envs")
     p.add_argument("--gripper",                default="franka_panda",
                    help="franka_panda | robotiq_2f140")
