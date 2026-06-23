@@ -447,6 +447,8 @@ if ISAAC_AVAILABLE:
 
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+        robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
+        robot_cfg.spawn.activate_contact_sensors = True
             self._robot = Articulation(robot_cfg)
 
             # Table (low flat surface)
@@ -454,7 +456,7 @@ if ISAAC_AVAILABLE:
             table_spawn = sim_utils.UsdFileCfg(
                 usd_path="{NVIDIA_NUCLEUS_DIR}/Assets/Props/Furniture/table/table.usd",
                 scale=(0.6, 0.6, table_h),
-            ) if False else sim_utils.CuboidCfg(size=(0.6, 0.6, table_h))  # use primitive cuboid
+            ) if False else sim_utils.CuboidCfg(size=(0.6, 0.6, table_h), rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), collision_props=sim_utils.CollisionPropertiesCfg())  # use primitive cuboid
             self._table = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Table",
@@ -469,7 +471,7 @@ if ISAAC_AVAILABLE:
             self._rack = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Rack",
-                    spawn=sim_utils.CuboidCfg(size=(0.50, 0.04, 0.02)),
+                    spawn=sim_utils.CuboidCfg(size=(0.50, 0.04, 0.02), rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), collision_props=sim_utils.CollisionPropertiesCfg()),
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
                     ),
