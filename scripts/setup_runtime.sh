@@ -74,3 +74,18 @@ DISPLAY=:1 vulkaninfo --summary 2>/dev/null | grep -E "deviceName|driverName" ||
 
 echo "[setup] DONE. Render with:"
 echo "    cd $REPO && DISPLAY=:99 /workspace/.venv/bin/python scripts/render_task3.py"
+
+# -- Ollama startup (added by FORGE-plus task3 setup) -----------------------
+# Binary: /workspace/bin/ollama  (persists; do NOT reinstall from internet)
+# Models: /workspace/ollama_models  (persists across pod restarts)
+if ! pgrep -f "workspace/bin/ollama" > /dev/null 2>&1; then
+    export OLLAMA_MODELS=/workspace/ollama_models
+    export OLLAMA_HOME=/workspace
+    nohup /workspace/bin/ollama serve >/tmp/ollama.log 2>&1 &
+    sleep 2
+    echo "ollama serve started PID $!"
+else
+    echo "ollama already running"
+fi
+# ---------------------------------------------------------------------------
+
