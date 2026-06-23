@@ -497,7 +497,7 @@ if ISAAC_AVAILABLE:
 
             # Cache joint / body indices
             self._arm_ids = list(range(7))
-            self._ee_idx  = list(self._robot.data.body_names).index("panda_hand")
+            self._ee_idx  = -1  # resolved lazily in _reset_idx (data not ready at setup time)
 
         # ── Episode sampling ──────────────────────────────────────────────────
         def _sample_episode(self, ids) -> None:
@@ -712,6 +712,9 @@ if ISAAC_AVAILABLE:
 
         # ── Reset ─────────────────────────────────────────────────────────────
         def _reset_idx(self, env_ids) -> None:
+            # Lazy-init ee body index (data unavailable during _setup_scene)
+            if self._ee_idx < 0:
+                self._ee_idx = list(self._robot.data.body_names).index("panda_hand")
             super()._reset_idx(env_ids)
             jp = self._robot.data.default_joint_pos[env_ids]
             jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
