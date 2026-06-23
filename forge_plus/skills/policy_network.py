@@ -82,7 +82,7 @@ class ForceConditionedPolicy(nn.Module):
 
         # Output heads
         self.mean_head = nn.Linear(cfg.hidden_dim, cfg.act_dim)
-        self.log_std = nn.Parameter(torch.zeros(cfg.act_dim))
+        self.log_std = nn.Parameter(torch.full((cfg.act_dim,), -1.5))
 
         self._init_weights()
 

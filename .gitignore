@@ -13,3 +13,12 @@ assets/
 docs/*.mp4
 tmp_forge_traj.npz
 .ipynb_checkpoints/
+
+# Run outputs and scratch files
+runs/
+wandb/
+*.bak_*
+tmp_*.txt
+tmp_*.json
+tmp_*.hex
+_committed_*.txt

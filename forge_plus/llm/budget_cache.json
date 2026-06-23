@@ -1,0 +1,116 @@
+{
+  "_meta": {
+    "source": "llama3.1:8b offline budget-setter (identity-only)",
+    "task": "place_on_rack"
+  },
+  "objects": {
+    "abs_round_connector": {
+      "name": "\u00d88mm ABS round connector",
+      "material": "ABS",
+      "object_class": "round_connector",
+      "geometry_tags": [
+        "thin_wall",
+        "press_fit"
+      ],
+      "f_break_mean_n": 38.0,
+      "f_break_std_n": 5.0,
+      "f_break_min_n": 20.0,
+      "f_max_llm_n": 10.5
+    },
+    "steel_peg": {
+      "name": "\u00d810mm steel precision peg",
+      "material": "steel",
+      "object_class": "precision_peg",
+      "geometry_tags": [
+        "solid",
+        "clearance_fit"
+      ],
+      "f_break_mean_n": 230.0,
+      "f_break_std_n": 20.0,
+      "f_break_min_n": 180.0,
+      "f_max_llm_n": 30.0
+    },
+    "resin_planet_gear": {
+      "name": "\u00d822mm resin planet gear (12T)",
+      "material": "photopolymer resin",
+      "object_class": "planet_gear",
+      "geometry_tags": [
+        "tooth_mesh",
+        "press_fit_bore",
+        "brittle"
+      ],
+      "f_break_mean_n": 48.0,
+      "f_break_std_n": 8.0,
+      "f_break_min_n": 28.0,
+      "f_max_llm_n": 10.5
+    },
+    "metal_planet_gear": {
+      "name": "\u00d822mm aluminium planet gear (12T)",
+      "material": "aluminium",
+      "object_class": "planet_gear",
+      "geometry_tags": [
+        "tooth_mesh",
+        "press_fit_bore"
+      ],
+      "f_break_mean_n": 210.0,
+      "f_break_std_n": 18.0,
+      "f_break_min_n": 165.0,
+      "f_max_llm_n": 10.5
+    },
+    "glass_bowl": {
+      "name": "\u00d8120mm borosilicate glass bowl",
+      "material": "borosilicate glass",
+      "object_class": "bowl",
+      "geometry_tags": [
+        "brittle",
+        "curved_rim",
+        "no_hole"
+      ],
+      "f_break_mean_n": 22.0,
+      "f_break_std_n": 4.0,
+      "f_break_min_n": 12.0,
+      "f_max_llm_n": 10.0
+    },
+    "ceramic_plate": {
+      "name": "\u00d8200mm ceramic plate",
+      "material": "stoneware ceramic",
+      "object_class": "plate",
+      "geometry_tags": [
+        "brittle",
+        "flat_seating",
+        "no_hole"
+      ],
+      "f_break_mean_n": 26.0,
+      "f_break_std_n": 5.0,
+      "f_break_min_n": 14.0,
+      "f_max_llm_n": 10.0
+    },
+    "metal_plate": {
+      "name": "200\u00d7150mm aluminium tray",
+      "material": "aluminium",
+      "object_class": "tray",
+      "geometry_tags": [
+        "flat_seating",
+        "robust",
+        "no_hole"
+      ],
+      "f_break_mean_n": 180.0,
+      "f_break_std_n": 25.0,
+      "f_break_min_n": 120.0,
+      "f_max_llm_n": 50.0
+    },
+    "sturdy_mug": {
+      "name": "\u00d890mm stoneware mug (thick-walled)",
+      "material": "stoneware",
+      "object_class": "mug",
+      "geometry_tags": [
+        "thick_wall",
+        "robust_for_ceramics"
+      ],
+      "f_break_mean_n": 160.0,
+      "f_break_std_n": 20.0,
+      "f_break_min_n": 110.0,
+      "f_max_llm_n": 50.0
+    }
+  }
+}

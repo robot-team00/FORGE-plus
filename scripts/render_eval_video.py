@@ -34,7 +34,7 @@ os.environ["DISPLAY"] = ":1"
 
 # -- 2. Boot Isaac Sim (EXACT same args as render_grid_video.py) --
 from isaacsim import SimulationApp  # noqa: E402
-app = SimulationApp({"headless": True, "width": 1920, "height": 1080, "extra_args": ["--/rtx/raytracing/subsurface/enabled=false"]})
+app = SimulationApp({"headless": True, "width": 1920, "height": 1080})
 print("Isaac Sim booted.", flush=True)
 
 import omni.usd                           # noqa: E402
@@ -154,7 +154,7 @@ camera = rep.create.camera(
 
 # -- 8. Warmup (same as render_grid_video.py) --
 print("[VID] eye (0,-2,1.8) rot (-25,0,0)", flush=True)
-for _ in range(90):
+for _w in range(110):
     app.update()
 
 # -- 9. Render product + annotator (exact copy) --
@@ -175,21 +175,17 @@ print("[VID] overscan patch applied", flush=True)
 print(f"[VID] animating {len(peg_ops)} pegs, FRAMES={FRAMES}", flush=True)
 
 # Re-warm after attaching (same as render_grid_video.py)
-for _ in range(90):
+for _w in range(110):
     app.update()
 
 # -- _grab(): EXACT copy from render_grid_video.py --
 def _grab():
+    """Grab an RGB frame, retrying if the buffer is empty (matches render_grid_video.py)."""
     for _try in range(12):
-        try:
-            rep.orchestrator.step(rt_subframes=12)
-            raw = rgb.get_data()
-            if raw is not None and len(raw) > 0:
-                d = np.frombuffer(raw, dtype=np.uint8).reshape(1080, 1920, 4)
-                return d
-        except Exception as e:
-            print(f"[VID] grab err {_try}: {e}", flush=True)
-        for _ in range(8): app.update()
+        d = np.asarray(rgb.get_data())
+        if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
+            return d
+        rep.orchestrator.step(rt_subframes=2)
         for _ in range(8):
             app.update()
         _time.sleep(0.4)
@@ -264,6 +260,9 @@ for k in range(FRAMES):
     for _ in range(10):
         app.update()
     _time.sleep(0.03)
+    rep.orchestrator.step(rt_subframes=4)
+    for _ in range(10):
+        app.update()
 
     d = _grab()
     if d is None:

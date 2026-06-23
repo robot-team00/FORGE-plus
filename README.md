@@ -350,7 +350,20 @@ Target training throughput: 1–4k parallel environments on a single RTX 4090 / 
 
 ## Headless Rendering
 
-Isaac Sim viewport rendering requires `NVIDIA_DRIVER_CAPABILITIES=all` set in the RunPod container environment **before** pod start. Blackwell (sm_120) GPUs also have a broken Vulkan ICD and cannot render regardless of capability settings.
+The task3 branch includes a complete live-physics RTX rendering pipeline.
+See **[docs/RENDERING.md](docs/RENDERING.md)** for the full fresh-pod guide.
 
-See [docs/rendering.md](docs/rendering.md) for the complete setup guide, GPU compatibility table, and troubleshooting steps.
-\n\n## Shared pod layout (RunPod)\n\nOn the shared pod, the heavy/shared things live **outside the repo** so all task clones (`FORGE-plus_main`, `FORGE-plus_task1`, `FORGE-plus_task3`) use one copy:\n\n- Python/Isaac venv: **`/workspace/.venv`** (run `/workspace/.venv/bin/python`).\n- Franka assets: **`/workspace/assets/franka/`** (USDs + `Props/` + `Materials/`).\n\nThese are git-ignored. After a pod (re)start run `bash scripts/setup_runtime.sh` (restores libEGL + shader cache + Xvfb). See `docs/ISAAC_RTX_RENDERING.md`.\n
+**Key scripts:**
+- `scripts/eval_rollout_task3.py` — run the policy, record states to `.npz`
+- `scripts/render_task3.py` — replay states with Isaac Sim RTX ray-tracing, export mp4
+
+**Quick start on a fresh pod:**
+```bash
+gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig
+bash scripts/setup_runtime.sh
+export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99
+/workspace/.venv/bin/python scripts/eval_rollout_task3.py --checkpoint checkpoints/task3_latest.pt --out /tmp/states.npz
+/workspace/.venv/bin/python scripts/render_task3.py --states /tmp/states.npz --out docs/videos/task3/eval_run_001.mp4
+```
+
+Videos are stored as `docs/videos/task3/eval_run_NNN.mp4`.

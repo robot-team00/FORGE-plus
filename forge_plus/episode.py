@@ -65,6 +65,7 @@ class AttemptRecord:
     peak_contact_n: float
     net_insert_mm: float
     recovery_latency_s: float = 0.0
+    failure_mode: str | None = None
 
 
 @dataclass
@@ -97,6 +98,9 @@ class EpisodeResult:
 
     # Per-attempt records
     attempts: list[AttemptRecord] = field(default_factory=list)
+
+    # Failure classification (place/stack: over_press | edge_load | tip)
+    failure_mode: str | None = None
 
     # Flags
     broke: bool = False
@@ -214,6 +218,7 @@ class EpisodeRunner:
                 # Evaluator-only breakage — the BROKEN outcome is set inside env.step()
                 if outcome == TaskOutcome.BROKEN:
                     net_insert = obs.contact_step.insert_pos_mm - attempt_start_insert
+                    fmode = self.env.current_failure_mode()
                     result.attempts.append(AttemptRecord(
                         attempt_idx=attempt_idx,
                         steps=attempt_steps,
@@ -221,7 +226,9 @@ class EpisodeRunner:
                         recovery_action=None,
                         peak_contact_n=attempt_peak,
                         net_insert_mm=net_insert,
+                        failure_mode=fmode,
                     ))
+                    result.failure_mode = fmode
                     result.termination = EpisodeTermination.BROKEN
                     self._finalize_metrics(
                         result, all_contact_forces, all_wrench_commands, f_max_n, t_start
@@ -239,6 +246,7 @@ class EpisodeRunner:
                     peak_contact_n=attempt_peak,
                     net_insert_mm=net_insert,
                 ))
+                result.failure_mode = None
                 result.termination = EpisodeTermination.SUCCESS
                 break
 
@@ -289,6 +297,8 @@ class EpisodeRunner:
             )
 
             net_insert = obs.contact_step.insert_pos_mm - attempt_start_insert
+            fmode = self.env.current_failure_mode()
+            result.failure_mode = fmode
             result.attempts.append(AttemptRecord(
                 attempt_idx=attempt_idx,
                 steps=attempt_steps,
@@ -297,6 +307,7 @@ class EpisodeRunner:
                 peak_contact_n=attempt_peak,
                 net_insert_mm=net_insert,
                 recovery_latency_s=rec_latency,
+                failure_mode=fmode,
             ))
 
             if self.verbose:
