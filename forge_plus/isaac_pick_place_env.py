@@ -454,6 +454,12 @@ if ISAAC_AVAILABLE:
             # first via super().__init__ — set here so they exist for the spawn cfgs).
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
             self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
+            # Dedicated (softer) compliant stiffness for the fragile contact surfaces.
+            # The gripper stiffness (4 kN/m) is near-rigid: any touch spikes contact
+            # force to ~150 N, far above the fragile budgets (9-72 N), so the policy
+            # cannot modulate gently. ~1.2 kN/m leaves room to press softly into the
+            # 2-72 N range the task needs.
+            self._surf_ks, self._surf_kd = 1200.0, 120.0
 
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -501,8 +507,8 @@ if ISAAC_AVAILABLE:
                                                    # reachable with a small press.
                         activate_contact_sensors=True,
                         physics_material=sim_utils.RigidBodyMaterialCfg(
-                            compliant_contact_stiffness=self._grip_ks,
-                            compliant_contact_damping=self._grip_kd,
+                            compliant_contact_stiffness=self._surf_ks,
+                            compliant_contact_damping=self._surf_kd,
                         ),
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -529,8 +535,8 @@ if ISAAC_AVAILABLE:
                                                    # PLACE_DESCEND.
                         activate_contact_sensors=True,
                         physics_material=sim_utils.RigidBodyMaterialCfg(
-                            compliant_contact_stiffness=self._grip_ks,
-                            compliant_contact_damping=self._grip_kd,
+                            compliant_contact_stiffness=self._surf_ks,
+                            compliant_contact_damping=self._surf_kd,
                         ),
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -763,9 +769,12 @@ if ISAAC_AVAILABLE:
             in_window = ((cf > adv_thresh) & (cf < self._f_cmd)).float()
             r = r + 0.5 * force_phase * in_window
 
-            # Force-excess penalty (FORGE: penalise approaching F_cmd)
-            excess = (cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)
-            r = r - 2.0 * excess
+            # Force-excess penalty (FORGE: penalise exceeding F_cmd). Bounded so an
+            # over-press guides the policy down instead of catastrophically swamping
+            # the progression rewards (unbounded -2*excess hit ~-33/step at cf~150 vs
+            # a 9 N budget, which taught the policy to avoid contact entirely).
+            excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
+            r = r - 1.0 * excess
 
             # Terminal rewards
             r = r + self._succeeded.float() * 10.0
