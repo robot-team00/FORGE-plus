@@ -31,14 +31,14 @@ import torch
 
 # ── Isaac Lab imports (fall back to mock on CPU-only nodes) ─────────────────
 try:
-    from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
-    from omni.isaac.lab.scene import InteractiveSceneCfg
-    from omni.isaac.lab.sim import SimulationCfg
-    from omni.isaac.lab.utils import configclass
-    from omni.isaac.lab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
-    from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg
-    from omni.isaac.lab.utils.math import quat_mul, quat_inv
-    import omni.isaac.lab.sim as sim_utils
+    from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+    from isaaclab.scene import InteractiveSceneCfg
+    from isaaclab.sim import SimulationCfg
+    from isaaclab.utils import configclass
+    from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
+    from isaaclab.sensors import ContactSensor, ContactSensorCfg
+    from isaaclab.utils.math import quat_mul, quat_inv
+    import isaaclab.sim as sim_utils
     ISAAC_AVAILABLE = True
 except ImportError:
     ISAAC_AVAILABLE = False
@@ -443,7 +443,7 @@ if ISAAC_AVAILABLE:
 
         # ── Scene ─────────────────────────────────────────────────────────────
         def _setup_scene(self) -> None:
-            from omni.isaac.lab_assets.franka import FRANKA_PANDA_CFG
+            from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
 
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
