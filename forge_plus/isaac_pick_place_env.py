@@ -396,8 +396,8 @@ if ISAAC_AVAILABLE:
             self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
 
             # Indices (resolved after scene build)
-            self._arm_ids:  list[int] = []
-            self._ee_idx:   int = 0
+            self._arm_ids:  list[int] = list(range(7))  # arm joint indices 0-6
+            self._ee_idx:   int = -1  # resolved lazily in _reset_idx
             self._osc_init: bool = False
 
             # Actions / EE state
