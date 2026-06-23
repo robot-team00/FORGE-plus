@@ -422,6 +422,7 @@ if ISAAC_AVAILABLE:
             self._f_break    = torch.zeros(N, device=d)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
             self._succeeded  = torch.zeros(N, dtype=torch.bool, device=d)
+            self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
             self._warmup     = torch.zeros(N, dtype=torch.long, device=d)
             self._az_filt    = torch.full((N,), -1.0, device=d)
@@ -739,15 +740,27 @@ if ISAAC_AVAILABLE:
             h_err    = (ee_z - tgt_z).abs()
             r = -0.3 * h_err
 
-            # Phase-progress bonus (each phase advance = +0.5 per step)
-            r = r + self._phase.float() * 0.5
+            # Phase-progress: one-time +2 when a phase is completed (drives
+            # progression). A small per-phase occupancy term (0.1) only breaks ties
+            # toward higher phases — it is too small to farm by camping, which was
+            # the failure mode of the old per-step phase*0.5 bonus.
+            r = r + self._advanced.float() * 2.0
+            r = r + self._phase.float() * 0.1
 
-            # Force-in-window bonus: reward gentle contact during force phases
+            # Force-in-window bonus: reward gentle BUT sufficient contact — cf above
+            # the phase's advance threshold (so it also progresses) and below f_cmd
+            # (so it stays safe). The old lower bound (contact_eps=0.5) let the policy
+            # farm this by hovering below the advance force without ever progressing.
             force_phase = (
                 (self._phase == int(PickPlacePhase.GRASP)) |
                 (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             ).float()
-            in_window = ((cf > c.contact_eps_n) & (cf < self._f_cmd)).float()
+            adv_thresh = torch.where(
+                self._phase == int(PickPlacePhase.PLACE_DESCEND),
+                torch.full_like(cf, c.place_force_n),
+                torch.full_like(cf, c.grasp_force_n),
+            )
+            in_window = ((cf > adv_thresh) & (cf < self._f_cmd)).float()
             r = r + 0.5 * force_phase * in_window
 
             # Force-excess penalty (FORGE: penalise approaching F_cmd)
@@ -794,6 +807,8 @@ if ISAAC_AVAILABLE:
             place_ok = ((self._phase == int(PickPlacePhase.PLACE_DESCEND)) & (cf > c.place_force_n)) |                        (self._phase != int(PickPlacePhase.PLACE_DESCEND))
 
             can_advance  = close & grasp_ok & place_ok & ~self._broke
+            # Envs that actually progress this step (not already at the final phase).
+            self._advanced = can_advance & (self._phase < (NUM_PHASES - 1))
             next_ph      = (self._phase + 1).clamp(max=NUM_PHASES - 1)
             self._phase  = torch.where(can_advance, next_ph, self._phase)
             self._phase_ctr += 1
