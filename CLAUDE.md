@@ -28,44 +28,46 @@ the pod first.
   `docs/insertion_success.mp4`). Stage explicit paths.
 
 
-## Headless Isaac Sim RTX rendering WORKS on this pod (fixed 2026-06-20)
+## Headless Isaac Sim RTX rendering — live-physics pipeline (working as of 2026-06-23)
 
-Full root-cause writeup + troubleshooting: **docs/ISAAC_RTX_RENDERING.md**
+See **docs/RENDERING.md** for the complete fresh-pod guide.
 
 ### After every pod (re)start, run once:
+```bash
+cd /workspace/FORGE-plus_task3
+gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig
+bash scripts/setup_runtime.sh          # GLVND, Xvfb :99, HOME/MPLBACKEND/DISPLAY
+```
 
-    cd /workspace/FORGE-plus_main      # or your task clone
-    bash scripts/setup_runtime.sh     # restores libEGL (Vulkan), shader cache, Xvfb :1
+### Record a rollout then render it (live-physics RTX path-traced):
+```bash
+export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99
+/workspace/.venv/bin/python scripts/eval_rollout_task3.py \
+    --checkpoint checkpoints/task3_latest.pt --out /tmp/states.npz
+/workspace/.venv/bin/python scripts/render_task3.py \
+    --states /tmp/states.npz --out docs/videos/task3/eval_run_NNN.mp4
+```
 
-### Render the eval rollout (photorealistic Franka Panda, RTX path-traced):
+Videos are saved to `docs/videos/task3/eval_run_NNN.mp4` (NNN = zero-padded run index).
+Existing render: `docs/videos/task3/eval_run_001.mp4`.
 
-    cd /workspace/FORGE-plus_main      # or your task clone
-    DISPLAY=:1 /workspace/.venv/bin/python scripts/render_eval_video.py
-    # -> docs/eval_episode.mp4  (1920x1080, 24fps)
-    # NOTE: the FIRST render after a restart is SLOW (~8 min) because Isaac compiles
-    # the RTX pipeline shaders once; the cache then persists and later runs are fast.
+### Hard-won facts — do NOT regress these (each cost hours to find):
 
-### Hard-won facts - do NOT regress these (each cost hours to find):
+1. **libGLU.so.1 required** — MDL-SDK fails silently without it. Rebuild stub on
+   every pod restart: `gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfig`
 
-1. Vulkan needs the GLVND dispatcher **libEGL.so.1** (apt: libegl1 + libglvnd0 ...).
-   Missing => NVIDIA Vulkan fails to init (vkCreateInstance ERROR_INCOMPATIBLE_DRIVER)
-   => RTX renders nothing: log says "Cannot load shader file GenerateMipMap.comp.hlsl"
-   and every frame is an "EMPTY buffer". nvidia-smi/CUDA still work - only graphics is dead.
-2. The Isaac **gpu_foundation shader cache ships as a stub**. scripts/fetch_shadercache.py
-   restores the ~19 compiled-shader files from the wheel via HTTP range requests.
-3. Frame capture MUST call **rep.orchestrator.step(rt_subframes=N)** before rgb.get_data().
-   Bare app.update() never populates the annotator on this build => empty frames forever.
-4. The camera uses **look_at=(...)**, NOT rotation=(...). Default Omniverse cameras look
-   straight down at the floor, so rotation=(-25,0,0) renders an empty grey frame.
-5. Use **/workspace/assets/franka/franka.usd** (shared assets, outside the repo; has real meshes). franka_visuals.usd has NO geometry.
-   Reference it under a *parent* Xform and put your translate/rotate/scale on the parent,
-   or you hit "xformOp:translate already exists" (the asset already has root xform ops).
-6. Run Isaac/video code with **/workspace/.venv/bin/python** (the venv is shared at /workspace/.venv, outside the repo) - the JupyterLab kernel python lacks pxr/imageio.
+2. **Remove rep.orchestrator.step() from live-physics loops** — it causes a
+   circular deadlock when env.step() is also called. Annotators get data directly
+   from env.step()'s internal app.update(). This was the main blocker.
 
-## Environment
-- GPU: NVIDIA RTX 2000 Ada (sm_89), driver 570.172.08. Isaac Sim 5.1.0. Vulkan 1.4.303.
-- Vulkan is headless-only here: needs Xvfb on display :1 (no real X server).
-- GitHub push credentials are NOT stored on the pod by default; push from a machine that has them.
+3. **Missing .rgs.hlsl shaders are non-fatal** — Translucency/Reflections/
+   DirectLightingSampled log errors but rendering works. Do not chase these.
+
+4. **Shader cache pre-population not needed** — fetch_shadercache.py removed
+   from setup_runtime.sh. Cold cache is fine.
+
+5. **Env vars before importing isaacsim**: HOME=/workspace/persist/ovhome,
+   MPLBACKEND=Agg, DISPLAY=:99 (not :1 — that may be in use by task1).
 
 ## PyBullet fallback (no GPU, always works)
 If Isaac/RTX is ever broken, scripts/eval_render_pybullet.py renders the same rollout with
