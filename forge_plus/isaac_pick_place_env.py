@@ -713,10 +713,14 @@ if ISAAC_AVAILABLE:
             jt      = jt - self._kd_joint * r.data.joint_vel[:, self._arm_ids]
             jt      = jt.clamp(-self._eff_lim, self._eff_lim)
 
-            # Gripper torque (open during transport, close during GRASP–PLACE_DESCEND)
+            # Gripper closes ONLY at the two force-measurement phases (GRASP, PLACE_
+            # DESCEND). It must open during LIFT/TRANSPORT: the object is kinematic
+            # (immovable), so a closed gripper clamped on it anchors the hand to the
+            # table and it cannot lift. The grasp is a symbolic gentle-force event,
+            # not literal carrying — so release after applying the pick force.
             close_mask = (
-                (self._phase >= int(PickPlacePhase.GRASP)) &
-                (self._phase <= int(PickPlacePhase.PLACE_DESCEND))
+                (self._phase == int(PickPlacePhase.GRASP)) |
+                (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             )
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
             gcmd   = self._gripper_cmd.unsqueeze(1)
