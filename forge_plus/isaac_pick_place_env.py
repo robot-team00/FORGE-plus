@@ -864,11 +864,15 @@ if ISAAC_AVAILABLE:
             self._phase  = torch.where(can_advance, next_ph, self._phase)
             self._phase_ctr += 1
 
-            # Settle at rack after reaching RELEASE
-            gentle = ((cf > c.contact_eps_n) & (cf < self._f_cmd) &
-                      (self._phase == int(PickPlacePhase.RELEASE)))
+            # Settle at rack after reaching RELEASE: a gentle placement = at RELEASE
+            # (which already required a gentle place contact at PLACE_DESCEND) with
+            # force staying UNDER budget. Drop the active-contact lower bound — you
+            # release the object, so requiring sustained cf>contact_eps wrongly reset
+            # the counter. Decrement (not hard-reset) so the oscillating contact
+            # force doesn't prevent a settled placement from registering.
+            gentle = (cf < self._f_cmd) & (self._phase == int(PickPlacePhase.RELEASE))
             self._settle_ctr = torch.where(
-                gentle, self._settle_ctr + 1, torch.zeros_like(self._settle_ctr)
+                gentle, self._settle_ctr + 1, (self._settle_ctr - 1).clamp(min=0)
             )
             self._succeeded = self._settle_ctr >= c.settle_steps
 
