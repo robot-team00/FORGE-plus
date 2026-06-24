@@ -202,6 +202,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     # Gripper
     gripper: str   = "franka_panda"
 
+    # Place-only mode: start each episode already holding the object at transport
+    # altitude and only do TRANSPORT -> PLACE_DESCEND -> RELEASE (gentle place).
+    # Skips the pick/grasp/lift phases (matches the proven FrankaPlaceEnv task).
+    place_only: bool = True
+
     # Force thresholds / settle criteria
     f_cmd_lo:         float = 6.0
     f_cmd_hi:         float = 120.0
@@ -736,6 +741,7 @@ if ISAAC_AVAILABLE:
             # not literal carrying — so release after applying the pick force.
             close_mask = (
                 (self._phase == int(PickPlacePhase.GRASP)) |
+                (self._phase == int(PickPlacePhase.TRANSPORT)) |
                 (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             )
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
@@ -871,7 +877,10 @@ if ISAAC_AVAILABLE:
             jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
             self._robot.write_joint_state_to_sim(jp, jv, env_ids=env_ids)
 
-            self._phase[env_ids]       = 0
+            # Place-only: begin already holding the object at transport altitude;
+            # the episode does TRANSPORT -> PLACE_DESCEND -> RELEASE only.
+            start_phase = int(PickPlacePhase.TRANSPORT) if self.cfg.place_only else 0
+            self._phase[env_ids]       = start_phase
             self._phase_ctr[env_ids]   = 0
             self._settle_ctr[env_ids]  = 0
             self._broke[env_ids]       = False
@@ -880,7 +889,8 @@ if ISAAC_AVAILABLE:
             self._cf_filt[env_ids]     = 0.0
             self._warmup[env_ids]      = self.cfg.warmup_substeps
             self._az_filt[env_ids]     = -1.0
-            self._gripper_cmd[env_ids] = 1.0   # start open
+            # Gripper closed when starting in carry/place mode (holding the object).
+            self._gripper_cmd[env_ids] = -1.0 if self.cfg.place_only else 1.0
             self._jt_target[env_ids]   = jp[:, self._arm_ids]
             self._sample_episode(env_ids)
 
