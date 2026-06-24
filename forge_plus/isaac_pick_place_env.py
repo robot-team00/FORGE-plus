@@ -411,7 +411,7 @@ if ISAAC_AVAILABLE:
             self._kp_pos   = 1200.0
             self._kd_pos   = 80.0
             self._kp_ori   = 50.0
-            self._kd_ori   = 14.0
+            self._kd_ori   = 24.0   # extra wrist-orientation damping (visible wobble)
             self._kd_joint = 1.0
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
@@ -827,9 +827,9 @@ if ISAAC_AVAILABLE:
             # move calmly. Damping the OSC gains alone did not help — the jitter is
             # policy-commanded.
             jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
-            r = r - 0.04 * jvel
+            r = r - 0.12 * jvel
             arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
-            r = r - 0.20 * arate
+            r = r - 0.45 * arate
             self._prev_actions = self._actions.clone()
 
             # Terminal rewards
