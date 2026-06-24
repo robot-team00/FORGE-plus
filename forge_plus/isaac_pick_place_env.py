@@ -716,6 +716,18 @@ if ISAAC_AVAILABLE:
             jt      = torch.bmm(jac.transpose(1, 2), wrench.unsqueeze(-1)).squeeze(-1)
             jt      = jt - self._kd_joint * r.data.joint_vel[:, self._arm_ids]
             jt      = jt.clamp(-self._eff_lim, self._eff_lim)
+            # Gravity compensation: with the proximal joints' PD zeroed (for OSC
+            # tracking), nothing holds the arm against gravity, so the lam-clipped
+            # OSC drive (~kp*lam=30 N) could descend but not LIFT — the sequence
+            # stalled at LIFT forever. Add the gravity torques so the OSC force is
+            # available for motion in both directions.
+            try:
+                grav = r.root_physx_view.get_generalized_gravity_forces()
+                jt = jt + grav[:, self._arm_ids]
+            except Exception as _g:
+                if not getattr(self, "_grav_warned", False):
+                    print(f"[PickPlace] gravity comp unavailable: {_g}", flush=True)
+                    self._grav_warned = True
 
             # Gripper closes ONLY at the two force-measurement phases (GRASP, PLACE_
             # DESCEND). It must open during LIFT/TRANSPORT: the object is kinematic
