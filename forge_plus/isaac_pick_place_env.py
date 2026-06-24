@@ -404,15 +404,15 @@ if ISAAC_AVAILABLE:
             super().__init__(cfg, render_mode=render_mode, **kw)
             N, d = self.num_envs, self.device
 
-            # OSC gains. Higher velocity-damping than FrankaPlaceEnv: gravity comp
-            # makes the arm effectively weightless, so the old low damping (kd_pos=80,
-            # kd_joint=1) left it badly underdamped -> visibly shaky/oscillating.
-            # Critically damp the motion (kd_pos ~ 2*sqrt(kp*m)) for smooth tracking.
-            self._kp_pos   = 900.0
-            self._kd_pos   = 260.0
+            # OSC gains (proven FrankaPlaceEnv values). Raising damping did not
+            # reduce the shakiness (it raised joint velocity), so the jitter is
+            # policy-commanded — handled by the joint-vel / action-rate penalties in
+            # _get_rewards rather than by detuning the controller.
+            self._kp_pos   = 1200.0
+            self._kd_pos   = 80.0
             self._kp_ori   = 50.0
-            self._kd_ori   = 30.0
-            self._kd_joint = 6.0
+            self._kd_ori   = 14.0
+            self._kd_joint = 1.0
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
             self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
@@ -424,6 +424,7 @@ if ISAAC_AVAILABLE:
 
             # Actions / EE state
             self._actions     = torch.zeros(N, 7, device=d)
+            self._prev_actions = torch.zeros(N, 7, device=d)  # for action-rate smoothness
             self._ee_quat_des = torch.zeros(N, 4, device=d)
             self._ee_quat_des[:, 0] = 1.0
             self._gripper_cmd = torch.ones(N, device=d)   # +1 = open, -1 = closed
@@ -820,6 +821,16 @@ if ISAAC_AVAILABLE:
             # a 9 N budget, which taught the policy to avoid contact entirely).
             excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
             r = r - 1.0 * excess
+
+            # Smoothness regularizers (reduce the visibly shaky motion): penalise
+            # fast joint motion and rapid action changes so the policy learns to
+            # move calmly. Damping the OSC gains alone did not help — the jitter is
+            # policy-commanded.
+            jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
+            r = r - 0.04 * jvel
+            arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
+            r = r - 0.20 * arate
+            self._prev_actions = self._actions.clone()
 
             # Terminal rewards
             r = r + self._succeeded.float() * 10.0
