@@ -163,11 +163,9 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                      # transport-place needs ~400+ steps. At 12 s
                                      # (240 steps) episodes timed out at LIFT before
                                      # ever reaching RELEASE -> no success signal.
-    decimation: int = 8    # policy at 120/8 = 15 Hz (matches FORGE), while the
-                           # task-space impedance controller runs every physics step
-                           # (120 Hz) and smoothly settles to each held target. The
-                           # old decimation=2 (60 Hz policy) jittered the target every
-                           # control step -> the shaky motion.
+    decimation: int = 2    # matches the proven FrankaPlaceEnv. (decimation=8 only
+                           # made things worse because the Jacobian bug made the
+                           # controller unstable; with the fix, 2 is smooth.)
 
     # Spaces — must match ForceConditionedPolicy defaults (obs_dim=34, act_dim=7)
     observation_space: int = 34
@@ -707,7 +705,11 @@ if ISAAC_AVAILABLE:
             )
             self._warmup = (self._warmup - 1).clamp(min=0)
 
-            jac       = r.root_physx_view.get_jacobians()[:, self._ee_idx, :, :7]
+            # Fixed-base arm: get_jacobians() omits the base link, so body i's
+            # Jacobian is at index i-1. Using self._ee_idx (not -1) read the WRONG
+            # body's Jacobian -> OSC mapped EE force onto the wrong joints -> the
+            # erratic/unstable shaking. (The working FrankaPlaceEnv uses ee_idx-1.)
+            jac       = r.root_physx_view.get_jacobians()[:, self._ee_idx - 1, :, :7]
             ee_pos_w  = r.data.body_pos_w[:, self._ee_idx]
             ee_quat_w = r.data.body_quat_w[:, self._ee_idx]
             ee_lin_v  = r.data.body_lin_vel_w[:, self._ee_idx]
