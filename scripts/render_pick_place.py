@@ -91,6 +91,9 @@ except Exception as ex:
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs = 1
 cfg.gripper = "franka_panda"
+POLICY_HOLD = int(cfg.decimation)   # query policy every N physics steps (15 Hz)
+cfg.decimation = 1                   # step physics one at a time so we can capture
+                                     # every 120 Hz substep -> smooth high-fps video
 env = FrankaPickPlaceEnv(cfg)
 print("env built", flush=True)
 
@@ -303,24 +306,23 @@ def _hud(img, k, phase_idx, cf, broke, succ):
     dr.text((GX+GW+12, GY+1), "%5.1f N" % cf, font=F_BIG, fill=bar_col)
     return img
 
-# Episode: run until terminal (+ short tail) or frame cap.
-N_MAX   = 360
-TAIL    = 20
-ACT_BETA = 0.0    # low-pass disabled: smoothness now comes from the FORGE control
-                  # rate (decimation=8 -> policy 15 Hz, impedance controller 120 Hz).
+# Episode: run until terminal (+ short tail) or frame cap. Frames are captured at
+# the 120 Hz physics rate; the policy is re-queried every POLICY_HOLD steps (15 Hz).
+N_MAX   = 480
+TAIL    = 60
 saved = 0
 term_at = None
 t0 = _time.time()
-act_filt = torch.zeros(env.num_envs, 7, device=env.device)
+act = torch.zeros(env.num_envs, 7, device=env.device)
 
 for k in range(N_MAX):
-    fcmd = env.f_cmd_norm().to(env.device)
-    with torch.no_grad():
-        act_m, _ = policy(obs, fcmd)
-    act = torch.clamp(act_m, -1, 1)
-    act_filt = ACT_BETA * act_filt + (1.0 - ACT_BETA) * act   # temporal smoothing
+    if k % POLICY_HOLD == 0:                      # FORGE rate: new policy target @15 Hz
+        fcmd = env.f_cmd_norm().to(env.device)
+        with torch.no_grad():
+            act_m, _ = policy(obs, fcmd)
+        act = torch.clamp(act_m, -1, 1)
 
-    res  = env.step(act_filt)
+    res  = env.step(act)                          # one physics substep + one render
     obs  = res[0]["policy"]
 
     phase_idx = int(env._phase[0].item())
@@ -363,7 +365,7 @@ ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
 if saved >= 10:
     ret = subprocess.run(
-        [ffmpeg_exe, "-y", "-framerate", "24",
+        [ffmpeg_exe, "-y", "-framerate", "60",   # 120 Hz capture @60fps = smooth 2x slow-mo
          "-i", os.path.join(FRAMEDIR, "f_%04d.png"),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", OUTPUT],
         capture_output=True, text=True)
