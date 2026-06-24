@@ -404,12 +404,15 @@ if ISAAC_AVAILABLE:
             super().__init__(cfg, render_mode=render_mode, **kw)
             N, d = self.num_envs, self.device
 
-            # OSC gains (matching FrankaPlaceEnv)
-            self._kp_pos   = 1200.0
-            self._kd_pos   = 80.0
+            # OSC gains. Higher velocity-damping than FrankaPlaceEnv: gravity comp
+            # makes the arm effectively weightless, so the old low damping (kd_pos=80,
+            # kd_joint=1) left it badly underdamped -> visibly shaky/oscillating.
+            # Critically damp the motion (kd_pos ~ 2*sqrt(kp*m)) for smooth tracking.
+            self._kp_pos   = 900.0
+            self._kd_pos   = 260.0
             self._kp_ori   = 50.0
-            self._kd_ori   = 14.0
-            self._kd_joint = 1.0
+            self._kd_ori   = 30.0
+            self._kd_joint = 6.0
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
             self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
