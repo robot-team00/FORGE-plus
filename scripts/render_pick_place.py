@@ -198,11 +198,11 @@ OBJ_REST_W = (float(orig[0]) + c.table_x, float(orig[1]) + 0.0, float(orig[2]) +
 obj_t.Set(Gf.Vec3d(*OBJ_REST_W))
 print("fragile obj '%s' added" % OBJ_KEY, flush=True)
 
-# ── Camera (task spec: eye=(-1.40,-1.10,1.05) toward (0.45,0.05,0.72), env-local) ─
+# ── Camera: frame the whole arm + table + rack (the place workspace) ──────────
 cam = UsdGeom.Camera.Define(stage, "/World/EvalCam")
-cam.CreateFocalLengthAttr(24.0)
-eye = Gf.Vec3d(float(orig[0]) - 1.40, float(orig[1]) - 1.10, float(orig[2]) + 1.05)
-tgt = Gf.Vec3d(float(orig[0]) + 0.45, float(orig[1]) + 0.05, float(orig[2]) + 0.72)
+cam.CreateFocalLengthAttr(19.0)   # a bit wider so the full arm fits
+eye = Gf.Vec3d(float(orig[0]) - 1.55, float(orig[1]) - 1.35, float(orig[2]) + 1.05)
+tgt = Gf.Vec3d(float(orig[0]) + 0.22, float(orig[1]) + 0.14, float(orig[2]) + 0.50)
 up  = Gf.Vec3d(0, 0, 1)
 fwd = (tgt - eye).GetNormalized()
 rgt = Gf.Cross(fwd, up).GetNormalized()
@@ -306,17 +306,21 @@ def _hud(img, k, phase_idx, cf, broke, succ):
 # Episode: run until terminal (+ short tail) or frame cap.
 N_MAX   = 360
 TAIL    = 20
+ACT_BETA = 0.55   # action low-pass: smooths high-frequency control ripple so the
+                  # rendered arm moves calmly (the policy still completes the place).
 saved = 0
 term_at = None
 t0 = _time.time()
+act_filt = torch.zeros(env.num_envs, 7, device=env.device)
 
 for k in range(N_MAX):
     fcmd = env.f_cmd_norm().to(env.device)
     with torch.no_grad():
         act_m, _ = policy(obs, fcmd)
     act = torch.clamp(act_m, -1, 1)
+    act_filt = ACT_BETA * act_filt + (1.0 - ACT_BETA) * act   # temporal smoothing
 
-    res  = env.step(act)
+    res  = env.step(act_filt)
     obs  = res[0]["policy"]
 
     phase_idx = int(env._phase[0].item())

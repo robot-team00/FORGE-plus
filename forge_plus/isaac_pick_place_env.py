@@ -826,10 +826,14 @@ if ISAAC_AVAILABLE:
             # fast joint motion and rapid action changes so the policy learns to
             # move calmly. Damping the OSC gains alone did not help — the jitter is
             # policy-commanded.
+            # Moderate smoothness penalty: enough to calm the motion without making
+            # the deterministic policy too sluggish to complete the transport
+            # (0.12/0.45 over-damped it -> stuck at TRANSPORT). Residual high-freq
+            # ripple is low-passed at render time.
             jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
-            r = r - 0.12 * jvel
+            r = r - 0.05 * jvel
             arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
-            r = r - 0.45 * arate
+            r = r - 0.22 * arate
             self._prev_actions = self._actions.clone()
 
             # Terminal rewards
