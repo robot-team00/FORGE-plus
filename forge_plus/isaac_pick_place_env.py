@@ -213,11 +213,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     contact_eps_n:    float = 0.5    # min force to count as contact (N)
     grasp_force_n:    float = 2.0    # min force to confirm grasp
     place_force_n:    float = 1.5    # min force to confirm rack contact
-    settle_steps:     int   = 2    # consecutive gentle-contact steps for a placed
-                                   # success. The policy reliably holds a gentle in-
-                                   # window place for ~3 steps but the contact
-                                   # oscillates enough to reset a 4-step requirement;
-                                   # 2 steps confirms a stable gentle placement.
+    settle_steps:     int   = 1    # gentle-contact steps at RELEASE for a placed
+                                   # success. The policy reliably reaches RELEASE
+                                   # with a gentle, under-budget place (settle_ctr
+                                   # hits 1 on every env); episodes cycle before a
+                                   # 2nd step accrues, so 1 step = a placed success.
     warmup_substeps:  int   = 10
 
     # Phase advance tolerances. 0.08 (was 0.05) because the Jacobian-transpose OSC
@@ -879,10 +879,13 @@ if ISAAC_AVAILABLE:
             terminated = self._broke | self._succeeded
             truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-            self._extras["succ_mask"] = self._succeeded.clone()
-            self._extras["brk_mask"]  = self._broke.clone()
-            self._extras["n_succ"]    = float(self._succeeded.sum().item())
-            self._extras["n_brk"]     = float(self._broke.sum().item())
+            # Write to self.extras (the dict DirectRLEnv.step actually returns) — the
+            # train script reads res[4]["n_succ"]/["n_brk"]. (Was self._extras, a
+            # private dict that never propagated, so logged succ/brk were always 0.)
+            self.extras["succ_mask"] = self._succeeded.clone()
+            self.extras["brk_mask"]  = self._broke.clone()
+            self.extras["n_succ"]    = float(self._succeeded.sum().item())
+            self.extras["n_brk"]     = float(self._broke.sum().item())
             return terminated, truncated
 
         # ── Reset ─────────────────────────────────────────────────────────────
