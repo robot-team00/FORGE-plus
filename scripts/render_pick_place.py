@@ -28,13 +28,13 @@ sys.path.insert(0, "/workspace/FORGE-plus_task3")  # forge_plus package
 
 _EXTRA = [
     "--/exts/isaacsim.core.throttling/enable_async=false",
-    "--/rtx/raytracing/subsurface/enabled=false",
-    "--/rtx/reflections/enabled=false",
-    "--/rtx/translucency/enabled=false",
-    "--/rtx/directLighting/sampledLighting/enabled=false",
-    "--/rtx/indirectDiffuse/enabled=false",
-    "--/rtx/ambientOcclusion/enabled=false",
-    "--/rtx/raytracing/lightcache/spatialCache/enabled=false",
+    # Photorealistic quality: enable the full RT global-illumination stack.
+    "--/rtx/reflections/enabled=true",
+    "--/rtx/translucency/enabled=true",
+    "--/rtx/indirectDiffuse/enabled=true",
+    "--/rtx/ambientOcclusion/enabled=true",
+    "--/rtx/directLighting/sampledLighting/enabled=true",
+    "--/rtx/post/dlss/execMode=2",
 ]
 
 from isaacsim import SimulationApp
@@ -44,7 +44,7 @@ print("booted", flush=True)
 
 import torch, carb
 import omni.usd
-from pxr import Gf, UsdGeom, UsdShade, Sdf
+from pxr import Gf, UsdGeom, UsdShade, Sdf, UsdLux, UsdPhysics
 import omni.replicator.core as rep
 from forge_plus.isaac_pick_place_env import (
     FrankaPickPlaceEnv, PickPlaceEnvCfg, PickPlacePhase, OBJ_KEYS, FRAGILE_OBJECTS,
@@ -66,10 +66,26 @@ def _font(sz):
 F_TITLE, F_BIG, F_MED, F_SM = _font(22), _font(20), _font(17), _font(14)
 
 S = carb.settings.get_settings()
+# Photorealistic RTX: path-traced global illumination with accumulation.
 for _k in ["/rtx/reflections/enabled", "/rtx/translucency/enabled",
             "/rtx/indirectDiffuse/enabled", "/rtx/ambientOcclusion/enabled",
             "/rtx/directLighting/sampledLighting/enabled"]:
-    S.set(_k, False)
+    S.set(_k, True)
+try:
+    # High-quality real-time RTX (reliable on a moving scene). Soft shadows,
+    # multi-bounce indirect, denoised. (Path tracing is too slow per-frame for a
+    # 360-frame physics sequence on this pod.)
+    S.set("/rtx/directLighting/sampledLighting/samplesPerPixel", 4)
+    S.set("/rtx/ambientOcclusion/enabled", True)
+    S.set("/rtx/reflections/maxRoughness", 0.9)
+    S.set("/rtx/indirectDiffuse/enabled", True)
+    S.set("/rtx/indirectDiffuse/numBounces", 3)
+    S.set("/rtx/sceneDb/ambientLightIntensity", 0.45)
+    S.set("/rtx/post/aa/op", 3)                  # DLAA/TAA antialiasing
+    S.set("/rtx/post/tonemap/op", 1)             # filmic tonemap
+    print("high-quality RTX configured", flush=True)
+except Exception as ex:
+    print("rtx quality settings skipped: " + str(ex), flush=True)
 
 # ── Environment (single env) ─────────────────────────────────────────────────
 cfg = PickPlaceEnvCfg()
@@ -95,43 +111,87 @@ c    = cfg
 
 stage = omni.usd.get_context().get_stage()
 
-def _bind_color(prim_path, rgb, rough=0.6, metal=0.0):
-    """Tint an existing scene prim with a UsdPreviewSurface (non-fatal)."""
+
+def _pbr(mat_path, rgb, rough=0.5, metal=0.0, opacity=1.0, ior=1.5,
+         clearcoat=0.0, specular=0.5, emissive=None):
+    """Create a UsdPreviewSurface PBR material (renders physically under RTX)."""
+    mat = UsdShade.Material.Define(stage, mat_path)
+    sh  = UsdShade.Shader.Define(stage, mat_path + "/Shader")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(rgb)
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(rough)
+    sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metal)
+    sh.CreateInput("specular", Sdf.ValueTypeNames.Float).Set(specular)
+    sh.CreateInput("clearcoat", Sdf.ValueTypeNames.Float).Set(clearcoat)
+    sh.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(0)
+    if opacity < 1.0:
+        sh.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
+        sh.CreateInput("ior", Sdf.ValueTypeNames.Float).Set(ior)
+    if emissive is not None:
+        sh.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(emissive)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
+
+def _bind(prim_path, mat):
     try:
-        mat_path = prim_path + "/_Mat"
-        mat = UsdShade.Material.Define(stage, mat_path)
-        sh  = UsdShade.Shader.Define(stage, mat_path + "/Shader")
-        sh.CreateIdAttr("UsdPreviewSurface")
-        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(rgb)
-        sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(rough)
-        sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metal)
-        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
         prim = stage.GetPrimAtPath(prim_path)
         if prim and prim.IsValid():
             UsdShade.MaterialBindingAPI(prim).Bind(mat)
-            print("tinted " + prim_path, flush=True)
+            print("material -> " + prim_path, flush=True)
     except Exception as ex:
-        print("tint skip %s: %s" % (prim_path, ex), flush=True)
+        print("bind skip %s: %s" % (prim_path, ex), flush=True)
 
-# Table + rack visual geometry already spawned by the env -> tint for clarity.
-_bind_color("/World/envs/env_0/Table", (0.55, 0.40, 0.25), rough=0.8)   # wood
-_bind_color("/World/envs/env_0/Rack",  (0.30, 0.32, 0.38), rough=0.3, metal=0.8)  # metal bar
+
+# ── Lighting: sky dome (soft ambient) + a key "sun" + a warm fill ───────────
+def _light():
+    dome = UsdLux.DomeLight.Define(stage, "/World/SkyDome")
+    dome.CreateIntensityAttr(900.0)
+    dome.CreateColorAttr((0.72, 0.80, 0.95))          # cool sky
+    dome.CreateExposureAttr(0.0)
+    sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
+    sun.CreateIntensityAttr(2600.0)
+    sun.CreateColorAttr((1.0, 0.96, 0.88))            # warm sun
+    sun.CreateAngleAttr(0.6)                           # soft shadows
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-48.0, 18.0, 0.0))
+    fill = UsdLux.SphereLight.Define(stage, "/World/Fill")
+    fill.CreateIntensityAttr(18000.0)
+    fill.CreateRadiusAttr(0.4)
+    fill.CreateColorAttr((1.0, 0.92, 0.82))
+    UsdGeom.Xformable(fill).AddTranslateOp().Set(
+        Gf.Vec3d(float(orig[0]) - 0.8, float(orig[1]) - 1.2, float(orig[2]) + 1.6))
+    print("lights added", flush=True)
+_light()
+
+# ── Ground plane (large, matte) so the robot sits in a real space ───────────
+gp = UsdGeom.Mesh.Define(stage, "/World/Ground")
+_S = 8.0
+gz = float(orig[2]) + 0.001
+gp.CreatePointsAttr([(-_S, -_S, gz), (_S, -_S, gz), (_S, _S, gz), (-_S, _S, gz)])
+gp.CreateFaceVertexCountsAttr([4]); gp.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+gp.CreateNormalsAttr([(0, 0, 1)] * 4)
+_bind("/World/Ground", _pbr("/World/Mats/Floor", (0.22, 0.23, 0.25), rough=0.55, specular=0.4))
+
+# ── Table + rack PBR materials (existing env prims) ─────────────────────────
+_bind("/World/envs/env_0/Table",
+      _pbr("/World/Mats/Table", (0.42, 0.28, 0.16), rough=0.45, specular=0.4, clearcoat=0.3))  # varnished wood
+_bind("/World/envs/env_0/Rack",
+      _pbr("/World/Mats/Rack", (0.78, 0.80, 0.84), rough=0.18, metal=1.0))                      # brushed metal
 
 # ── Fragile object visual prim (follows the gripper through the carry phases) ──
 OBJ_KEY  = OBJ_KEYS[int(env._obj_cls[0].item())]
-OBJ_RGB  = {"glass_bowl": (0.20, 0.75, 0.85), "ceramic_plate": (0.90, 0.85, 0.70),
-            "metal_plate": (0.70, 0.72, 0.78), "sturdy_mug": (0.70, 0.45, 0.30)}.get(OBJ_KEY, (0.8, 0.5, 0.3))
+# Per-material physically-plausible look: translucent glass, glazed ceramic, metal.
+_OBJ_MAT = {
+    "glass_bowl":    dict(rgb=(0.45, 0.78, 0.85), rough=0.03, opacity=0.30, ior=1.5, specular=1.0),
+    "ceramic_plate": dict(rgb=(0.92, 0.88, 0.78), rough=0.18, clearcoat=0.6, specular=0.7),
+    "metal_plate":   dict(rgb=(0.80, 0.81, 0.84), rough=0.20, metal=1.0),
+    "sturdy_mug":    dict(rgb=(0.62, 0.30, 0.22), rough=0.30, clearcoat=0.4),
+}.get(OBJ_KEY, dict(rgb=(0.8, 0.5, 0.3), rough=0.3))
 OBJ_PATH = "/World/FragileObj"
 obj_geom = UsdGeom.Cylinder.Define(stage, OBJ_PATH)
 obj_geom.CreateRadiusAttr(0.055)
 obj_geom.CreateHeightAttr(0.05)
-omat = UsdShade.Material.Define(stage, OBJ_PATH + "/Mat")
-osh  = UsdShade.Shader.Define(stage, OBJ_PATH + "/Mat/Shader")
-osh.CreateIdAttr("UsdPreviewSurface")
-osh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(OBJ_RGB)
-osh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.25)
-omat.CreateSurfaceOutput().ConnectToSource(osh.ConnectableAPI(), "surface")
-UsdShade.MaterialBindingAPI(obj_geom.GetPrim()).Bind(omat)
+UsdShade.MaterialBindingAPI(obj_geom.GetPrim()).Bind(_pbr(OBJ_PATH + "/Mat", **_OBJ_MAT))
 obj_xf = UsdGeom.Xformable(obj_geom.GetPrim())
 obj_t  = obj_xf.AddTranslateOp()
 OBJ_REST_W = (float(orig[0]) + c.table_x, float(orig[1]) + 0.0, float(orig[2]) + c.obj_rest_z)
@@ -186,8 +246,11 @@ for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
 OUTPUT = "/workspace/FORGE-plus_task3/docs/videos/task3/pick_place_eval_001.mp4"
 Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 
-def _grab():
-    app.update(); app.update()
+def _grab(settle=6):
+    # Accumulate several RTX subframes per captured frame so the denoised
+    # shadows / AO / reflections converge cleanly (the scene pose is fixed here).
+    for _ in range(settle):
+        app.update()
     d = np.asarray(rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
         return d
