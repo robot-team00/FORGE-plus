@@ -797,6 +797,16 @@ if ISAAC_AVAILABLE:
             in_window = ((cf > adv_thresh) & (cf < self._f_cmd)).float()
             r = r + 0.5 * force_phase * in_window
 
+            # Settle bonus: reward MAINTAINING gentle contact at RELEASE (the settle
+            # condition). The policy was reaching RELEASE then backing off contact
+            # (cf~0) to dodge the force penalty, so it never settled -> 0 success.
+            # This makes holding the gentle place pay, leading into the +10 success.
+            settling = (
+                (cf > c.contact_eps_n) & (cf < self._f_cmd) &
+                (self._phase == int(PickPlacePhase.RELEASE))
+            ).float()
+            r = r + 1.0 * settling
+
             # Force-excess penalty (FORGE: penalise exceeding F_cmd). Bounded so an
             # over-press guides the policy down instead of catastrophically swamping
             # the progression rewards (unbounded -2*excess hit ~-33/step at cf~150 vs
