@@ -306,8 +306,8 @@ def _hud(img, k, phase_idx, cf, broke, succ):
 # Episode: run until terminal (+ short tail) or frame cap.
 N_MAX   = 360
 TAIL    = 20
-ACT_BETA = 0.55   # action low-pass: smooths high-frequency control ripple so the
-                  # rendered arm moves calmly (the policy still completes the place).
+ACT_BETA = 0.0    # low-pass disabled: smoothness now comes from the FORGE control
+                  # rate (decimation=8 -> policy 15 Hz, impedance controller 120 Hz).
 saved = 0
 term_at = None
 t0 = _time.time()

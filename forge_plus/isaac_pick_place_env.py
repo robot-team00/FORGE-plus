@@ -163,7 +163,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                      # transport-place needs ~400+ steps. At 12 s
                                      # (240 steps) episodes timed out at LIFT before
                                      # ever reaching RELEASE -> no success signal.
-    decimation: int = 2
+    decimation: int = 8    # policy at 120/8 = 15 Hz (matches FORGE), while the
+                           # task-space impedance controller runs every physics step
+                           # (120 Hz) and smoothly settles to each held target. The
+                           # old decimation=2 (60 Hz policy) jittered the target every
+                           # control step -> the shaky motion.
 
     # Spaces — must match ForceConditionedPolicy defaults (obs_dim=34, act_dim=7)
     observation_space: int = 34
@@ -409,9 +413,9 @@ if ISAAC_AVAILABLE:
             # policy-commanded — handled by the joint-vel / action-rate penalties in
             # _get_rewards rather than by detuning the controller.
             self._kp_pos   = 1200.0
-            self._kd_pos   = 80.0
+            self._kd_pos   = 69.0   # critically damped per FORGE (kd = 2*sqrt(kp))
             self._kp_ori   = 50.0
-            self._kd_ori   = 14.0   # proven value; raising it (like kd_pos) measured worse
+            self._kd_ori   = 14.0
             self._kd_joint = 1.0
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
@@ -734,13 +738,14 @@ if ISAAC_AVAILABLE:
             # OSC drive (~kp*lam=30 N) could descend but not LIFT — the sequence
             # stalled at LIFT forever. Add the gravity torques so the OSC force is
             # available for motion in both directions.
-            try:
-                grav = r.root_physx_view.get_generalized_gravity_forces()
-                jt = jt + grav[:, self._arm_ids]
-            except Exception as _g:
-                if not getattr(self, "_grav_warned", False):
-                    print(f"[PickPlace] gravity comp unavailable: {_g}", flush=True)
-                    self._grav_warned = True
+            if getattr(self, "_grav_comp", True):
+                try:
+                    grav = r.root_physx_view.get_generalized_gravity_forces()
+                    jt = jt + grav[:, self._arm_ids]
+                except Exception as _g:
+                    if not getattr(self, "_grav_warned", False):
+                        print(f"[PickPlace] gravity comp unavailable: {_g}", flush=True)
+                        self._grav_warned = True
 
             # Gripper closes ONLY at the two force-measurement phases (GRASP, PLACE_
             # DESCEND). It must open during LIFT/TRANSPORT: the object is kinematic
