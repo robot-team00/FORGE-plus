@@ -91,9 +91,9 @@ except Exception as ex:
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs = 1
 cfg.gripper = "franka_panda"
-POLICY_HOLD = int(cfg.decimation)   # query policy every N physics steps (15 Hz)
-cfg.decimation = 1                   # step physics one at a time so we can capture
-                                     # every 120 Hz substep -> smooth high-fps video
+# Keep the TRAINING decimation so _get_dones / phase timing matches training
+# (decimation=1 ran the phase logic every substep -> phases rushed). One captured
+# frame per env.step (policy step). Buzz is fixed by joint damping, so smooth.
 env = FrankaPickPlaceEnv(cfg)
 print("env built", flush=True)
 
@@ -316,13 +316,15 @@ t0 = _time.time()
 act = torch.zeros(env.num_envs, 7, device=env.device)
 
 for k in range(N_MAX):
-    if k % POLICY_HOLD == 0:                      # FORGE rate: new policy target @15 Hz
-        fcmd = env.f_cmd_norm().to(env.device)
-        with torch.no_grad():
-            act_m, _ = policy(obs, fcmd)
-        act = torch.clamp(act_m, -1, 1)   # deterministic (smooth)
+    fcmd = env.f_cmd_norm().to(env.device)
+    with torch.no_grad():
+        act_m, act_s = policy(obs, fcmd)
+    # Use the policy stochastically (it's ~100% sampled, ~0% at the mean): a
+    # moderate fraction of its own sigma completes a natural place. OSC + joint
+    # damping keep it smooth (buzz fixed).
+    act = torch.clamp(act_m + 0.4 * act_s * torch.randn_like(act_m), -1, 1)
 
-    res  = env.step(act)                          # one physics substep + one render
+    res  = env.step(act)                          # one policy step (decimation substeps)
     obs  = res[0]["policy"]
 
     phase_idx = int(env._phase[0].item())
@@ -368,7 +370,7 @@ ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
 if saved >= 10:
     ret = subprocess.run(
-        [ffmpeg_exe, "-y", "-framerate", "60",   # 120 Hz capture @60fps = smooth 2x slow-mo
+        [ffmpeg_exe, "-y", "-framerate", "30",   # 120 Hz capture @60fps = smooth 2x slow-mo
          "-i", os.path.join(FRAMEDIR, "f_%04d.png"),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", OUTPUT],
         capture_output=True, text=True)
