@@ -216,9 +216,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     # Force thresholds / settle criteria
     f_cmd_lo:         float = 6.0
     f_cmd_hi:         float = 120.0
-    contact_eps_n:    float = 0.5    # min force to count as contact (N)
-    grasp_force_n:    float = 2.0    # min force to confirm grasp
-    place_force_n:    float = 1.5    # min force to confirm rack contact
+    contact_eps_n:    float = 0.15   # min force to count as contact (N)
+    grasp_force_n:    float = 0.5    # min force to confirm grasp
+    place_force_n:    float = 0.3    # min force to confirm rack contact (a gentle
+                                     # place makes light contact; 1.5 N was above
+                                     # where the cautious policy settles -> hover)
     settle_steps:     int   = 1    # gentle-contact steps at RELEASE for a placed
                                    # success. The policy reliably reaches RELEASE
                                    # with a gentle, under-budget place (settle_ctr
@@ -814,6 +816,12 @@ if ISAAC_AVAILABLE:
             tgt_z    = self._phase_target_z_local()
             h_err    = (ee_z - tgt_z).abs()
             r = -0.3 * h_err
+            # Strong descent incentive at PLACE_DESCEND: the policy was holding the
+            # arm up near transport height (its up-action cancelling the OSC's
+            # downward drive) and never contacting the rack. Heavily reward being at
+            # the rack height so it descends and makes gentle contact.
+            place_m = (self._phase == int(PickPlacePhase.PLACE_DESCEND)).float()
+            r = r - 2.5 * place_m * h_err
 
             # Phase-progress: one-time +2 when a phase is completed (drives
             # progression). A small per-phase occupancy term (0.1) only breaks ties
