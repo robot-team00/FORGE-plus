@@ -563,16 +563,16 @@ if ISAAC_AVAILABLE:
                 )
             )
 
-            # Overhead rack / bar (thin cuboid at rack_z height) — compliant contact
-            # so the PLACE_DESCEND place-force gate is also reachable.
+            # Rack/shelf: a TALL compliant block centered just below the place
+            # waypoint so the fingers reliably penetrate it on PLACE_DESCEND across
+            # the arm's approach range (the thin 8cm bar let the gentle policy hover
+            # past it with zero contact). Top stays below transport_z (no grazing
+            # during TRANSPORT).
             self._rack = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Rack",
                     spawn=sim_utils.CuboidCfg(
-                        size=(0.50, 0.20, 0.08),   # thick enough that the place
-                                                   # waypoint (rack_z) sits inside it
-                                                   # → fingers reliably contact on
-                                                   # PLACE_DESCEND.
+                        size=(0.45, 0.22, 0.24),
                         activate_contact_sensors=True,
                         physics_material=sim_utils.RigidBodyMaterialCfg(
                             compliant_contact_stiffness=self._surf_ks,
@@ -582,7 +582,7 @@ if ISAAC_AVAILABLE:
                         collision_props=sim_utils.CollisionPropertiesCfg(),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(
-                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
+                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z - 0.06),
                     ),
                 )
             )
@@ -836,7 +836,7 @@ if ISAAC_AVAILABLE:
                 torch.full_like(cf, c.grasp_force_n),
             )
             in_window = ((cf > adv_thresh) & (cf < self._f_cmd)).float()
-            r = r + 0.5 * force_phase * in_window
+            r = r + 1.0 * force_phase * in_window   # stronger pull to gentle contact
 
             # Settle bonus: reward MAINTAINING gentle contact at RELEASE (the settle
             # condition). The policy was reaching RELEASE then backing off contact
@@ -853,7 +853,7 @@ if ISAAC_AVAILABLE:
             # the progression rewards (unbounded -2*excess hit ~-33/step at cf~150 vs
             # a 9 N budget, which taught the policy to avoid contact entirely).
             excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
-            r = r - 1.0 * excess
+            r = r - 0.5 * excess   # softer deterrent so the policy commits to contact
 
             # Smoothness regularizers (reduce the visibly shaky motion): penalise
             # fast joint motion and rapid action changes so the policy learns to
@@ -869,9 +869,11 @@ if ISAAC_AVAILABLE:
             r = r - 0.22 * arate
             self._prev_actions = self._actions.clone()
 
-            # Terminal rewards
-            r = r + self._succeeded.float() * 10.0
-            r = r - self._broke.float() * 10.0
+            # Terminal rewards: strongly reward completing the gentle place so the
+            # policy stops hovering; keep a real but not-terrifying breakage penalty
+            # (contact is gentle -> breakage stays ~0 anyway).
+            r = r + self._succeeded.float() * 20.0
+            r = r - self._broke.float() * 6.0
             return r
 
         # ── Dones ─────────────────────────────────────────────────────────────

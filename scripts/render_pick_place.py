@@ -309,7 +309,7 @@ def _hud(img, k, phase_idx, cf, broke, succ):
 # Episode: run until terminal (+ short tail) or frame cap. Frames are captured at
 # the 120 Hz physics rate; the policy is re-queried every POLICY_HOLD steps (15 Hz).
 N_MAX   = 480
-TAIL    = 60
+TAIL    = 30   # short post-place tail (don't run into the next auto-reset episode)
 saved = 0
 term_at = None
 t0 = _time.time()
@@ -320,7 +320,7 @@ for k in range(N_MAX):
         fcmd = env.f_cmd_norm().to(env.device)
         with torch.no_grad():
             act_m, _ = policy(obs, fcmd)
-        act = torch.clamp(act_m, -1, 1)
+        act = torch.clamp(act_m, -1, 1)   # deterministic (smooth)
 
     res  = env.step(act)                          # one physics substep + one render
     obs  = res[0]["policy"]
@@ -351,9 +351,12 @@ for k in range(N_MAX):
         print("step %d saved=%d phase=%d cf=%.2f succ=%s brk=%s t=%.1fs"
               % (k, saved, phase_idx, cf, succ, broke, _time.time()-t0), flush=True)
 
-    if (succ or broke) and term_at is None:
+    # Stop after ONE clean place: the first time the arm reaches RELEASE (or
+    # succeeds/breaks), record a short tail then break — otherwise the env
+    # auto-resets on success and the video loops the same motion.
+    if (succ or broke or phase_idx >= int(PickPlacePhase.RELEASE)) and term_at is None:
         term_at = k
-        print("TERMINAL at step %d (succ=%s brk=%s)" % (k, succ, broke), flush=True)
+        print("PLACED at step %d (phase=%d succ=%s)" % (k, phase_idx, succ), flush=True)
     if term_at is not None and k - term_at >= TAIL:
         break
 
