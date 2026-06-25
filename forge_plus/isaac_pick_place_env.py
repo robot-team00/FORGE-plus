@@ -37,7 +37,11 @@ try:
     from isaaclab.utils import configclass
     from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
     from isaaclab.sensors import ContactSensor, ContactSensorCfg
-    from isaaclab.utils.math import quat_mul, quat_inv
+    from isaaclab.utils.math import (
+        quat_mul, quat_inv, matrix_from_quat,
+        subtract_frame_transforms, quat_apply_inverse,
+    )
+    from isaaclab.controllers import OperationalSpaceController, OperationalSpaceControllerCfg
     import isaaclab.sim as sim_utils
     ISAAC_AVAILABLE = True
 except ImportError:
@@ -406,15 +410,26 @@ if ISAAC_AVAILABLE:
             super().__init__(cfg, render_mode=render_mode, **kw)
             N, d = self.num_envs, self.device
 
-            # OSC gains (proven FrankaPlaceEnv values). Raising damping did not
-            # reduce the shakiness (it raised joint velocity), so the jitter is
-            # policy-commanded — handled by the joint-vel / action-rate penalties in
-            # _get_rewards rather than by detuning the controller.
-            self._kp_pos   = 1200.0
-            self._kd_pos   = 69.0   # critically damped per FORGE (kd = 2*sqrt(kp))
-            self._kp_ori   = 50.0
-            self._kd_ori   = 14.0
-            self._kd_joint = 1.0
+            # Proper Isaac Lab Operational-Space Controller: task-space impedance
+            # WITH inertia decoupling (Lambda = (J M^-1 J^T)^-1) and null-space
+            # control for the redundant 7th DOF. The previous hand-rolled
+            # Jacobian-transpose controller had neither -> poorly-conditioned task
+            # dynamics + an undamped elbow/wrist -> the jitter/wobble.
+            osc_cfg = OperationalSpaceControllerCfg(
+                target_types=["pose_abs"],
+                impedance_mode="fixed",
+                inertial_dynamics_decoupling=True,
+                partial_inertial_dynamics_decoupling=False,
+                gravity_compensation=True,
+                motion_stiffness_task=[400.0, 400.0, 400.0, 40.0, 40.0, 40.0],
+                motion_damping_ratio_task=1.0,                  # critically damped
+                motion_control_axes_task=[1, 1, 1, 1, 1, 1],
+                nullspace_control="position",
+                nullspace_stiffness=15.0,
+                nullspace_damping_ratio=1.0,
+            )
+            self._osc = OperationalSpaceController(osc_cfg, num_envs=N, device=d)
+            self._joint_centers = None   # null-space posture target (set lazily)
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
             _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
             self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
@@ -705,49 +720,56 @@ if ISAAC_AVAILABLE:
             )
             self._warmup = (self._warmup - 1).clamp(min=0)
 
-            # Fixed-base arm: get_jacobians() omits the base link, so body i's
-            # Jacobian is at index i-1. Using self._ee_idx (not -1) read the WRONG
-            # body's Jacobian -> OSC mapped EE force onto the wrong joints -> the
-            # erratic/unstable shaking. (The working FrankaPlaceEnv uses ee_idx-1.)
-            jac       = r.root_physx_view.get_jacobians()[:, self._ee_idx - 1, :, :7]
+            # ── End-effector state in the robot base (root) frame ─────────────
+            root_pos_w, root_quat_w = r.data.root_pos_w, r.data.root_quat_w
             ee_pos_w  = r.data.body_pos_w[:, self._ee_idx]
             ee_quat_w = r.data.body_quat_w[:, self._ee_idx]
-            ee_lin_v  = r.data.body_lin_vel_w[:, self._ee_idx]
-            ee_ang_v  = r.data.body_ang_vel_w[:, self._ee_idx]
+            ee_pos_b, ee_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, ee_pos_w, ee_quat_w)
+            ee_pose_b = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
+            lin_b = quat_apply_inverse(root_quat_w, r.data.body_lin_vel_w[:, self._ee_idx] - r.data.root_lin_vel_w)
+            ang_b = quat_apply_inverse(root_quat_w, r.data.body_ang_vel_w[:, self._ee_idx] - r.data.root_ang_vel_w)
+            ee_vel_b = torch.cat([lin_b, ang_b], dim=-1)
+
+            # Jacobian (fixed base -> body i at index i-1), rotated to base frame
+            jac_b = r.root_physx_view.get_jacobians()[:, self._ee_idx - 1, :, :7].clone()
+            Rb = matrix_from_quat(quat_inv(root_quat_w))
+            jac_b[:, :3, :] = torch.bmm(Rb, jac_b[:, :3, :])
+            jac_b[:, 3:, :] = torch.bmm(Rb, jac_b[:, 3:, :])
+
+            mm   = r.root_physx_view.get_generalized_mass_matrices()[:, self._arm_ids, :][:, :, self._arm_ids]
+            try:
+                grav = r.root_physx_view.get_gravity_compensation_forces()[:, self._arm_ids]
+            except Exception:
+                grav = r.root_physx_view.get_generalized_gravity_forces()[:, self._arm_ids]
+            if self._joint_centers is None:
+                self._joint_centers = r.data.joint_pos[:, self._arm_ids].clone()  # nominal posture
 
             if not self._osc_init:
-                self._ee_quat_des = ee_quat_w.clone()
+                self._ee_quat_des = ee_quat_w.clone()   # hold the initial grasp orientation
                 self._osc_init = True
 
-            # Fixed phase waypoint + policy position delta
-            p_fixed = self._phase_waypoint_world()
-            a       = self._actions[:, :3] * self.cfg.act_range
-            delta   = (p_fixed + a - ee_pos_w).clamp(-self.cfg.lam, self.cfg.lam)
+            # Target pose = lam-rate-limited step toward the phase waypoint + policy
+            # delta (keeps FORGE's bounded per-step motion), in base frame.
+            p_fixed  = self._phase_waypoint_world()
+            a        = self._actions[:, :3] * self.cfg.act_range
+            target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(-self.cfg.lam, self.cfg.lam)
+            tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
+            command  = torch.cat([tgt_pos_b, tgt_quat_b], dim=-1)
 
-            # Orientation control
-            q_err   = quat_mul(self._ee_quat_des, quat_inv(ee_quat_w))
-            ang_err = 2.0 * torch.sign(q_err[:, 0:1]) * q_err[:, 1:4]
-            moment  = self._kp_ori * ang_err - self._kd_ori * ee_ang_v
-
-            # EE wrench → joint torques via Jacobian transpose
-            force   = self._kp_pos * delta - self._kd_pos * ee_lin_v
-            wrench  = torch.cat([force, moment], dim=-1)
-            jt      = torch.bmm(jac.transpose(1, 2), wrench.unsqueeze(-1)).squeeze(-1)
-            jt      = jt - self._kd_joint * r.data.joint_vel[:, self._arm_ids]
-            jt      = jt.clamp(-self._eff_lim, self._eff_lim)
-            # Gravity compensation: with the proximal joints' PD zeroed (for OSC
-            # tracking), nothing holds the arm against gravity, so the lam-clipped
-            # OSC drive (~kp*lam=30 N) could descend but not LIFT — the sequence
-            # stalled at LIFT forever. Add the gravity torques so the OSC force is
-            # available for motion in both directions.
-            if getattr(self, "_grav_comp", True):
-                try:
-                    grav = r.root_physx_view.get_generalized_gravity_forces()
-                    jt = jt + grav[:, self._arm_ids]
-                except Exception as _g:
-                    if not getattr(self, "_grav_warned", False):
-                        print(f"[PickPlace] gravity comp unavailable: {_g}", flush=True)
-                        self._grav_warned = True
+            # Operational-space control: inertia-decoupled task impedance + gravity
+            # comp + null-space posture control (no more hand-rolled Jacobian-T).
+            self._osc.set_command(command=command, current_ee_pose_b=ee_pose_b)
+            jt = self._osc.compute(
+                jacobian_b=jac_b,
+                current_ee_pose_b=ee_pose_b,
+                current_ee_vel_b=ee_vel_b,
+                mass_matrix=mm,
+                gravity=grav,
+                current_joint_pos=r.data.joint_pos[:, self._arm_ids],
+                current_joint_vel=r.data.joint_vel[:, self._arm_ids],
+                nullspace_joint_pos_target=self._joint_centers,
+            )
+            jt = jt.clamp(-self._eff_lim, self._eff_lim)
 
             # Gripper closes ONLY at the two force-measurement phases (GRASP, PLACE_
             # DESCEND). It must open during LIFT/TRANSPORT: the object is kinematic
