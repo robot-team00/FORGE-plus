@@ -504,9 +504,13 @@ if ISAAC_AVAILABLE:
             # Disable the joint PD controllers on the proximal joints so the OSC
             # (Jacobian-transpose effort targets) actually moves the arm instead of
             # being overpowered back to the default pose. Mirrors FrankaPlaceEnv.
+            # Effort control for the OSC: zero the joint-position stiffness so the
+            # actuator PD doesn't fight the OSC, but KEEP joint-velocity damping --
+            # without it the torque-controlled joints buzz at high frequency (the
+            # vibration). The damping opposes joint velocity and kills the buzz.
             for _an in ("panda_shoulder", "panda_forearm"):
                 robot_cfg.actuators[_an].stiffness = 0.0
-                robot_cfg.actuators[_an].damping = 0.0
+                robot_cfg.actuators[_an].damping = 80.0
             _jp = dict(robot_cfg.init_state.joint_pos)
             _jp["panda_joint2"] = -0.73
             _jp["panda_joint4"] = -2.46
