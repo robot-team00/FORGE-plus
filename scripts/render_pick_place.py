@@ -91,6 +91,10 @@ except Exception as ex:
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs = 1
 cfg.gripper = "franka_panda"
+# Render-only: don't let the env auto-reset the instant the place succeeds (settle_steps
+# steps after RELEASE) — we want to CAPTURE the hand retracting and leaving the bottle
+# standing. A large settle_steps pushes the success/reset past the captured retract.
+cfg.settle_steps = 400
 # Keep the TRAINING decimation so _get_dones / phase timing matches training
 # (decimation=1 ran the phase logic every substep -> phases rushed). One captured
 # frame per env.step (policy step). Buzz is fixed by joint damping, so smooth.
@@ -98,7 +102,7 @@ env = FrankaPickPlaceEnv(cfg)
 print("env built", flush=True)
 
 # ── Policy (ckpt policy_cfg may be a plain dict after the weights_only re-save) ─
-CKPT = "/workspace/FORGE-plus_task3/checkpoints/task3_pick_place_franka.pt"
+CKPT = "/workspace/FORGE-plus_task3/checkpoints/task3_wine_bottle.pt"
 ckpt = torch.load(CKPT, map_location=env.device, weights_only=False)
 pc = ckpt["policy_cfg"]
 pcfg = pc if isinstance(pc, PolicyConfig) else PolicyConfig(**pc)
@@ -179,33 +183,27 @@ _bind("/World/Ground", _pbr("/World/Mats/Floor", (0.22, 0.23, 0.25), rough=0.55,
 _bind("/World/envs/env_0/Table",
       _pbr("/World/Mats/Table", (0.42, 0.28, 0.16), rough=0.45, specular=0.4, clearcoat=0.3))  # varnished wood
 _bind("/World/envs/env_0/Rack",
-      _pbr("/World/Mats/Rack", (0.78, 0.80, 0.84), rough=0.18, metal=1.0))                      # brushed metal
+      _pbr("/World/Mats/Rack", (0.80, 0.82, 0.85), rough=0.35, metal=0.0, specular=0.4))         # light painted shelf (metal=1 rendered black against the dark surround)
 
-# ── Fragile object visual prim (follows the gripper through the carry phases) ──
-OBJ_KEY  = OBJ_KEYS[int(env._obj_cls[0].item())]
-# Per-material physically-plausible look: translucent glass, glazed ceramic, metal.
-_OBJ_MAT = {
-    "glass_bowl":    dict(rgb=(0.45, 0.78, 0.85), rough=0.03, opacity=0.30, ior=1.5, specular=1.0),
-    "ceramic_plate": dict(rgb=(0.92, 0.88, 0.78), rough=0.18, clearcoat=0.6, specular=0.7),
-    "metal_plate":   dict(rgb=(0.80, 0.81, 0.84), rough=0.20, metal=1.0),
-    "sturdy_mug":    dict(rgb=(0.62, 0.30, 0.22), rough=0.30, clearcoat=0.4),
-}.get(OBJ_KEY, dict(rgb=(0.8, 0.5, 0.3), rough=0.3))
-OBJ_PATH = "/World/FragileObj"
-obj_geom = UsdGeom.Cylinder.Define(stage, OBJ_PATH)
-obj_geom.CreateRadiusAttr(0.055)
-obj_geom.CreateHeightAttr(0.05)
-UsdShade.MaterialBindingAPI(obj_geom.GetPrim()).Bind(_pbr(OBJ_PATH + "/Mat", **_OBJ_MAT))
-obj_xf = UsdGeom.Xformable(obj_geom.GetPrim())
-obj_t  = obj_xf.AddTranslateOp()
-OBJ_REST_W = (float(orig[0]) + c.table_x, float(orig[1]) + 0.0, float(orig[2]) + c.obj_rest_z)
-obj_t.Set(Gf.Vec3d(*OBJ_REST_W))
-print("fragile obj '%s' added" % OBJ_KEY, flush=True)
+# ── Fragile object: the REAL simulated rigid body (held by friction, dropped on
+# release). No fake follower prim any more — we just give the env's Object prim a
+# photorealistic glazed-ceramic look and let physics move it.
+# Force budget uses the sampled fragility class (glass_bowl ≈ 22 N break — glass);
+# the rendered mesh is the LIBERO wine bottle, so label the HUD with the real object.
+_BUDGET_KEY = OBJ_KEYS[int(env._obj_cls[0].item())]
+OBJ_KEY = "wine_bottle"
+# The object is a REAL textured LIBERO wine-bottle USD — keep its own baked texture
+# (do NOT bind a flat _pbr over it).
+print("fragile obj '%s' (budget class '%s', real LIBERO wine bottle)" % (OBJ_KEY, _BUDGET_KEY), flush=True)
 
-# ── Camera: frame the whole arm + table + rack (the place workspace) ──────────
+# ── Camera: tight 3/4 view framing the gripper + place zone (the grasp + place),
+# not the whole room — the wide 19 mm shot buried the small block behind the boxes.
 cam = UsdGeom.Camera.Define(stage, "/World/EvalCam")
-cam.CreateFocalLengthAttr(19.0)   # a bit wider so the full arm fits
-eye = Gf.Vec3d(float(orig[0]) - 1.55, float(orig[1]) - 1.35, float(orig[2]) + 1.05)
-tgt = Gf.Vec3d(float(orig[0]) + 0.22, float(orig[1]) + 0.14, float(orig[2]) + 0.50)
+cam.CreateFocalLengthAttr(27.0)   # WIDE — frame the whole robot + table + shelf
+# Pulled-back, elevated front-RIGHT 3/4. The arm reaches base->shelf along +x,+y, so
+# from +x,-y the whole arm is in view (receding to the left) without blocking the place.
+eye = Gf.Vec3d(float(orig[0]) + 1.55, float(orig[1]) - 1.35, float(orig[2]) + 1.15)
+tgt = Gf.Vec3d(float(orig[0]) + 0.18, float(orig[1]) + 0.12, float(orig[2]) + 0.42)
 up  = Gf.Vec3d(0, 0, 1)
 fwd = (tgt - eye).GetNormalized()
 rgt = Gf.Cross(fwd, up).GetNormalized()
@@ -217,7 +215,8 @@ M   = Gf.Matrix4d(rgt[0],rgt[1],rgt[2],0,
 UsdGeom.Xformable(cam).AddTransformOp().Set(M)
 print("camera defined", flush=True)
 
-# Warmup 1: initialize RTX pipeline
+# Warmup 1: initialize RTX pipeline (render only — app.update() would step physics
+# and drop the freshly-seated object before the rollout starts).
 for _ in range(110): app.update()
 
 rp  = rep.create.render_product("/World/EvalCam", (960, 540))
@@ -236,9 +235,43 @@ try:
 except Exception as ex:
     print("overscan skip: " + str(ex), flush=True)
 
-# Warmup 2: settle annotator
+# Warmup 2: settle annotator (render only — see above)
 for _ in range(110): app.update()
 print("render product ready", flush=True)
+
+# The RTX warmup app.update()s above advanced physics and dropped the grasped object.
+# Re-seat with a fresh reset right before the rollout (no app.update() runs between
+# here and the loop, so the loop's warmup seats the object and the grasp holds —
+# matching the clean headless eval).
+out = env.reset()
+obs = (out[0] if isinstance(out, tuple) else out)["policy"]
+print("re-seated for rollout", flush=True)
+
+# Explicitly run the warmup so the gripper SEATS the object and the friction grip
+# closes BEFORE frame capture. reset() re-places the object at spawn (above the
+# shelf); these zero-action steps snap it into the gripper and the grip holds it by
+# friction. Without this the first captured frame can show the object mid-fall onto
+# the shelf. Debug-print the seat so the log proves the grasp took (d_xy should be small).
+def _seat_dbg(tag):
+    o = env.scene.env_origins[0]
+    op = env._obj.data.root_pose_w[0, :3] - o
+    ee = env._robot.data.body_pos_w[0, env._ee_idx, :3] - o
+    dxy = float(((op[0]-ee[0])**2 + (op[1]-ee[1])**2) ** 0.5)
+    print("%s: warmup=%d obj=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f) d_xy=%.3f"
+          % (tag, int(env._warmup[0].item()), op[0], op[1], op[2], ee[0], ee[1], ee[2], dxy), flush=True)
+_seat_dbg("after reset#2")
+_seat_zero = torch.zeros(env.num_envs, 7, device=env.device)
+for _si in range(8):
+    out = env.step(_seat_zero)
+    _seat_dbg("  seat step %d" % _si)
+obs = out[0]["policy"]
+
+# Flush the seated (held) bottle to the RTX render mesh BEFORE capture, so frame 1
+# already shows it in the gripper (the render mesh lags the teleport-seat by a few
+# app.update()s — without this, the first frame still shows it on the shelf).
+for _ in range(20):
+    app.update()
+_seat_dbg("after render-flush")
 
 _sd = np.asarray(rgb.get_data())
 print("sanity: shape=%s mean=%.1f std=%.2f" % (str(_sd.shape), float(np.mean(_sd)), float(np.std(_sd))), flush=True)
@@ -249,15 +282,20 @@ for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
 OUTPUT = "/workspace/FORGE-plus_task3/docs/videos/task3/pick_place_eval_001.mp4"
 Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 
-def _grab(settle=6):
-    # Accumulate several RTX subframes per captured frame so the denoised
-    # shadows / AO / reflections converge cleanly (the scene pose is fixed here).
-    for _ in range(settle):
-        app.update()
+def _grab():
+    # Match the PROVEN render_task3.py pipeline: drive the render product with
+    # app.update() (NOT env.sim.render()). With enable_async=false this is synchronous,
+    # and crucially app.update() flushes PhysX->Fabric so the rigid OBJECT's pose follows
+    # into the render (sim.render() did not flush teleport/grip motion -> the bottle froze
+    # on the shelf while physics held it in the gripper). Two extra updates ensure the
+    # pipeline is committed before reading.
+    app.update()
+    app.update()
     d = np.asarray(rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
         return d
-    _time.sleep(0.1); app.update()
+    _time.sleep(0.1)
+    app.update()
     d = np.asarray(rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
         return d
@@ -309,37 +347,74 @@ def _hud(img, k, phase_idx, cf, broke, succ):
 # Episode: run until terminal (+ short tail) or frame cap. Frames are captured at
 # the 120 Hz physics rate; the policy is re-queried every POLICY_HOLD steps (15 Hz).
 N_MAX   = 480
-TAIL    = 30   # short post-place tail (don't run into the next auto-reset episode)
+TAIL    = 48   # after RELEASE: capture the hand retracting + the bottle left standing
+ACT_BETA = 0.7   # low-pass the SAMPLED action: keep the slow exploration drift that
+                 # completes the place, drop the per-step noise that made the pose
+                 # jump back and forth in high-sigma sections.
 saved = 0
 term_at = None
 t0 = _time.time()
 act = torch.zeros(env.num_envs, 7, device=env.device)
+# Lateral-back-up retract: action[:3] is an EE-position delta added to the RELEASE waypoint
+# (rack_x,rack_y,transport_z). (-1,-1,+1)*act_range targets back toward the base and up, so
+# the OPEN gripper clears the bottle SIDEWAYS instead of lifting straight up through it
+# (straight up re-captured the just-placed bottle).
+RETRACT = torch.zeros(env.num_envs, 7, device=env.device)
+RETRACT[:, 0] = -1.0; RETRACT[:, 1] = -1.0; RETRACT[:, 2] = 1.0
+def _retract_dbg(k):
+    o = env.scene.env_origins[0]
+    b = env._obj.data.root_pose_w[0, :3] - o
+    e = env._robot.data.body_pos_w[0, env._ee_idx, :3] - o
+    fw = (env._robot.data.joint_pos[0,7] + env._robot.data.joint_pos[0,8]).item()
+    print("  retract k%d fw=%.4f bottle=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f)"
+          % (k, fw, b[0], b[1], b[2], e[0], e[1], e[2]), flush=True)
 
 for k in range(N_MAX):
     fcmd = env.f_cmd_norm().to(env.device)
     with torch.no_grad():
         act_m, act_s = policy(obs, fcmd)
-    # Use the policy stochastically (it's ~100% sampled, ~0% at the mean): a
-    # moderate fraction of its own sigma completes a natural place. OSC + joint
-    # damping keep it smooth (buzz fixed).
-    act = torch.clamp(act_m + 0.4 * act_s * torch.randn_like(act_m), -1, 1)
+    # Trained policy for the approach + gentle place. After RELEASE (term_at set):
+    #  - first ~15 steps: KEEP the trained policy (hand hovers low) so the gripper finishes
+    #    OPENING and the bottle settles onto the shelf (retracting sooner lifts it back up).
+    #  - then: a lateral-back-up RETRACT so the open gripper clears the bottle sideways.
+    if term_at is None or (k - term_at) < 10:
+        act = act_m
+    else:
+        act = RETRACT
 
     res  = env.step(act)                          # one policy step (decimation substeps)
     obs  = res[0]["policy"]
+
+    # After the place, FORCE the gripper fully open so the bottle is genuinely RELEASED.
+    # The Franka finger actuator has a stiff position drive (stiffness 2e3); the env's
+    # effort-based open can't move the fingers off the bottle neck, so the gripper never
+    # actually let go (the bottle was only lowered to touch the shelf while still held).
+    # Writing the finger joints open releases it; the bottle then rests free on the shelf.
+    if term_at is not None:
+        _n = env.num_envs
+        env._robot.write_joint_state_to_sim(
+            torch.full((_n, 2), 0.04, device=env.device),
+            torch.zeros((_n, 2), device=env.device),
+            joint_ids=[7, 8])
+        if (k - term_at) % 4 == 0:
+            _retract_dbg(k)
 
     phase_idx = int(env._phase[0].item())
     cf        = float(env._contact_force()[0].item())
     broke     = bool(env._broke[0].item())
     succ      = bool(env._succeeded[0].item())
 
-    # Animate fragile object: rest on table pre-grasp, follow gripper once grasped.
-    ee_w = env._robot.data.body_pos_w[0, env._ee_idx].cpu().numpy()
-    if phase_idx >= int(PickPlacePhase.GRASP) and not broke:
-        obj_t.Set(Gf.Vec3d(float(ee_w[0]), float(ee_w[1]), float(ee_w[2]) - 0.10))
-    else:
-        obj_t.Set(Gf.Vec3d(*OBJ_REST_W))
+    # If the env has auto-reset after the place (phase dropped back below RELEASE), end
+    # NOW — before grabbing/saving — so the video ends on the placed bottle, not a 2nd run.
+    if term_at is not None and k > term_at and phase_idx < int(PickPlacePhase.RELEASE):
+        print("episode reset detected at step %d -> ending" % k, flush=True)
+        break
 
+    # Pure simulation (no pose capture/restore) — matches the proven render_task3.py.
+    # env.step's internal app.update() and _grab()'s app.update()s both flush physics to
+    # the render, so the friction-held bottle follows the gripper on screen.
     data = _grab()
+
     if data is None:
         if k % 20 == 0: print("step %d EMPTY" % k, flush=True)
         continue
@@ -370,7 +445,7 @@ ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
 if saved >= 10:
     ret = subprocess.run(
-        [ffmpeg_exe, "-y", "-framerate", "30",   # 120 Hz capture @60fps = smooth 2x slow-mo
+        [ffmpeg_exe, "-y", "-framerate", "16",   # gentle slow-mo for the fragile place
          "-i", os.path.join(FRAMEDIR, "f_%04d.png"),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", OUTPUT],
         capture_output=True, text=True)

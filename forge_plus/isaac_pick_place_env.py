@@ -193,12 +193,23 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     table_top_z:   float = 0.40   # table surface height
     obj_rest_z:    float = 0.44   # object resting z on table (centre + half-height)
     pre_grasp_z:   float = 0.60   # hover above object before descend
-    transport_z:   float = 0.80   # safe altitude for horizontal swing (reach margin)
-    rack_z:        float = 0.72   # elevated rack height — reachable by the Franka
-                                  # (max reach ~1.0 m from a floor base) and below
-                                  # transport_z so PLACE_DESCEND actually descends.
-                                  # (was 1.10 m, which was beyond reach AND above
-                                  #  transport, making "descend" impossible.)
+    transport_z:   float = 0.72   # safe altitude for horizontal swing. At radius
+                                  # ~0.46 the Franka tops out near z≈0.72, so the old
+                                  # 0.80 was unreachable — the hand stalled at ~0.70
+                                  # and rammed the object into the (too-tall) rack.
+    # Place target: the EE hand height at which the cup's base meets the shelf top.
+    # Decoupled from the shelf geometry below. shelf_top 0.50 + cup half 0.045 + the
+    # hand->grasp-point offset (~0.067) ≈ 0.61 -> the cup is SET DOWN gently on top.
+    place_ee_z:    float = 0.649   # EE hand height at which the firmly-gripped cup's
+                                   # base meets the shelf top (cup hangs ~0.078 below the
+                                   # hand; measured directly). 0.61 left it 3 cm high.
+    place_settle_tol: float = 0.02  # |cup_base - shelf_top| to count the cup as placed
+    mug_grip_z: float = 0.12   # height up the mug (from its base origin) where the gripper grips
+    grasp_com_drop: float = 0.0     # seat the cup centre this far BELOW the pads so the
+                                    # grip is above the COM (pendulum-stable, stays upright)
+    shelf_top_z:   float = 0.50   # reachable-from-above shelf/counter surface
+    rack_z:        float = 0.72   # (legacy; kept for any external refs — unused for
+                                  #  the place waypoint, which now uses place_ee_z)
 
     # Horizontal offsets from robot base in env frame
     table_x: float = 0.45   # table centre x
@@ -221,17 +232,25 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     place_force_n:    float = 0.3    # min force to confirm rack contact (a gentle
                                      # place makes light contact; 1.5 N was above
                                      # where the cautious policy settles -> hover)
-    settle_steps:     int   = 1    # gentle-contact steps at RELEASE for a placed
+    settle_steps:     int   = 15   # gentle-contact steps at RELEASE for a placed
                                    # success. The policy reliably reaches RELEASE
                                    # with a gentle, under-budget place (settle_ctr
                                    # hits 1 on every env); episodes cycle before a
                                    # 2nd step accrues, so 1 step = a placed success.
-    warmup_substeps:  int   = 10
+    warmup_substeps:  int   = 10   # ~5 env steps (decimation 2) to seat the grip; was
+                                   # 25 (~12 steps), which ate most of the short demo and
+                                   # put the grip-settle transient late in the descent.
 
     # Phase advance tolerances. 0.08 (was 0.05) because the Jacobian-transpose OSC
     # has a steady-state error of a few cm near reach-limited waypoints; 0.05 was
     # too tight and stalled the LIFT/TRANSPORT advance.
     reach_tol: float = 0.08   # EE proximity to phase waypoint (m)
+    place_reach_tol: float = 0.03   # TIGHT proximity for PLACE_DESCEND. The loose 0.08
+                                    # made the cup "close" to the place target from the
+                                    # start (it begins only ~7 cm above), so the grip-
+                                    # settle force blip at warmup-end spuriously completed
+                                    # the place ~7 cm ABOVE the shelf. 0.03 forces a real
+                                    # descent-to-contact before RELEASE.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,9 +316,9 @@ class MockPickPlaceEnv(gym.Env):
             (c.table_x, 0.0,      c.obj_rest_z),      # GRASP
             (c.rack_x,  c.rack_y, c.transport_z),     # LIFT
             (c.rack_x,  c.rack_y, c.transport_z),     # TRANSPORT
-            (c.rack_x,  c.rack_y, c.rack_z),          # PLACE_DESCEND
-            (c.rack_x,  c.rack_y, c.rack_z),          # RELEASE
-        ]
+            (c.rack_x,  c.rack_y, c.place_ee_z),       # PLACE_DESCEND
+            (c.rack_x,  c.rack_y, c.transport_z),      # RELEASE: lift the hand AWAY
+        ]                                              # (leaves the cup resting on top)
         for ph, (x, y, z) in enumerate(waypoints):
             m = self._phase == ph
             tgt[m, 0] = x; tgt[m, 1] = y; tgt[m, 2] = z
@@ -357,11 +376,19 @@ class MockPickPlaceEnv(gym.Env):
         grace = self._step > 5
         self._broke = self._broke | (grace & (cf > self._f_break) & force_active)
 
-        # Phase advance when close to target
+        # Phase advance when close to target — EXCEPT PLACE_DESCEND, which advances to
+        # RELEASE only once the cup actually RESTS on the shelf (contact > place_force_n).
+        # Releasing on mere proximity (reach_tol 8 cm) dropped the cup from ~8 cm up and
+        # spiked the contact force; gating release on real contact makes it a gentle
+        # set-down. The descent force is still breakage-monitored, so the policy must
+        # come down gently to contact (FORGE soft-place behaviour).
         dist  = (self._ee_pos - tgt).norm(dim=-1)
         close = dist < self.cfg.reach_tol
+        place_ph   = self._phase == int(PickPlacePhase.PLACE_DESCEND)
+        contact_ok = cf > self.cfg.place_force_n
+        advance = torch.where(place_ph, close & contact_ok, close)
         next_ph = (self._phase + 1).clamp(max=NUM_PHASES - 1)
-        self._phase = torch.where(close & ~self._broke, next_ph, self._phase)
+        self._phase = torch.where(advance & ~self._broke, next_ph, self._phase)
 
         # Done / success
         succeeded  = self._phase >= int(PickPlacePhase.RELEASE)
@@ -433,12 +460,14 @@ if ISAAC_AVAILABLE:
             self._osc = OperationalSpaceController(osc_cfg, num_envs=N, device=d)
             self._joint_centers = None   # null-space posture target (set lazily)
             self._eff_lim  = torch.tensor([87., 87., 87., 87., 12., 12., 12.], device=d)
-            _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
-            self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
+            _gmap = {"franka_panda": (80.0, 10.0), "robotiq_2f140": (60.0, 10.0)}
+            self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (80.0, 10.0))
 
             # Indices (resolved after scene build)
             self._arm_ids:  list[int] = list(range(7))  # arm joint indices 0-6
             self._ee_idx:   int = -1  # resolved lazily in _reset_idx
+            self._lf_idx:   int = -1  # panda_leftfinger  (held-object grasp centre)
+            self._rf_idx:   int = -1  # panda_rightfinger
             self._osc_init: bool = False
 
             # Actions / EE state
@@ -463,6 +492,19 @@ if ISAAC_AVAILABLE:
             self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
             self._warmup     = torch.zeros(N, dtype=torch.long, device=d)
+            # Distance from the hand origin to the grasp point (between the fingertip
+            # pads) along the hand's local +z. Per-env so it can be swept/calibrated;
+            # 0.067 seats the block centrally between the pads (calibrated).
+            self._grasp_tcp_d = torch.full((N,), 0.067, device=d)
+            # Finger half-opening to rest the pads at during warmup: block half-width
+            # (0.020) minus 1 mm so the pads sit just at the surface (clean seat, no
+            # deep penetration), then the PD grip takes over and holds by friction.
+            self._grasp_seat_w = 0.006
+            # PD gains for the position-controlled grip (effort = k·(target-pos) - kd·vel).
+            # k·overlap sets the squeeze: 1500 N/m · 0.010 m = 15 N grip (friction
+            # 1.6·15 = 24 N >> the 0.5 N block weight), penetration sub-mm under rigid contact.
+            self._grip_pos_ks = 1500.0
+            self._grip_pos_kd = 40.0
             self._az_filt    = torch.full((N,), -1.0, device=d)
             self._jt_target  = torch.zeros(N, 7, device=d)
             self._extras: dict = {}
@@ -490,8 +532,8 @@ if ISAAC_AVAILABLE:
 
             # Compliant-contact gains (also set in __init__, but _setup_scene runs
             # first via super().__init__ — set here so they exist for the spawn cfgs).
-            _gmap = {"franka_panda": (4000.0, 900.0), "robotiq_2f140": (1800.0, 1400.0)}
-            self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (4000.0, 500.0))
+            _gmap = {"franka_panda": (80.0, 10.0), "robotiq_2f140": (60.0, 10.0)}
+            self._grip_ks, self._grip_kd = _gmap.get(self.cfg.gripper, (80.0, 10.0))
             # Dedicated (softer) compliant stiffness for the fragile contact surfaces.
             # The gripper stiffness (4 kN/m) is near-rigid: any touch spikes contact
             # force to ~150 N, far above the fragile budgets (9-72 N), so the policy
@@ -540,41 +582,45 @@ if ISAAC_AVAILABLE:
             # Pressing it during DESCEND/GRASP yields a controllable contact force
             # gated by F_cmd/F_break — mirrors the proven FrankaPlaceEnv physics so
             # the grasp-force gate (cf > grasp_force_n) is actually reachable.
+            # Graspable object: a small light DYNAMIC block with high friction so the
+            # closed gripper actually holds it (real physics grasp). Repositioned
+            # into the gripper at reset/warmup; released onto the rack at RELEASE.
             self._obj = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Object",
-                    spawn=sim_utils.CuboidCfg(
-                        size=(0.09, 0.09, 0.14),   # top ~0.51 m: meets the finger's
-                                                   # rest height so grasp contact is
-                                                   # reachable with a small press.
-                        activate_contact_sensors=True,
-                        physics_material=sim_utils.RigidBodyMaterialCfg(
-                            compliant_contact_stiffness=self._surf_ks,
-                            compliant_contact_damping=self._surf_kd,
+                    spawn=sim_utils.UsdFileCfg(
+                        # A REAL fragile kitchen object: the LIBERO wine_bottle (glass,
+                        # MIT-licensed mesh). The Franka grips its narrow ~1.6 cm NECK
+                        # (scale 0.5) near the top; the heavy glass body hangs BELOW the
+                        # grip, so it's pendulum-stable and self-rights upright -> a real
+                        # FRICTION grasp holds it through the carry (a round mug body can't).
+                        # Origin is at the base; the seat offsets by mug_grip_z to grip the neck.
+                        usd_path="/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd",
+                        scale=(0.5, 0.5, 0.5),
+                        mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
+                        # DYNAMIC — real physics: held by the friction grip, carried, released.
+                        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                            kinematic_enabled=False, disable_gravity=False,
+                            max_depenetration_velocity=1.0,
                         ),
-                        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(
-                        # Raised so the object top (~0.55) sits above where the
-                        # saturated OSC parks the fingers (~0.51), guaranteeing the
-                        # fingers penetrate it → contact force ~kp*lam (~30 N) that
-                        # the policy modulates within the lam band.
-                        pos=(self.cfg.table_x, 0.0, self.cfg.obj_rest_z + 0.04),
+                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.transport_z),
                     ),
                 )
             )
 
-            # Rack/shelf: a TALL compliant block centered just below the place
-            # waypoint so the fingers reliably penetrate it on PLACE_DESCEND across
-            # the arm's approach range (the thin 8cm bar let the gentle policy hover
-            # past it with zero contact). Top stays below transport_z (no grazing
-            # during TRANSPORT).
+            # Shelf/counter: a compliant block whose TOP is at shelf_top_z (0.50 m) —
+            # low enough that the arm clears it during TRANSPORT (cup base ~0.59) and
+            # reaches over to SET the cup DOWN on top (place_ee_z 0.61). The old rack
+            # top (0.78) was above the Franka's reach there, so the arm rammed it.
+            _shelf_h = 0.46
             self._rack = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Rack",
                     spawn=sim_utils.CuboidCfg(
-                        size=(0.45, 0.22, 0.24),
+                        size=(0.45, 0.30, _shelf_h),
                         activate_contact_sensors=True,
                         physics_material=sim_utils.RigidBodyMaterialCfg(
                             compliant_contact_stiffness=self._surf_ks,
@@ -584,7 +630,7 @@ if ISAAC_AVAILABLE:
                         collision_props=sim_utils.CollisionPropertiesCfg(),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(
-                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z - 0.06),
+                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.shelf_top_z - _shelf_h / 2),
                     ),
                 )
             )
@@ -690,9 +736,9 @@ if ISAAC_AVAILABLE:
                 (c.table_x, 0.0,      c.obj_rest_z),
                 (c.table_x, 0.0,      c.obj_rest_z),
                 (c.table_x, 0.0,      c.transport_z),   # LIFT: straight up at table
-                (c.rack_x,  c.rack_y, c.transport_z),   # TRANSPORT: over to the rack
-                (c.rack_x,  c.rack_y, c.rack_z),
-                (c.rack_x,  c.rack_y, c.rack_z),
+                (c.rack_x,  c.rack_y, c.transport_z),   # TRANSPORT: over to the shelf
+                (c.rack_x,  c.rack_y, c.place_ee_z),     # PLACE_DESCEND: set down on top
+                (c.rack_x,  c.rack_y, c.transport_z),    # RELEASE: lift hand away
             ]
             for ph, (x, y, z) in enumerate(waypoints):
                 m = self._phase == ph
@@ -706,7 +752,7 @@ if ISAAC_AVAILABLE:
             c  = self.cfg
             zs = torch.tensor([
                 c.pre_grasp_z, c.obj_rest_z, c.obj_rest_z,
-                c.transport_z, c.transport_z, c.rack_z, c.rack_z,
+                c.transport_z, c.transport_z, c.place_ee_z, c.place_ee_z,
             ], device=self.device)
             return zs[self._phase.clamp(max=NUM_PHASES - 1)]
 
@@ -725,6 +771,32 @@ if ISAAC_AVAILABLE:
                 torch.zeros_like(self._cf_filt),
             )
             self._warmup = (self._warmup - 1).clamp(min=0)
+
+            # ── Seat the dynamic object in the gripper during warmup ───────────
+            # While the grip settles, snap the object to the grasp centre (finger
+            # midpoint) with zero velocity. After warmup the closed gripper holds it
+            # by friction (no more snapping -> it's a real physics grasp).
+            warm = self._warmup > 0
+            # Seat the vessel in the gripper during warmup; AFTER warmup the closed gripper
+            # holds it by REAL FRICTION (no teleport) — a faithful physics grasp. Grip a
+            # thin stem/neck near the top so the COM hangs below (pendulum -> self-rights
+            # upright and resists tilting through the carry).
+            carry = warm
+            if carry.any():
+                R_ee = matrix_from_quat(r.data.body_quat_w[:, self._ee_idx])      # (N,3,3)
+                off  = torch.zeros(self.num_envs, 3, device=self.device)
+                off[:, 2] = self._grasp_tcp_d
+                grasp_c = r.data.body_pos_w[:, self._ee_idx] + torch.bmm(R_ee, off.unsqueeze(-1)).squeeze(-1)
+                pose = self._obj.data.root_pose_w.clone()
+                # Hold the vessel UPRIGHT (must stand). Its origin is at the BASE, so drop it
+                # by mug_grip_z so the gripper sits on the upper body.
+                pose[carry, 0:3] = grasp_c[carry]
+                pose[carry, 2] = grasp_c[carry, 2] - self.cfg.mug_grip_z
+                pose[carry, 3] = 1.0; pose[carry, 4:7] = 0.0
+                self._obj.write_root_pose_to_sim(pose)
+                vel = self._obj.data.root_vel_w.clone()
+                vel[carry] = 0.0
+                self._obj.write_root_velocity_to_sim(vel)
 
             # ── End-effector state in the robot base (root) frame ─────────────
             root_pos_w, root_quat_w = r.data.root_pos_w, r.data.root_quat_w
@@ -777,19 +849,32 @@ if ISAAC_AVAILABLE:
             )
             jt = jt.clamp(-self._eff_lim, self._eff_lim)
 
-            # Gripper closes ONLY at the two force-measurement phases (GRASP, PLACE_
-            # DESCEND). It must open during LIFT/TRANSPORT: the object is kinematic
-            # (immovable), so a closed gripper clamped on it anchors the hand to the
-            # table and it cannot lift. The grasp is a symbolic gentle-force event,
-            # not literal carrying — so release after applying the pick force.
+            # Gripper closes while carrying (TRANSPORT/PLACE_DESCEND) and at GRASP;
+            # opens at RELEASE to drop the block onto the rack. The block is DYNAMIC,
+            # so the closed gripper genuinely holds it by friction.
             close_mask = (
                 (self._phase == int(PickPlacePhase.GRASP)) |
+                (self._phase == int(PickPlacePhase.LIFT)) |
                 (self._phase == int(PickPlacePhase.TRANSPORT)) |
                 (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             )
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
-            gcmd   = self._gripper_cmd.unsqueeze(1)
-            gforce = self._grip_ks * gcmd - self._grip_kd * r.data.joint_vel[:, 7:9]
+            fvel = r.data.joint_vel[:, 7:9]
+            fpos = r.data.joint_pos[:, 7:9]
+            # Position-controlled grip (PD effort). The closed target sits INSIDE the
+            # block half-width, so the pads press the faces with a bounded squeeze
+            # force (k·overlap) and rest AT the surface — no slam-through. (A constant
+            # effort grip has no position feedback and over-penetrated to ~5 mm finger
+            # width; PD self-limits.) Open target retracts the pads to drop the block.
+            _d = self.device
+            target = torch.where(
+                close_mask,
+                torch.full((self.num_envs,), 0.002, device=_d),   # squeeze the thin (~1.6 cm) bottle neck
+                torch.full((self.num_envs,), 0.040, device=_d),   # fully open  -> release
+            )
+            # During warmup rest exactly at the surface while the block is teleported in.
+            target = torch.where(warm, torch.full((self.num_envs,), self._grasp_seat_w, device=_d), target)
+            gforce = self._grip_pos_ks * (target.unsqueeze(1) - fpos) - self._grip_pos_kd * fvel
             r.set_joint_effort_target(torch.cat([jt, gforce], dim=-1))
 
         # ── Observations ──────────────────────────────────────────────────────
@@ -823,38 +908,17 @@ if ISAAC_AVAILABLE:
             place_m = (self._phase == int(PickPlacePhase.PLACE_DESCEND)).float()
             r = r - 2.5 * place_m * h_err
 
-            # Phase-progress: one-time +2 when a phase is completed (drives
-            # progression). A small per-phase occupancy term (0.1) only breaks ties
-            # toward higher phases — it is too small to farm by camping, which was
-            # the failure mode of the old per-step phase*0.5 bonus.
+            # Phase-progress: one-time +2 when a phase is COMPLETED (drives progression).
             r = r + self._advanced.float() * 2.0
-            r = r + self._phase.float() * 0.1
+            # NOTE: removed the per-step `+0.1*phase_index` living bonus and the per-step
+            # force-in-window bonus. Both pay positive reward every step while merely
+            # NEAR the target, so their horizon-integral exceeded the one-time success
+            # bonus -> the optimal policy was to HOVER at PLACE_DESCEND forever and never
+            # commit (succ collapsed while return rose). FORGE pays no positive per-step
+            # bonus; only penalties + a success cliff (Ng 1999 PBRS / reward-hacking).
 
-            # Force-in-window bonus: reward gentle BUT sufficient contact — cf above
-            # the phase's advance threshold (so it also progresses) and below f_cmd
-            # (so it stays safe). The old lower bound (contact_eps=0.5) let the policy
-            # farm this by hovering below the advance force without ever progressing.
-            force_phase = (
-                (self._phase == int(PickPlacePhase.GRASP)) |
-                (self._phase == int(PickPlacePhase.PLACE_DESCEND))
-            ).float()
-            adv_thresh = torch.where(
-                self._phase == int(PickPlacePhase.PLACE_DESCEND),
-                torch.full_like(cf, c.place_force_n),
-                torch.full_like(cf, c.grasp_force_n),
-            )
-            in_window = ((cf > adv_thresh) & (cf < self._f_cmd)).float()
-            r = r + 1.0 * force_phase * in_window   # stronger pull to gentle contact
-
-            # Settle bonus: reward MAINTAINING gentle contact at RELEASE (the settle
-            # condition). The policy was reaching RELEASE then backing off contact
-            # (cf~0) to dodge the force penalty, so it never settled -> 0 success.
-            # This makes holding the gentle place pay, leading into the +10 success.
-            settling = (
-                (cf > c.contact_eps_n) & (cf < self._f_cmd) &
-                (self._phase == int(PickPlacePhase.RELEASE))
-            ).float()
-            r = r + 1.0 * settling
+            # Small per-step time cost so waiting is strictly worse than committing.
+            r = r - 0.02
 
             # Force-excess penalty (FORGE: penalise exceeding F_cmd). Bounded so an
             # over-press guides the policy down instead of catastrophically swamping
@@ -902,7 +966,14 @@ if ISAAC_AVAILABLE:
             ee_z  = (self._robot.data.body_pos_w[:, self._ee_idx, 2]
                      - self.scene.env_origins[:, 2])
             tgt_z = self._phase_target_z_local()
-            close = (ee_z - tgt_z).abs() < c.reach_tol
+            # Tight tolerance at PLACE_DESCEND so the cup must actually reach the shelf
+            # (not "succeed" 7 cm up off a grip-settle blip); loose elsewhere.
+            tol = torch.where(
+                self._phase == int(PickPlacePhase.PLACE_DESCEND),
+                torch.full_like(ee_z, c.place_reach_tol),
+                torch.full_like(ee_z, c.reach_tol),
+            )
+            close = (ee_z - tgt_z).abs() < tol
             # Contact phases press a compliant surface and cannot reach the
             # sub-surface waypoint z (the surface stops the fingers above it), so
             # "reached" is satisfied by making contact rather than z-proximity.
@@ -910,13 +981,31 @@ if ISAAC_AVAILABLE:
             # never entered → 0 breakage and 0 success forever.
             contact_phase = (
                 (self._phase == int(PickPlacePhase.DESCEND)) |
-                (self._phase == int(PickPlacePhase.GRASP)) |
-                (self._phase == int(PickPlacePhase.PLACE_DESCEND))
+                (self._phase == int(PickPlacePhase.GRASP))
             )
             close = close | (contact_phase & (cf > c.contact_eps_n))
+            # Sweep phases (LIFT, TRANSPORT) must REACH the waypoint x,y — not just match
+            # the transport height — otherwise the arm skips them instantly (both are at
+            # transport_z) and never visibly moves across. Block their advance while the
+            # EE is still far from the waypoint in the horizontal plane.
+            ee_xy = self._robot.data.body_pos_w[:, self._ee_idx, :2]
+            wp_xy = self._phase_waypoint_world()[:, :2]
+            xy_far = (ee_xy - wp_xy).norm(dim=-1) > 0.06
+            sweep_ph = (self._phase == int(PickPlacePhase.LIFT)) | (self._phase == int(PickPlacePhase.TRANSPORT))
+            close = close & ~(sweep_ph & xy_far)
+            # PLACE_DESCEND completes GEOMETRICALLY: the hand/finger contact sensor
+            # cannot see the cup resting on the shelf (the gentle cup-shelf force nets
+            # ~0 through the friction grip), so gate the place on the cup's BASE
+            # actually reaching the shelf surface, measured from the cup's real pose.
+            cup_z     = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+            cup_bot   = cup_z   # mug origin is at its BASE, so root z == base height
+            on_shelf  = (cup_bot - c.shelf_top_z).abs() < c.place_settle_tol
+            place_dsc = self._phase == int(PickPlacePhase.PLACE_DESCEND)
+            close = close | (place_dsc & on_shelf)
 
             grasp_ok = ((self._phase == int(PickPlacePhase.GRASP)) & (cf > c.grasp_force_n)) |                        (self._phase != int(PickPlacePhase.GRASP))
-            place_ok = ((self._phase == int(PickPlacePhase.PLACE_DESCEND)) & (cf > c.place_force_n)) |                        (self._phase != int(PickPlacePhase.PLACE_DESCEND))
+            # Dynamic object: gate the place on its BASE actually reaching the shelf surface.
+            place_ok = (place_dsc & on_shelf) | (~place_dsc)
 
             can_advance  = close & grasp_ok & place_ok & ~self._broke
             # Envs that actually progress this step (not already at the final phase).
@@ -954,14 +1043,20 @@ if ISAAC_AVAILABLE:
             # Lazy-init ee body index (data unavailable during _setup_scene)
             if self._ee_idx < 0:
                 self._ee_idx = list(self._robot.data.body_names).index("panda_hand")
+                bn = list(self._robot.data.body_names)
+                self._lf_idx = bn.index("panda_leftfinger")
+                self._rf_idx = bn.index("panda_rightfinger")
             super()._reset_idx(env_ids)
-            jp = self._robot.data.default_joint_pos[env_ids]
+            jp = self._robot.data.default_joint_pos[env_ids].clone()
+            # Pre-close the gripper fingers onto the object's half-width so it starts
+            # gripped (then the grip force + friction hold it).
+            jp[:, 7:9] = 0.022
             jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
             self._robot.write_joint_state_to_sim(jp, jv, env_ids=env_ids)
 
             # Place-only: begin already holding the object at transport altitude;
             # the episode does TRANSPORT -> PLACE_DESCEND -> RELEASE only.
-            start_phase = int(PickPlacePhase.TRANSPORT) if self.cfg.place_only else 0
+            start_phase = int(PickPlacePhase.LIFT) if self.cfg.place_only else 0
             self._phase[env_ids]       = start_phase
             self._phase_ctr[env_ids]   = 0
             self._settle_ctr[env_ids]  = 0
@@ -974,6 +1069,19 @@ if ISAAC_AVAILABLE:
             # Gripper closed when starting in carry/place mode (holding the object).
             self._gripper_cmd[env_ids] = -1.0 if self.cfg.place_only else 1.0
             self._jt_target[env_ids]   = jp[:, self._arm_ids]
+
+            # Re-place the dynamic object at its init pose (base origin, transport
+            # altitude) with zero velocity. DirectRLEnv._reset_idx does NOT reset
+            # rigid-object poses for us, so without this the object stays wherever
+            # the previous episode (or, in the RTX render, the warmup app.update()s)
+            # left it — e.g. fallen onto the shelf — and the warmup seat then has to
+            # recover it. Resetting it here makes every reset deterministic and lets
+            # the warmup seat grab it cleanly into the gripper.
+            obj_state = self._obj.data.default_root_state[env_ids].clone()
+            obj_state[:, 0:3] += self.scene.env_origins[env_ids]
+            self._obj.write_root_pose_to_sim(obj_state[:, 0:7], env_ids=env_ids)
+            self._obj.write_root_velocity_to_sim(obj_state[:, 7:13], env_ids=env_ids)
+
             self._sample_episode(env_ids)
 
 else:
