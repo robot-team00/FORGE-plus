@@ -5,6 +5,14 @@ The current demonstrated task. A Franka Panda carries a realistic LIBERO **wine 
 bottle ends **standing perfectly vertical** (tilt ≈ 0°), seated on the cell floor, dead-centered
 in the cell; the gripper then releases and the arm retracts, leaving the bottle in the rack.
 
+> **Scope & assumptions (important).** This is the **terminal "micro" phase** of manipulation — the
+> last few centimeters of contact-rich insertion. There is **no vision**: the bottle's pose and the
+> **target cell's pose are assumed known from privileged simulator state**, and the OSC waypoints
+> (including the base-aim that centers the bottle over the cell) are computed from those known poses.
+> The object identity is given, not perceived. Locating/identifying the bottle and the rack, and
+> grasping/transporting from scratch, are upstream problems, out of scope. See the repo-root
+> `docs/proposal.html` (§01 Scope) and `README.md`.
+
 > **Why this task.** The earlier fragile-place demo set the bottle on an open shelf; to make it
 > *stand* the env had to right it about the shelf-contact pivot ("contact-then-verticalize",
 > doc 02 §9), which looked like the robot *flicking* the bottle upright. A learned gentle

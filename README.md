@@ -20,6 +20,8 @@ FORGE-plus studies what happens when you close both gaps at once:
 - On failure, the same LLM reads a **compact force/contact signature** (no images) and picks a recovery from a fixed menu that has no "increase the ceiling" option.
 - **Safety is enforced by a hardware clamp in the fast loop** — not by the language model.
 
+**Scope & assumptions.** This studies the **terminal "micro" phase of manipulation** — the last few centimeters of contact-rich seating/insertion where force decides success and breakage. It uses **no vision of any kind**: the skill observes proprioception, pose, and force/torque; the LLM reads text. The **object's identity is given** (operator-provided) and the **pose of the object and of the target** (socket/cell/shelf) are **assumed known** from privileged simulator state. Perceiving the scene, finding/identifying the part, and grasping/transporting it to the approach pose are upstream problems, deliberately out of scope.
+
 ---
 
 ## Simulation preview
