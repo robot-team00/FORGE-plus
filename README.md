@@ -43,6 +43,11 @@ vertical** (tilt 0.0°), seated on the cell floor and dead-centered, with no jam
 rack. Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction
 grip, never teleported during the carry.
 
+> ⚠️ **This demo is currently a scripted scaffold, not a learned policy.** The motion comes from
+> zero policy action + a hand-coded alignment ("base-aim") + phase waypoints. It built the scene
+> and asset; it is **being replaced by a learned FORGE-style PPO policy** (no scripted waypoints).
+> See [`docs/task3/`](docs/task3/README.md).
+
 <div align="center">
   <img src="docs/videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
 </div>

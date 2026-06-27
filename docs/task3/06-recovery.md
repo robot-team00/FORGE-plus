@@ -1,5 +1,12 @@
 # 06 — Force-signature LLM recovery (closed loop, in Isaac)
 
+> **⚠️ Corrected status — the arm *skill* used here was a SCRIPTED scaffold, not a learned policy.**
+> The recovery **loop** and the **LLM recovery selection** are real and force-driven. But the skill
+> that drove the *insertion motion* was the **scripted zero-action OSC** (no learned policy). That
+> scaffold is **being replaced by a learned FORGE PPO policy**; the same recovery loop will then
+> drive the *learned* skill. Treat the results below as validating the recovery loop's plumbing, not
+> as a learned-policy demonstration.
+
 The proposal's **recovery layer** (§07), now active on the **real contact-rich Isaac env**: when
 an insertion jams, the system reads a **text force/contact signature** (no vision, no `F_break`),
 a frozen LLM picks a recovery action from a fixed menu, the robot applies it **within the same

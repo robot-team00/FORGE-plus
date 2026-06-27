@@ -1,6 +1,14 @@
 # 05 — Wine-cellar peg-in-hole insertion
 
-The current demonstrated task. A Franka Panda carries a realistic LIBERO **wine bottle** and
+> **⚠️ Corrected status — this describes a SCRIPTED scaffold, not the intended method.**
+> The insertion documented below was produced by **zero policy action + a hand-coded "base-aim"
+> alignment + phase waypoints** — i.e. **no learned policy** drove the arm. It was a stopgap to get
+> a working scene/asset, **not** a FORGE result. It is **being replaced by a learned FORGE-style
+> PPO policy** that outputs the end-effector motion and learns the alignment/insertion from force,
+> with **no scripted waypoints and no base-aim**. Read the "tricks" below as notes on the scaffold,
+> not as the approach. ("base-aim" and "zero action" are defined in the project README.)
+
+The task. A Franka Panda carries a realistic LIBERO **wine bottle** and
 **inserts it into a cell of a wine-cellar rack** — a contact-rich **peg-in-hole** placement. The
 bottle ends **standing perfectly vertical** (tilt ≈ 0°), seated on the cell floor, dead-centered
 in the cell; the gripper then releases and the arm retracts, leaving the bottle in the rack.
