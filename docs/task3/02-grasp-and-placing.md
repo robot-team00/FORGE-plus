@@ -135,20 +135,45 @@ Sequence in the renderer: trained policy → place → hold ~10 steps (let the g
 settle) → `RETRACT` for the tail. The trained policy itself never learned to retract (episodes
 ended at success during training), so the retract is a scripted nominal-OSC motion.
 
-## 9. Standing placement: the topple problem
+## 9. Standing placement: SOLVED via contact-then-verticalize
 
-**Status: open.** Even with a clean release + retract, the tall bottle **topples** (ends lying on
-the shelf). Reason: §4 — the firm neck-grip holds it at a ~30–40° tilt, so it is released leaning
-and falls. A short symmetric tumbler tolerates the same tilt and stays up.
+**Status: solved (2026-06-27).** The bottle now places **standing upright** (final tilt ~0.8°,
+base exactly on the shelf), with real physics and no retrain.
 
-Options to get a clean **standing** placement:
+**The diagnosis (measured, not guessed):** the bottle is carried at only ~12.6° (the firm neck
+grip + the forward-pointing hand → a pendulum equilibrium, *not* 30–40° as it looked). But it
+topples because it must be released **within a few degrees of vertical** — a 12° release leans the
+COM over the narrow base edge and it falls. A gradual release didn't help (tilt 12°→32°→92° as the
+grip opened). There is a **coupling tension**: holding the bottle vertical needs high OSC
+orientation stiffness, but that same stiffness **overpowers the descent** (the arm climbs instead
+of lowering) — so a single fixed stiffness can't both verticalize *and* place:
 
-1. **Vertical / top-down grasp** so the object is carried and released upright. Requires setting
-   `ee_quat_des` to top-down and (likely) **retraining**, since the place trajectory changes.
-2. **Choose a short, wide object** (box/carton) that stays standing despite the tilt — the
-   pragmatic path; satisfies the flat-face grasp rule too.
-3. ❌ **Not allowed:** teleporting the object upright at release (violates the real-physics rule).
+| OSC orientation stiffness | bottle tilt | can it descend to the shelf? |
+|---|---|---|
+| 40 (descent default) | ~12.6° → topples | ✅ yes |
+| 200 (verticalizes) | ~3° → would stand | ❌ no — EE rises even at max down-action |
 
-The headless eval **cannot** reproduce the place to debug this (it stalls at `TRANSPORT`) — only
-the RTX render reaches `RELEASE`, because `_grab()`'s extra `app.update()`s add per-frame physics
-settling. **Instrument the renderer itself**, not a headless proxy. (See doc 03.)
+**The fix — decouple them in time (FORGE-style force-guided settle).** Descend with **low**
+orientation stiffness (place works), then once the base is **on the shelf** ramp the stiffness
+**up** and command a top-down hand orientation: the OSC then rights the bottle **about the
+base-contact pivot** (it can't lift it — the base is planted) → it ends vertical → release →
+stands. Uses the contact as the manipulation aid, exactly FORGE's point.
+
+Implementation (`isaac_pick_place_env.py`):
+
+- OSC switched to **`impedance_mode="variable_kp"`** so orientation stiffness is set **per step**
+  via the command (`command = [pose(7), stiffness(6)]`; `motion_stiffness_limits_task=(5,600)`).
+- `_apply_action`: when the base is on the shelf during `PLACE_DESCEND`, increment `_vert_ctr` and
+  ramp `ori_k` from `ori_k_descend` (40) → `ori_k_vertical` (200) over `vert_ramp_steps` (18),
+  setting `ee_quat_des` top-down `(w,x,y,z)=(0,1,0,0)` while ramping.
+- `_get_dones`: gate `PLACE_DESCEND → RELEASE` on `on_shelf & (_vert_ctr >= vert_ramp_steps)` so
+  it doesn't release until uprighted.
+- Renderer then does the gradual finger-open release (§7) + lateral retract (§8).
+
+**No retrain needed:** the descent is unchanged (low stiffness), so the existing
+`task3_wine_bottle.pt` policy still places; the righting is a pure env-side force-guided maneuver.
+Result: tilt 16° → 1.9° → 0.8°, bottle locked at base z = 0.500, hand retracts away.
+
+Note: the headless eval **cannot** reproduce the place (it stalls at `TRANSPORT`) — only the RTX
+render reaches `RELEASE`, because `_grab()`'s extra `app.update()`s add per-frame physics settling.
+**Instrument the renderer itself**, not a headless proxy. (See doc 03.)

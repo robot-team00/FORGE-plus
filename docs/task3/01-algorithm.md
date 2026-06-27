@@ -25,8 +25,10 @@ hand-rolled Jacobian-transpose controller.
 - **Important:** the finger actuator (`panda_hand`) is **left at stiffness=2e3** (a stiff
   position drive). This matters for the gripper-release bug — see
   [`02-grasp-and-placing.md`](02-grasp-and-placing.md#the-gripper-release-bug).
-- The OSC holds a fixed end-effector **orientation** (`ee_quat_des`, captured once at warmup).
-  This is why the carried object keeps a constant tilt — the root cause of the topple problem.
+- The OSC holds an end-effector **orientation** target (`ee_quat_des`). Orientation stiffness is
+  now set **per step** (`impedance_mode="variable_kp"`): low during descent, ramped high on
+  shelf-contact to right the bottle for a standing place — see
+  [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
 
 Per-step target (in `_apply_action`):
 

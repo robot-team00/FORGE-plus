@@ -205,6 +205,13 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                    # hand; measured directly). 0.61 left it 3 cm high.
     place_settle_tol: float = 0.02  # |cup_base - shelf_top| to count the cup as placed
     mug_grip_z: float = 0.12   # height up the mug (from its base origin) where the gripper grips
+    # Hold the hand TOP-DOWN (approach axis straight down) so a neck-gripped tall object hangs
+    # VERTICAL and can be PLACED STANDING. FORGE holds the part at a fixed correct roll/pitch;
+    # here that's upright. Needs higher OSC orientation stiffness (the default 40 barely tracks).
+    grasp_topdown: bool = False  # if True, command a fixed top-down ee_quat_des at warmup
+    ori_k_descend: float = 40.0    # OSC orientation stiffness during approach/descent (place works)
+    ori_k_vertical: float = 200.0  # ramped-to stiffness on shelf-contact to right the bottle
+    vert_ramp_steps: int = 18      # steps to ramp ori_k up once the base is on the shelf
     grasp_com_drop: float = 0.0     # seat the cup centre this far BELOW the pads so the
                                     # grip is above the COM (pendulum-stable, stays upright)
     shelf_top_z:   float = 0.50   # reachable-from-above shelf/counter surface
@@ -446,11 +453,15 @@ if ISAAC_AVAILABLE:
             # dynamics + an undamped elbow/wrist -> the jitter/wobble.
             osc_cfg = OperationalSpaceControllerCfg(
                 target_types=["pose_abs"],
-                impedance_mode="fixed",
+                # variable_kp: orientation stiffness is set PER STEP via the command, so we can
+                # descend with low orientation stiffness (place works) and ramp it up on
+                # shelf-contact to RIGHT the bottle about the contact pivot (force-guided settle).
+                impedance_mode="variable_kp",
+                motion_stiffness_limits_task=(5.0, 600.0),
                 inertial_dynamics_decoupling=True,
                 partial_inertial_dynamics_decoupling=False,
                 gravity_compensation=True,
-                motion_stiffness_task=[400.0, 400.0, 400.0, 40.0, 40.0, 40.0],
+                motion_stiffness_task=[400.0, 400.0, 400.0, 40.0, 40.0, 40.0],  # initial; overridden per step
                 motion_damping_ratio_task=1.0,                  # critically damped
                 motion_control_axes_task=[1, 1, 1, 1, 1, 1],
                 nullspace_control="position",
@@ -485,6 +496,9 @@ if ISAAC_AVAILABLE:
             self._phase      = torch.zeros(N, dtype=torch.long, device=d)
             self._phase_ctr  = torch.zeros(N, dtype=torch.long, device=d)
             self._settle_ctr = torch.zeros(N, dtype=torch.long, device=d)
+            # Contact-then-verticalize: counts steps the base has been on the shelf during
+            # PLACE_DESCEND; ramps the OSC orientation stiffness up to right the bottle.
+            self._vert_ctr   = torch.zeros(N, dtype=torch.long, device=d)
             self._f_cmd      = torch.zeros(N, device=d)
             self._f_break    = torch.zeros(N, device=d)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
@@ -823,8 +837,30 @@ if ISAAC_AVAILABLE:
                 self._joint_centers = r.data.joint_pos[:, self._arm_ids].clone()  # nominal posture
 
             if not self._osc_init:
-                self._ee_quat_des = ee_quat_w.clone()   # hold the initial grasp orientation
+                if self.cfg.grasp_topdown:
+                    # Hand approach axis (local +z) -> world DOWN: quat (w,x,y,z)=(0,1,0,0).
+                    # The neck-gripped bottle then hangs vertical -> places standing.
+                    self._ee_quat_des = torch.tensor(
+                        [0.0, 1.0, 0.0, 0.0], device=self.device
+                    ).expand(self.num_envs, 4).clone()
+                else:
+                    self._ee_quat_des = ee_quat_w.clone()   # hold the initial grasp orientation
                 self._osc_init = True
+
+            # ── Contact-then-verticalize (FORGE-style force-guided settle) ────────
+            # Descend with LOW orientation stiffness (place works). Once the bottle's BASE is
+            # on the shelf during PLACE_DESCEND, ramp orientation stiffness up and command a
+            # TOP-DOWN hand orientation -> the OSC rights the bottle about the base-contact
+            # pivot (it can't lift because the base is planted) -> it ends vertical -> stands.
+            base_z = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+            on_shelf_now = (self._phase == int(PickPlacePhase.PLACE_DESCEND)) & \
+                           (base_z < self.cfg.shelf_top_z + self.cfg.place_settle_tol)
+            self._vert_ctr = torch.where(on_shelf_now, self._vert_ctr + 1, self._vert_ctr)
+            frac  = (self._vert_ctr.float() / float(max(1, self.cfg.vert_ramp_steps))).clamp(max=1.0)
+            ori_k = self.cfg.ori_k_descend + frac * (self.cfg.ori_k_vertical - self.cfg.ori_k_descend)  # (N,)
+            vmask = frac > 0.0
+            if vmask.any():
+                self._ee_quat_des[vmask] = torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device)
 
             # Target pose = lam-rate-limited step toward the phase waypoint + policy
             # delta (keeps FORGE's bounded per-step motion), in base frame.
@@ -832,7 +868,9 @@ if ISAAC_AVAILABLE:
             a        = self._actions[:, :3] * self.cfg.act_range
             target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(-self.cfg.lam, self.cfg.lam)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
-            command  = torch.cat([tgt_pos_b, tgt_quat_b], dim=-1)
+            _k400 = torch.full_like(ori_k, 400.0)
+            stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
+            command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 
             # Operational-space control: inertia-decoupled task impedance + gravity
             # comp + null-space posture control (no more hand-rolled Jacobian-T).
@@ -1001,11 +1039,14 @@ if ISAAC_AVAILABLE:
             cup_bot   = cup_z   # mug origin is at its BASE, so root z == base height
             on_shelf  = (cup_bot - c.shelf_top_z).abs() < c.place_settle_tol
             place_dsc = self._phase == int(PickPlacePhase.PLACE_DESCEND)
-            close = close | (place_dsc & on_shelf)
+            # Only advance PLACE_DESCEND -> RELEASE once the base is on the shelf AND the
+            # contact-then-verticalize ramp has finished (bottle uprighted before release).
+            place_done = on_shelf & (self._vert_ctr >= c.vert_ramp_steps)
+            close = close | (place_dsc & place_done)
 
             grasp_ok = ((self._phase == int(PickPlacePhase.GRASP)) & (cf > c.grasp_force_n)) |                        (self._phase != int(PickPlacePhase.GRASP))
-            # Dynamic object: gate the place on its BASE actually reaching the shelf surface.
-            place_ok = (place_dsc & on_shelf) | (~place_dsc)
+            # Dynamic object: gate the place on its BASE on the shelf + verticalized.
+            place_ok = (place_dsc & place_done) | (~place_dsc)
 
             can_advance  = close & grasp_ok & place_ok & ~self._broke
             # Envs that actually progress this step (not already at the final phase).
@@ -1060,6 +1101,7 @@ if ISAAC_AVAILABLE:
             self._phase[env_ids]       = start_phase
             self._phase_ctr[env_ids]   = 0
             self._settle_ctr[env_ids]  = 0
+            self._vert_ctr[env_ids]    = 0
             self._broke[env_ids]       = False
             self._succeeded[env_ids]   = False
             self._set_reset[env_ids]   = True

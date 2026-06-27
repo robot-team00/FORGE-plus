@@ -1,4 +1,9 @@
-# Task 3 — Fragile Pick & Place (Franka + Isaac Lab)
+# Task 3 — Fragile Object Placement (Franka + Isaac Lab)
+
+> **Naming note:** this is a *placement* task — the robot does **not** pick the object off a
+> surface. The code keeps `pick_place` names (`FrankaPickPlaceEnv`, `*_pick_place.py`,
+> gym id `FORGE-PickPlace-v0`) because the env *implements* the full pick→place pipeline, but we
+> run it in `place_only=True` mode. See the "Pick vs place" box below.
 
 > Read this first. This folder documents **everything** about FORGE-plus Task 3: the
 > algorithm, the grasp/place physics, the headless RTX rendering pipeline, and how the
@@ -80,9 +85,10 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 - ✅ Policy trained to **succ 1.0 / break 0.0**.
 - ✅ Headless RTX render with the object correctly following the gripper on screen.
 - ✅ Gripper genuinely **releases** the bottle and the arm **retracts** away.
-- ⚠️ **Open issue:** the tall bottle **topples** on release because the thin-neck grasp is held
-  at a ~30–40° tilt. Standing placement needs a vertical/top-down grasp (+ retrain), or a
-  short/wide object. See [`02-grasp-and-placing.md`](02-grasp-and-placing.md#standing-placement-the-topple-problem).
+- ✅ **Bottle places STANDING upright** (final tilt ~0.8°, base on the shelf) via **contact-then-
+  verticalize** — descend soft, then ramp OSC orientation stiffness on shelf-contact to right the
+  bottle about the contact pivot. Real physics, no retrain. See
+  [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
 
 ## The one-paragraph mental model
 

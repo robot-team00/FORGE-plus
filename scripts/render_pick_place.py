@@ -313,7 +313,7 @@ def _hud(img, k, phase_idx, cf, broke, succ):
     dr = ImageDraw.Draw(img, "RGBA")
     # top banner
     dr.rectangle([0, 0, W, 86], fill=(0, 0, 0, 130))
-    dr.text((20, 8),  "FORGE+ Task 3  -  Fragile Pick & Place", font=F_TITLE, fill=(255,255,255))
+    dr.text((20, 8),  "FORGE+ Task 3  -  Fragile Object Placement", font=F_TITLE, fill=(255,255,255))
     dr.text((20, 38), "object: %-13s  F_break=%5.1f N   F_cmd(LLM)=%5.1f N"
             % (OBJ_KEY, F_BREAK, F_CMD), font=F_MED, fill=(200,220,255))
     dr.text((20, 60), "frame %3d   phase[%d/7]: %s" % (k+1, phase_idx+1, PHASE_NAMES[phase_idx]),
@@ -361,41 +361,48 @@ act = torch.zeros(env.num_envs, 7, device=env.device)
 # (straight up re-captured the just-placed bottle).
 RETRACT = torch.zeros(env.num_envs, 7, device=env.device)
 RETRACT[:, 0] = -1.0; RETRACT[:, 1] = -1.0; RETRACT[:, 2] = 1.0
+import math as _math
+from isaaclab.utils.math import matrix_from_quat as _mfq
+def _bottle_tilt_deg():
+    q = env._obj.data.root_pose_w[0, 3:7]
+    up = _mfq(q.unsqueeze(0))[0] @ torch.tensor([0.,0.,1.], device=env.device)
+    return _math.degrees(_math.acos(max(-1.0, min(1.0, float(up[2])))))
 def _retract_dbg(k):
     o = env.scene.env_origins[0]
     b = env._obj.data.root_pose_w[0, :3] - o
     e = env._robot.data.body_pos_w[0, env._ee_idx, :3] - o
     fw = (env._robot.data.joint_pos[0,7] + env._robot.data.joint_pos[0,8]).item()
-    print("  retract k%d fw=%.4f bottle=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f)"
-          % (k, fw, b[0], b[1], b[2], e[0], e[1], e[2]), flush=True)
+    print("  retract k%d fw=%.4f tilt=%4.1f bottle=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f)"
+          % (k, fw, _bottle_tilt_deg(), b[0], b[1], b[2], e[0], e[1], e[2]), flush=True)
 
 for k in range(N_MAX):
     fcmd = env.f_cmd_norm().to(env.device)
     with torch.no_grad():
         act_m, act_s = policy(obs, fcmd)
-    # Trained policy for the approach + gentle place. After RELEASE (term_at set):
-    #  - first ~15 steps: KEEP the trained policy (hand hovers low) so the gripper finishes
-    #    OPENING and the bottle settles onto the shelf (retracting sooner lifts it back up).
-    #  - then: a lateral-back-up RETRACT so the open gripper clears the bottle sideways.
-    if term_at is None or (k - term_at) < 10:
-        act = act_m
+    # FORGE-style force-guided settle-and-release. After RELEASE (term_at set):
+    #  - GRADUAL release: ramp the fingers open over RAMP steps while the hand HOLDS still,
+    #    so the base-on-shelf contact seats the bottle and its mild (~12 deg) lean rocks out
+    #    onto the flat base. A snap-open teleport imparted an impulse that toppled it.
+    #  - then: a gentle lateral-back-up RETRACT so the open gripper clears the bottle sideways.
+    RAMP = 28
+    if term_at is None or (k - term_at) < RAMP:
+        act = act_m                              # hold while the bottle settles
     else:
         act = RETRACT
 
     res  = env.step(act)                          # one policy step (decimation substeps)
     obs  = res[0]["policy"]
 
-    # After the place, FORCE the gripper fully open so the bottle is genuinely RELEASED.
     # The Franka finger actuator has a stiff position drive (stiffness 2e3); the env's
-    # effort-based open can't move the fingers off the bottle neck, so the gripper never
-    # actually let go (the bottle was only lowered to touch the shelf while still held).
-    # Writing the finger joints open releases it; the bottle then rests free on the shelf.
+    # effort-based open can't move the fingers off the neck, so we write the finger joints
+    # directly — but GRADUALLY (lerp closed->open over RAMP) for a gentle, impulse-free release.
     if term_at is not None:
         _n = env.num_envs
+        frac = min(1.0, (k - term_at) / float(RAMP))
+        fpos = 0.008 + frac * (0.040 - 0.008)    # per-finger: closed(neck) -> fully open
+        cur_v = env._robot.data.joint_vel[:, 7:9].clone()   # keep current finger velocity (no zero-snap)
         env._robot.write_joint_state_to_sim(
-            torch.full((_n, 2), 0.04, device=env.device),
-            torch.zeros((_n, 2), device=env.device),
-            joint_ids=[7, 8])
+            torch.full((_n, 2), fpos, device=env.device), cur_v, joint_ids=[7, 8])
         if (k - term_at) % 4 == 0:
             _retract_dbg(k)
 
