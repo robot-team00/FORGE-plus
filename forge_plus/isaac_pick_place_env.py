@@ -263,11 +263,23 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     # The robot is reset to a randomized APPROACH pose above the cell (initial-state
     # setup, exactly as FORGE) — the learned skill is everything after that.
     forge_mode:       bool  = False
-    forge_approach_z: float = 0.60   # EE approach height above the cell at episode start
-    forge_start_lat:  float = 0.04   # ± random lateral start offset (m) the policy must correct
-    forge_setup_steps: int  = 160    # substeps to drive the EE to the approach pose (setup, not the skill)
-    keypoint_k:       float = 4.0    # dense keypoint reward scale (−k·dist to seated pose)
+    # Curriculum (start EASY so success is discovered, then widen via follow-up runs):
+    forge_approach_z: float = 0.56   # EE approach height (natural grasp). Matches the height the
+                                     # scripted insertion reached the cell at; base ~= ee_z - 0.13 so
+                                     # the base starts ~0.43, just above the cell floor (0.40).
+    forge_start_lat:  float = 0.015  # ± random lateral start offset (m) the policy must correct
+    forge_setup_steps: int  = 150    # substeps to drive the EE to the approach pose (setup, not the skill)
+    forge_act_range:  float = 0.03   # per-step EE delta the policy commands (smaller = gentler, fewer blowups)
+    keypoint_k:       float = 60.0   # PBRS reward scale — must dominate the motion penalties so the
+                                     # policy descends to seat instead of freezing to dodge penalties
     force_pen_beta:   float = 0.5    # FORGE force-overshoot penalty weight
+    forge_pos_k:      float = 400.0  # task-space position stiffness. Needs to be high enough for the
+                                     # OSC to actually reach the cell (low stiffness -> large steady-
+                                     # state error -> base never centers). Force is bounded by the
+                                     # ceiling + trained on a robust object, so 400 doesn't break it.
+    forge_obj_cls:    int   = 2      # fix the training object (2=metal_plate, robust) so breakage does
+                                     # not derail learning the SEAT; -1 = randomize. Fragility curriculum
+                                     # (transfer to glass) is a follow-up once seating is learned.
 
     # Gripper
     gripper: str   = "franka_panda"
@@ -581,6 +593,9 @@ if ISAAC_AVAILABLE:
             # ── FORGE-mode state (learned insertion) ──
             self._setup_ctr  = torch.zeros(N, dtype=torch.long, device=d)  # approach-pose setup countdown
             self._start_off  = torch.zeros(N, 2, device=d)                 # random lateral start offset
+            self._best_dist  = torch.full((N,), 9.9, device=d)             # best (min) dist-to-goal this episode
+            self._prev_dist  = torch.full((N,), 9.9, device=d)             # PBRS: previous-step dist-to-goal
+            self._min_dist   = torch.full((N,), 9.9, device=d)             # best (min) dist achieved this episode
             self._rec_phase  = torch.zeros(N, dtype=torch.long, device=d)  # wiggle phase counter
             self._jam_cooldown = torch.zeros(N, dtype=torch.long, device=d)  # suppress jam-detect after a recovery
             # Contact + base-height history for the force signature (ring buffers).
@@ -757,6 +772,8 @@ if ISAAC_AVAILABLE:
         def _sample_episode(self, ids) -> None:
             n   = len(ids)
             cls = torch.randint(0, self._n_obj_cls, (n,), device=self.device)
+            if self.cfg.forge_mode and self.cfg.forge_obj_cls >= 0:
+                cls = torch.full((n,), self.cfg.forge_obj_cls, device=self.device, dtype=torch.long)
             fb  = (self._obj_fmean[cls]
                    + self._obj_fstd[cls] * torch.randn(n, device=self.device))
             fb  = torch.maximum(fb, self._obj_fmin[cls])
@@ -824,23 +841,36 @@ if ISAAC_AVAILABLE:
             c = self.cfg
             orig = self.scene.env_origins
             in_setup = (self._setup_ctr > 0).unsqueeze(-1)
+            # SETUP (positioning only — NOT the learned skill): drive the GRIPPER over
+            # the cell via the reachable UP-OVER-DOWN path (a direct diagonal drive
+            # saturates the arm's workspace ~12 cm short in y). Stage 1: up & over to
+            # the cell xy at transport height. Stage 2: straight down to the approach
+            # height. NO base-aim — so the bottle's base starts ~6 cm off (the lean),
+            # and the LEARNED policy must correct that alignment itself + descend + force.
+            stage1 = self._setup_ctr > (c.forge_setup_steps // 2)
             appr = ee_pos_w.clone()
             appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0]
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
-            appr[:, 2] = orig[:, 2] + c.forge_approach_z
-            pol = ee_pos_w + self._actions[:, :3] * c.act_range      # learned EE delta
+            appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z)
+            pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
             raw = torch.where(in_setup, appr, pol)
             lam = c.lam
             target = ee_pos_w + (raw - ee_pos_w).clamp(min=-lam, max=lam)
-            # ── FORGE force authority (safety, NOT the policy): retreat the EE when
-            # contact reaches the per-object budget, so force stays ~F_max and the
-            # bottle is never broken while the policy explores. The policy still
-            # learns to find the hole; the clamp just bounds the force.
+            # ── FORGE force authority (safety, NOT the policy): when axial contact
+            # reaches the per-object budget, FREEZE the descent (don't push the EE
+            # lower) — but leave xy free so the policy can still slide/align, and
+            # don't retreat (so resting on the cell floor = seated, not undone).
+            # Compliant stiffness (forge_pos_k) keeps lateral rams survivable. This
+            # bounds the force to ~F_max without preventing the gentle insertion.
             budget = self._obj_budget[self._obj_cls]
-            over = (self._cf_filt > 0.9 * budget) & (self._setup_ctr == 0)
-            target[:, 2] = torch.where(over, ee_pos_w[:, 2] + 0.004, target[:, 2])
+            over = (self._cf_filt > budget) & (self._setup_ctr == 0)
+            frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
+            target[:, 2] = torch.where(over, frozen_z, target[:, 2])
             self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
-            ori_k = torch.full((self.num_envs,), c.ori_k_insert, device=self.device)
+            # Hold the bottle RIGIDLY upright (high orientation stiffness) so it
+            # hangs straight and its base stays under the gripper — a loose hold
+            # lets it lean ~10 cm sideways and the base never centers over the cell.
+            ori_k = torch.full((self.num_envs,), 400.0, device=self.device)
             return target, ori_k
 
         def _forge_get_observations(self) -> dict:
@@ -866,18 +896,27 @@ if ISAAC_AVAILABLE:
             goal = self._forge_goal_w() - self.scene.env_origins
             d = base - goal
             dist = d.norm(dim=-1)
-            # FORGE keypoint reward: dense pull toward the seated pose.
-            r = -c.keypoint_k * dist
+            live = self._setup_ctr == 0
+            # PURE PROGRESS shaping: F = prev_dist − dist (NO discount factor).
+            # Telescopes to (dist_0 − dist_final): only NET progress toward the seat
+            # pays; staying still earns exactly 0 and oscillating nets ~0, so it
+            # cannot be farmed by hovering. (A 0.99 discount here created a positive
+            # living reward ∝ dist that the policy farmed by hovering far from goal.)
+            valid = self._prev_dist < 9.0
+            shape = torch.where(valid, self._prev_dist - dist, torch.zeros_like(dist))
+            self._prev_dist = dist.clone()
+            r = c.keypoint_k * shape * live.float()
             # force-overshoot penalty (FORGE): penalise contact above the budget.
             excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
             r = r - c.force_pen_beta * excess
-            # smoothness + time
+            # smoothness + time — kept SMALL so they don't suppress the descent the
+            # policy must explore to discover the seat (heavy penalties -> it freezes).
             jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
-            r = r - 0.05 * jvel
+            r = r - 0.01 * jvel
             arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
-            r = r - 0.15 * arate
+            r = r - 0.03 * arate
             self._prev_actions = self._actions.clone()
-            r = r - 0.02
+            r = r - 0.005
             # terminal cliffs
             r = r + self._succeeded.float() * 50.0
             r = r - self._broke.float() * 6.0
@@ -895,13 +934,29 @@ if ISAAC_AVAILABLE:
             self._broke = (cf > self._f_break) & live
             self._settle_ctr = torch.where(seated & live, self._settle_ctr + 1,
                                            (self._settle_ctr - 1).clamp(min=0))
-            self._succeeded = self._settle_ctr >= c.settle_steps
-            terminated = (self._broke | self._succeeded) & live
+            self._succeeded = self._settle_ctr >= 6           # hold the seat briefly
+            # Dropped the bottle (flung from the grip / fell): terminate so the
+            # blown-up state is reset instead of polluting training with huge dist.
+            dropped = base[:, 2] < 0.25
+            terminated = (self._broke | self._succeeded | (dropped & live)) & live
             truncated = self.episode_length_buf >= self.max_episode_length - 1
             self.extras["succ_mask"] = self._succeeded.clone()
             self.extras["brk_mask"] = self._broke.clone()
             self.extras["n_succ"] = float(self._succeeded.sum().item())
             self.extras["n_brk"] = float(self._broke.sum().item())
+            # diagnostics (live envs): how close is the base to the seated pose?
+            lm = live.float()
+            denom = lm.sum().clamp(min=1.0)
+            goal = self._forge_goal_w() - self.scene.env_origins
+            dist = (base - goal).norm(dim=-1)
+            self._min_dist = torch.where(live, torch.minimum(self._min_dist, dist), self._min_dist)
+            self.extras["fdist"] = float((dist * lm).sum().item() / denom.item())
+            self.extras["fbz"] = float((base[:, 2] * lm).sum().item() / denom.item())
+            self.extras["fseat"] = float((seated.float() * lm).sum().item() / denom.item())
+            # best distance achieved this episode (how CLOSE it ever gets) + xy offset
+            mdl = self._min_dist < 9.0
+            self.extras["fmin"] = float((self._min_dist * mdl.float()).sum().item() / mdl.float().sum().clamp(min=1).item())
+            self.extras["fdxy"] = float(((base[:, :2] - goal[:, :2]).norm(dim=-1) * lm).sum().item() / denom.item())
             return terminated, truncated
 
         # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════
@@ -1253,8 +1308,8 @@ if ISAAC_AVAILABLE:
             if self.cfg.forge_mode:
                 target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
-            _k400 = torch.full_like(ori_k, 400.0)
-            stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
+            _kpos = torch.full_like(ori_k, self.cfg.forge_pos_k if self.cfg.forge_mode else 400.0)
+            stiffness = torch.stack([_kpos, _kpos, _kpos, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
             command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 
             # Operational-space control: inertia-decoupled task impedance + gravity
@@ -1562,6 +1617,9 @@ if ISAAC_AVAILABLE:
                 self._start_off[env_ids] = (torch.rand(n, 2, device=self.device) * 2 - 1) * lat
                 self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
                 self._settle_ctr[env_ids] = 0
+                self._best_dist[env_ids] = 9.9
+                self._prev_dist[env_ids] = 9.9
+                self._min_dist[env_ids] = 9.9
 
             self._sample_episode(env_ids)
 

@@ -120,7 +120,12 @@ def main() -> None:
         cfg.require_upright = False   # curriculum stage A
     obs_dim = 37
     if args.forge:
-        cfg.forge_mode = True         # LEARNED insertion: policy drives the EE (no waypoints/base-aim)
+        cfg.forge_mode = True         # LEARNED insertion: policy drives the EE (no waypoints)
+        # Use the NATURAL (forward) grasp orientation — a top-down wrist cannot reach
+        # out to the cell in y (the arm saturates ~12 cm short). The natural grip
+        # reaches the cell (as the scripted insertion proved); the base-aim SETUP
+        # corrects the resulting lean so the base still starts centered.
+        cfg.grasp_topdown = False
         obs_dim = 34
     print(f"[train] forge_mode={cfg.forge_mode} place_strategy={cfg.place_strategy} obs={obs_dim}", flush=True)
     env = FrankaPickPlaceEnv(cfg)
@@ -170,6 +175,11 @@ def main() -> None:
             ep_succ += res[4].get("n_succ", 0.0)
             ep_brk  += res[4].get("n_brk",  0.0)
             ep_end  += float(res[2].sum().item())
+            diag_fdist = res[4].get("fdist", -1.0)   # last-step diagnostics (forge)
+            diag_fbz   = res[4].get("fbz", -1.0)
+            diag_fseat = res[4].get("fseat", -1.0)
+            diag_fmin  = res[4].get("fmin", -1.0)    # best dist achieved this episode
+            diag_fdxy  = res[4].get("fdxy", -1.0)    # xy offset from cell center
             obs = res[0]["policy"].to(dev)
 
         # ── Generalised Advantage Estimation (GAE) ────────────────────────
@@ -226,7 +236,10 @@ def main() -> None:
             fps  = (it + 1) * args.rollout * N / (time.perf_counter() - t0)
             print(
                 f"it {it:4d}  rew {R.mean().item():.3f}  ret {bRet.mean().item():.2f}  "
-                f"succ {succ:.3f}  brk {brk:.3f}  fps {fps:.0f}",
+                f"succ {succ:.3f}  brk {brk:.3f}  "
+                f"dist {diag_fdist:.3f} dxy {diag_fdxy:.3f} bz {diag_fbz:.3f} "
+                f"min {diag_fmin:.3f} seat {diag_fseat:.2f}  "
+                f"fps {fps:.0f}",
                 flush=True,
             )
             if USE_WANDB:
