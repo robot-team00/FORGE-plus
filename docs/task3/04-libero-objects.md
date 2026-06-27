@@ -85,6 +85,41 @@ Combine the grasp rule (doc 02 §3) with stability:
 low/stable. A square tumbler also works but is less "realistic". The wine bottle is realistic and
 grips fine, but topples on release (doc 02 §9).
 
+## 7. The wine-cellar rack (procedural USD)
+
+The wine-rack used by the insertion task (doc 05) is **built procedurally** with `pxr`, not
+imported from LIBERO — a parametric egg-crate is cleaner and lets us tune the cell clearance
+exactly. Built by a scratchpad `build_wine_rack.py` →
+`/workspace/assets/libero/wine_rack/wine_rack.usd`.
+
+Design (derived from the bottle's measured size — diam ≈ 0.043 m after scale):
+
+- **Clearance drives the cell size.** `CLEAR = 0.06 m` over the bottle diameter → **cell =
+  0.103 m**. Generous clearance is deliberate: a tight cell **jammed** the bottle (tilt 12°→32°,
+  contact ~9 N as it wedged). Wide + shallow = bind-free seating (doc 05 §2c).
+- **3×3 grid**, pitch ≈ 0.115 m, span ≈ 0.358 m, base thickness 0.02 m, **wall height 0.08 m**
+  (shallow — guides the bottle to vertical without trapping it).
+- Each board is a `UsdGeom.Mesh` **box** with `CollisionAPI` + `MeshCollisionAPI(convexHull)` —
+  hulls are fine here (boxes have no thin features, unlike the bottle neck that needed
+  `convexDecomposition`, §3).
+- **`PhysxSchema.PhysxContactReportAPI` on the rack root** — without it the contact sensor
+  filtered to the rack errors "could not find any bodies with contact reporter API".
+
+The env spawns it as a **kinematic** rigid object (it must not be pushed by the insertion):
+
+```python
+RigidObjectCfg(prim_path="/World/envs/env_.*/Rack",
+    spawn=sim_utils.UsdFileCfg(
+        usd_path="/workspace/assets/libero/wine_rack/wine_rack.usd",
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg()),
+    init_state=...(pos=(rack_x, rack_y, rack_z)))   # (0.45, 0.12, 0.38)
+```
+
+The renderer binds a dark-wood PBR over the rack meshes (doc 05 §5). To re-tune the cell, change
+`CLEAR` / `wall_h` in the build script and re-export; then verify `cell_floor_z`/`rack_z` in the
+env still line up (cell floor = `rack_z + base_t`).
+
 ## 5. Materials / textures in the render
 
 The renderer keeps the object's **own baked texture** — do **not** bind a flat PBR material over

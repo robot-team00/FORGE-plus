@@ -44,7 +44,7 @@ print("booted", flush=True)
 
 import torch, carb
 import omni.usd
-from pxr import Gf, UsdGeom, UsdShade, Sdf, UsdLux, UsdPhysics
+from pxr import Gf, UsdGeom, UsdShade, Sdf, UsdLux, UsdPhysics, Usd
 import omni.replicator.core as rep
 from forge_plus.isaac_pick_place_env import (
     FrankaPickPlaceEnv, PickPlaceEnvCfg, PickPlacePhase, OBJ_KEYS, FRAGILE_OBJECTS,
@@ -150,11 +150,75 @@ def _bind(prim_path, mat):
         print("bind skip %s: %s" % (prim_path, ex), flush=True)
 
 
+# ── Textured PBR material (diffuse from a PNG, e.g. LIBERO wood/marble/tile) ──
+def _pbr_tex(mat_path, tex_path, rough=0.5, metal=0.0, specular=0.4, uv_scale=(1.0, 1.0)):
+    mat = UsdShade.Material.Define(stage, mat_path)
+    sh  = UsdShade.Shader.Define(stage, mat_path + "/Shader")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(rough)
+    sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metal)
+    sh.CreateInput("specular", Sdf.ValueTypeNames.Float).Set(specular)
+    st = UsdShade.Shader.Define(stage, mat_path + "/stReader")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    xf = UsdShade.Shader.Define(stage, mat_path + "/stXform")
+    xf.CreateIdAttr("UsdTransform2d")
+    xf.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+    xf.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(*uv_scale))
+    tex = UsdShade.Shader.Define(stage, mat_path + "/Tex")
+    tex.CreateIdAttr("UsdUVTexture")
+    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(tex_path)
+    tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(xf.ConnectableAPI(), "result")
+    tex.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+    tex.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
+_TEX = "/workspace/assets/libero/textures"
+
+_bboxc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+
+# The env's Table/Rack are UsdGeom.Cube prims (no UVs). Replace each with a textured Mesh BOX
+# spanning the same world AABB (correct per-face planar UVs so the wood/marble tiles), and hide
+# the original (visibility only — collision is unaffected, so the physics place still works).
+def _tex_box(path, mn, mx, mat, world_uv=2.0):
+    x0, y0, z0 = mn; x1, y1, z1 = mx
+    P = [(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0),
+         (x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)]
+    dx, dy, dz = (x1-x0)*world_uv, (y1-y0)*world_uv, (z1-z0)*world_uv
+    faces = [([4,5,6,7],(0,0,1),(dx,dy)), ([3,2,1,0],(0,0,-1),(dx,dy)),
+             ([1,2,6,5],(1,0,0),(dy,dz)), ([4,7,3,0],(-1,0,0),(dy,dz)),
+             ([2,3,7,6],(0,1,0),(dx,dz)), ([0,1,5,4],(0,-1,0),(dx,dz))]
+    pts, idx, nrm, st = [], [], [], []
+    for verts, n, (u, v) in faces:
+        base = len(pts)
+        for c in verts: pts.append(P[c])
+        idx += [base, base+1, base+2, base+3]
+        nrm += [n]*4
+        st  += [(0,0),(u,0),(u,v),(0,v)]
+    m = UsdGeom.Mesh.Define(stage, path)
+    m.CreatePointsAttr(pts); m.CreateFaceVertexCountsAttr([4]*6)
+    m.CreateFaceVertexIndicesAttr(idx); m.CreateNormalsAttr(nrm)
+    UsdGeom.PrimvarsAPI(m.GetPrim()).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying).Set(st)
+    UsdShade.MaterialBindingAPI(m.GetPrim()).Bind(mat)
+
+def _replace_box(prim_path, out_path, mat, world_uv=2.0):
+    prim = stage.GetPrimAtPath(prim_path)
+    rng = _bboxc.ComputeWorldBound(prim).ComputeAlignedRange()
+    mn, mx = rng.GetMin(), rng.GetMax()
+    _tex_box(out_path, (mn[0],mn[1],mn[2]), (mx[0],mx[1],mx[2]), mat, world_uv)
+    UsdGeom.Imageable(prim).MakeInvisible()
+    print("replaced %s -> textured box [%s..%s]" % (prim_path,
+          [round(x,2) for x in mn], [round(x,2) for x in mx]), flush=True)
+
+
 # ── Lighting: sky dome (soft ambient) + a key "sun" + a warm fill ───────────
 def _light():
     dome = UsdLux.DomeLight.Define(stage, "/World/SkyDome")
-    dome.CreateIntensityAttr(900.0)
-    dome.CreateColorAttr((0.72, 0.80, 0.95))          # cool sky
+    dome.CreateIntensityAttr(750.0)
+    dome.CreateColorAttr((0.95, 0.92, 0.86))          # warm neutral (indoor kitchen)
     dome.CreateExposureAttr(0.0)
     sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
     sun.CreateIntensityAttr(2600.0)
@@ -177,13 +241,39 @@ gz = float(orig[2]) + 0.001
 gp.CreatePointsAttr([(-_S, -_S, gz), (_S, -_S, gz), (_S, _S, gz), (-_S, _S, gz)])
 gp.CreateFaceVertexCountsAttr([4]); gp.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
 gp.CreateNormalsAttr([(0, 0, 1)] * 4)
-_bind("/World/Ground", _pbr("/World/Mats/Floor", (0.22, 0.23, 0.25), rough=0.55, specular=0.4))
+# UVs so a tiled wood/tile floor texture maps (tile ~0.5 m over the 16 m plane)
+_fuv = 2 * _S / 0.6
+UsdGeom.PrimvarsAPI(gp.GetPrim()).CreatePrimvar(
+    "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+).Set([(0, 0), (_fuv, 0), (_fuv, _fuv), (0, _fuv)])
+_bind("/World/Ground", _pbr_tex("/World/Mats/Floor", _TEX + "/seamless_wood_planks_floor.png",
+                                rough=0.5, specular=0.3))
 
-# ── Table + rack PBR materials (existing env prims) ─────────────────────────
-_bind("/World/envs/env_0/Table",
-      _pbr("/World/Mats/Table", (0.42, 0.28, 0.16), rough=0.45, specular=0.4, clearcoat=0.3))  # varnished wood
+# ── LIBERO kitchen backdrop ─────────────────────────────────────────────────
+# The kitchen_background mesh (~0.6 x 3.6 x 2.5 m at scale 0.01; floor at its z=0) placed
+# BEHIND the robot so the camera (at +x, looking -x) frames the robot with the kitchen behind.
+# Transform params are easy to tune; render with KPREVIEW=1 for a fast static placement check.
+KITCHEN_USD = "/workspace/assets/libero/kitchen_background/kitchen_background.usd"
+KSCALE = float(os.environ.get("KSCALE", "0.01"))
+KTX = float(os.environ.get("KTX", "-0.70"))   # kitchen x offset from robot origin (behind)
+KTY = float(os.environ.get("KTY", "0.0"))
+KROTZ = float(os.environ.get("KROTZ", "180.0"))  # face the robot
+# transform goes on a CLEAN parent Xform; the kitchen (whose root already has xformOps) is a child
+_kp = stage.DefinePrim("/World/KitchenXform", "Xform")
+_kx = UsdGeom.Xformable(_kp)
+_kx.AddTranslateOp().Set(Gf.Vec3d(float(orig[0]) + KTX, float(orig[1]) + KTY, float(orig[2])))
+_kx.AddRotateZOp().Set(KROTZ)
+_kx.AddScaleOp().Set(Gf.Vec3f(KSCALE, KSCALE, KSCALE))
+stage.DefinePrim("/World/KitchenXform/Geo", "Xform").GetReferences().AddReference(KITCHEN_USD)
+print("kitchen added at x+%.2f y+%.2f rotz=%.0f scale=%.3f" % (KTX, KTY, KROTZ, KSCALE), flush=True)
+
+# ── Table + rack PBR materials (existing env prims) — LIBERO wood + marble ───
+_replace_box("/World/envs/env_0/Table", "/World/TableVis",
+             _pbr_tex("/World/Mats/Table", _TEX + "/martin_novak_wood_table.png", rough=0.4, specular=0.4),
+             world_uv=2.0)   # wood counter
+# Wine rack is now a multi-board USD (the cells); give it a dark varnished-wood look.
 _bind("/World/envs/env_0/Rack",
-      _pbr("/World/Mats/Rack", (0.80, 0.82, 0.85), rough=0.35, metal=0.0, specular=0.4))         # light painted shelf (metal=1 rendered black against the dark surround)
+      _pbr("/World/Mats/Rack", (0.30, 0.17, 0.09), rough=0.4, specular=0.4, clearcoat=0.3))
 
 # ── Fragile object: the REAL simulated rigid body (held by friction, dropped on
 # release). No fake follower prim any more — we just give the env's Object prim a
@@ -276,6 +366,15 @@ _seat_dbg("after render-flush")
 _sd = np.asarray(rgb.get_data())
 print("sanity: shape=%s mean=%.1f std=%.2f" % (str(_sd.shape), float(np.mean(_sd)), float(np.std(_sd))), flush=True)
 
+# ── Fast placement preview: KPREVIEW=1 -> grab a few static frames, save one, exit ──
+if os.environ.get("KPREVIEW"):
+    for _ in range(8):
+        app.update()
+    _pv = np.asarray(rgb.get_data())
+    Image.fromarray(_pv[:, :, :3]).convert("RGB").save("/workspace/kitchen_preview.png")
+    print("KPREVIEW_SAVED /workspace/kitchen_preview.png", flush=True)
+    import sys as _sys; _sys.stdout.flush(); os._exit(0)
+
 FRAMEDIR = "/workspace/frames_pick_place"
 os.makedirs(FRAMEDIR, exist_ok=True)
 for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
@@ -313,7 +412,7 @@ def _hud(img, k, phase_idx, cf, broke, succ):
     dr = ImageDraw.Draw(img, "RGBA")
     # top banner
     dr.rectangle([0, 0, W, 86], fill=(0, 0, 0, 130))
-    dr.text((20, 8),  "FORGE+ Task 3  -  Fragile Pick & Place", font=F_TITLE, fill=(255,255,255))
+    dr.text((20, 8),  "FORGE+ Task 3  -  Wine-Cellar Bottle Insertion", font=F_TITLE, fill=(255,255,255))
     dr.text((20, 38), "object: %-13s  F_break=%5.1f N   F_cmd(LLM)=%5.1f N"
             % (OBJ_KEY, F_BREAK, F_CMD), font=F_MED, fill=(200,220,255))
     dr.text((20, 60), "frame %3d   phase[%d/7]: %s" % (k+1, phase_idx+1, PHASE_NAMES[phase_idx]),
@@ -361,41 +460,44 @@ act = torch.zeros(env.num_envs, 7, device=env.device)
 # (straight up re-captured the just-placed bottle).
 RETRACT = torch.zeros(env.num_envs, 7, device=env.device)
 RETRACT[:, 0] = -1.0; RETRACT[:, 1] = -1.0; RETRACT[:, 2] = 1.0
+import math as _math
+from isaaclab.utils.math import matrix_from_quat as _mfq
+def _bottle_tilt_deg():
+    q = env._obj.data.root_pose_w[0, 3:7]
+    up = _mfq(q.unsqueeze(0))[0] @ torch.tensor([0.,0.,1.], device=env.device)
+    return _math.degrees(_math.acos(max(-1.0, min(1.0, float(up[2])))))
 def _retract_dbg(k):
     o = env.scene.env_origins[0]
     b = env._obj.data.root_pose_w[0, :3] - o
     e = env._robot.data.body_pos_w[0, env._ee_idx, :3] - o
     fw = (env._robot.data.joint_pos[0,7] + env._robot.data.joint_pos[0,8]).item()
-    print("  retract k%d fw=%.4f bottle=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f)"
-          % (k, fw, b[0], b[1], b[2], e[0], e[1], e[2]), flush=True)
+    print("  retract k%d fw=%.4f tilt=%4.1f bottle=(%.3f,%.3f,%.3f) ee=(%.3f,%.3f,%.3f)"
+          % (k, fw, _bottle_tilt_deg(), b[0], b[1], b[2], e[0], e[1], e[2]), flush=True)
 
 for k in range(N_MAX):
     fcmd = env.f_cmd_norm().to(env.device)
-    with torch.no_grad():
-        act_m, act_s = policy(obs, fcmd)
-    # Trained policy for the approach + gentle place. After RELEASE (term_at set):
-    #  - first ~15 steps: KEEP the trained policy (hand hovers low) so the gripper finishes
-    #    OPENING and the bottle settles onto the shelf (retracting sooner lifts it back up).
-    #  - then: a lateral-back-up RETRACT so the open gripper clears the bottle sideways.
-    if term_at is None or (k - term_at) < 10:
-        act = act_m
+    # Wine-cellar PEG-IN-HOLE: zero-action nominal OSC carries the bottle, centers its base over
+    # the cell (env aims the base) and inserts it. After it's inserted (RELEASE / term_at), hold
+    # briefly while the gripper opens, then RETRACT the hand up/back, leaving the bottle in the cell.
+    RAMP = 28
+    if term_at is None or (k - term_at) < RAMP:
+        act = torch.zeros(env.num_envs, 7, device=env.device)   # nominal OSC insertion
     else:
         act = RETRACT
 
     res  = env.step(act)                          # one policy step (decimation substeps)
     obs  = res[0]["policy"]
 
-    # After the place, FORCE the gripper fully open so the bottle is genuinely RELEASED.
     # The Franka finger actuator has a stiff position drive (stiffness 2e3); the env's
-    # effort-based open can't move the fingers off the bottle neck, so the gripper never
-    # actually let go (the bottle was only lowered to touch the shelf while still held).
-    # Writing the finger joints open releases it; the bottle then rests free on the shelf.
+    # effort-based open can't move the fingers off the neck, so we write the finger joints
+    # directly — but GRADUALLY (lerp closed->open over RAMP) for a gentle, impulse-free release.
     if term_at is not None:
         _n = env.num_envs
+        frac = min(1.0, (k - term_at) / float(RAMP))
+        fpos = 0.008 + frac * (0.040 - 0.008)    # per-finger: closed(neck) -> fully open
+        cur_v = env._robot.data.joint_vel[:, 7:9].clone()   # keep current finger velocity (no zero-snap)
         env._robot.write_joint_state_to_sim(
-            torch.full((_n, 2), 0.04, device=env.device),
-            torch.zeros((_n, 2), device=env.device),
-            joint_ids=[7, 8])
+            torch.full((_n, 2), fpos, device=env.device), cur_v, joint_ids=[7, 8])
         if (k - term_at) % 4 == 0:
             _retract_dbg(k)
 
