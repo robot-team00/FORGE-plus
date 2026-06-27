@@ -245,6 +245,18 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     rack_x:  float = 0.45   # rack/cell x (in front, well within reach for base-aimed insertion)
     rack_y:  float = 0.12   # rack/cell y (modest lateral offset; reachable so the base centers)
 
+    # ── Force-signature recovery (proposal §07) ───────────────────────────────
+    # A lateral approach error that makes the bottle WEDGE on the cell rim (a jam
+    # the recovery loop must clear). 0.0 = no induced jam (normal insertion).
+    jam_dx:        float = 0.0     # induced base-aim x error (m) -> rim wedge
+    jam_dy:        float = 0.0     # induced base-aim y error (m)
+    rec_lift:      float = 0.11    # retract_and_reapproach: how far to lift the EE (m) — clear the rim
+    rec_lat:       float = 0.02    # wiggle_search lateral amplitude (m)
+    rec_dur_steps: int   = 25      # control steps a recovery maneuver runs before clearing
+    jam_force_n:   float = 6.0     # contact >= this with no descent => jam
+    jam_progress_mm: float = 1.5   # net base descent (mm) over the window below which it's "stuck"
+    jam_window:    int   = 15      # steps of no-progress at the ceiling to declare a jam
+
     # Gripper
     gripper: str   = "franka_panda"
 
@@ -546,6 +558,22 @@ if ISAAC_AVAILABLE:
             self._jt_target  = torch.zeros(N, 7, device=d)
             self._extras: dict = {}
 
+            # ── Recovery state (force-signature LLM recovery; see RecoveryLoop) ──
+            self._rec_off    = torch.zeros(N, 3, device=d)   # world-frame OSC target offset
+            self._rec_steps  = torch.zeros(N, dtype=torch.long, device=d)  # maneuver countdown
+            self._rec_wiggle = torch.zeros(N, dtype=torch.bool, device=d)  # lateral search active
+            self._rec_open   = torch.zeros(N, dtype=torch.bool, device=d)  # force fingers open (regrasp)
+            self._jam_on     = torch.zeros(N, dtype=torch.bool, device=d)  # induced misalignment active
+            self._rec_phase  = torch.zeros(N, dtype=torch.long, device=d)  # wiggle phase counter
+            self._jam_cooldown = torch.zeros(N, dtype=torch.long, device=d)  # suppress jam-detect after a recovery
+            # Contact + base-height history for the force signature (ring buffers).
+            self._sig_len    = 64
+            self._cf_hist    = torch.zeros(N, self._sig_len, device=d)
+            self._basez_hist = torch.zeros(N, self._sig_len, device=d)
+            self._latx_hist  = torch.zeros(N, self._sig_len, device=d)
+            self._laty_hist  = torch.zeros(N, self._sig_len, device=d)
+            self._sig_ptr    = 0
+
             # Object registry tensors
             self._n_obj_cls = N_OBJ_CLS
             self._obj_fmean = torch.tensor([FRAGILE_OBJECTS[k]["f_mean"] for k in OBJ_KEYS], device=d)
@@ -751,9 +779,157 @@ if ISAAC_AVAILABLE:
             pad = torch.zeros(self.num_envs, 6 - flat.shape[1], device=self.device)
             return torch.cat([flat, pad], dim=1)
 
+        def _raw_contact_vec3(self) -> torch.Tensor:
+            """Net contact force VECTOR (N,3) applied to the object/rack (world)."""
+            sdata = getattr(self._surf_sensor, "data", None)
+            snf = getattr(sdata, "net_forces_w", None) if sdata is not None else None
+            if snf is not None and snf.numel() > 0:
+                return snf.sum(dim=1)
+            return torch.zeros(self.num_envs, 3, device=self.device)
+
         def f_cmd_norm(self) -> torch.Tensor:
             """Normalised F_cmd in [0, 1] for policy conditioning."""
             return (self._f_cmd / 120.0).unsqueeze(-1)
+
+        # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════
+        # These let the shared, task-agnostic RecoveryLoop drive this env. They
+        # operate on a single instance (env 0) — the recovery demo runs one env.
+
+        @property
+        def f_max_n(self) -> float:
+            """The per-object force ceiling (LLM budget) for env 0."""
+            return float(self._obj_budget[self._obj_cls[0]].item())
+
+        @property
+        def max_steps_per_attempt(self) -> int:
+            return 240
+
+        def subphase(self) -> str:
+            return "insertion"
+
+        def gripper(self) -> str:
+            return self.cfg.gripper
+
+        def _sig_window(self, buf: torch.Tensor, w: int) -> torch.Tensor:
+            """Last w samples (chronological) for env 0 from a ring buffer."""
+            n = min(self._sig_ptr, self._sig_len)
+            w = min(w, n)
+            if w == 0:
+                return torch.zeros(1, device=self.device)
+            idx = [(self._sig_ptr - w + i) % self._sig_len for i in range(w)]
+            return buf[0, idx]
+
+        def reset_episode(self) -> None:
+            self.reset()
+            self._rec_off.zero_(); self._rec_steps.zero_(); self._rec_wiggle.zero_()
+            self._rec_phase.zero_(); self._jam_cooldown.zero_(); self._rec_open.zero_()
+            self._sig_ptr = 0
+            self._cf_hist.zero_(); self._basez_hist.zero_()
+            self._latx_hist.zero_(); self._laty_hist.zero_()
+            self._jam_on[:] = (self.cfg.jam_dx != 0.0 or self.cfg.jam_dy != 0.0)
+
+        def step_skill(self) -> None:
+            """One control step under the nominal OSC + phase machine (zero action)."""
+            self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))
+
+        def _base_xyz0(self):
+            o = self.scene.env_origins[0]
+            p = self._obj.data.root_pose_w[0]
+            return (p[0] - o[0]).item(), (p[1] - o[1]).item(), (p[2] - o[2]).item()
+
+        def is_success(self) -> bool:
+            c = self.cfg
+            bx, by, bz = self._base_xyz0()
+            in_cell = abs(bx - c.rack_x) < 0.04 and abs(by - c.rack_y) < 0.04
+            return bool(in_cell and abs(bz - c.cell_floor_z) < c.insert_depth_tol)
+
+        def is_failure(self) -> bool:
+            """Jam: high contact with no descent over the window, near the cell."""
+            c = self.cfg
+            if self._jam_cooldown[0] > 0 or self._rec_steps[0] > 0:
+                return False
+            if int(self._phase[0]) < int(PickPlacePhase.PLACE_DESCEND):
+                return False
+            cf_w = self._sig_window(self._cf_hist, c.jam_window)
+            bz_w = self._sig_window(self._basez_hist, c.jam_window)
+            if cf_w.numel() < c.jam_window:
+                return False
+            peak = float(cf_w.max().item())
+            descent_mm = float((bz_w[0] - bz_w[-1]).item()) * 1000.0   # +ve = went down
+            # at/near the budget (soft ceiling) with no descent over the window => jam
+            thresh = max(c.jam_force_n, 0.6 * self.f_max_n)
+            return bool(peak >= thresh and descent_mm < c.jam_progress_mm)
+
+        def failure_signature(self):
+            from forge_plus.llm.recovery_selector import ForceSignature
+            c = self.cfg
+            w = c.jam_window
+            cf = self._sig_window(self._cf_hist, w)
+            bz = self._sig_window(self._basez_hist, w)
+            lx = self._sig_window(self._latx_hist, w)
+            ly = self._sig_window(self._laty_hist, w)
+            dt_ms = float(getattr(self, "step_dt", 1.0 / 60.0)) * 1000.0
+            peak_axial = float(cf.max().item())
+            mean_axial = float(cf.mean().item())
+            net_mm = max(0.0, float((bz[0] - bz[-1]).item()) * 1000.0)
+            half = max(1, cf.numel() // 2)
+            rising = bool(cf[-half:].mean().item() > cf[:half].mean().item() + 0.2)
+            lat_mag = torch.sqrt(lx**2 + ly**2)
+            peak_lat = float(lat_mag.max().item())
+            mlx, mly = float(lx.mean().item()), float(ly.mean().item())
+            bias = "none"
+            if (mlx**2 + mly**2) ** 0.5 > 1.0:
+                if abs(mlx) >= abs(mly):
+                    bias = "+x steady" if mlx > 0 else "-x steady"
+                else:
+                    bias = "+y steady" if mly > 0 else "-y steady"
+            slips = int((lx[1:] * lx[:-1] < 0).sum().item()) if lx.numel() > 1 else 0
+            persist = float((cf > 0.5).sum().item()) * dt_ms
+            return ForceSignature(
+                peak_axial_N=round(peak_axial, 2),
+                net_insert_mm=round(net_mm, 2),
+                axial_rising=rising,
+                lateral_bias=bias,
+                contact_persist_ms=round(persist, 1),
+                slip_events=slips,
+                peak_lateral_N=round(peak_lat, 2),
+                mean_axial_N=round(mean_axial, 2),
+            )
+
+        def apply_recovery(self, action: str, params: dict) -> None:
+            """Execute a recovery primitive on env 0 (F_max never changed here)."""
+            c = self.cfg
+            d = self.device
+            dur = int(params.get("duration_steps", c.rec_dur_steps))
+            self._jam_cooldown[0] = dur + c.jam_window
+            self._rec_steps[0] = dur
+            self._rec_wiggle[0] = False
+            self._rec_off[0] = 0.0
+            # The recovery maneuver corrects the misaligned approach: clear the
+            # induced offset so the re-approach can seat (models real re-alignment).
+            self._jam_on[0] = False
+            if action == "retract_and_reapproach":
+                # lift straight up; on clear, base-aim re-centers and re-descends
+                self._rec_off[0, 2] = c.rec_lift
+            elif action == "wiggle_search":
+                self._rec_off[0, 2] = 0.5 * c.rec_lift
+                self._rec_wiggle[0] = True
+                self._rec_phase[0] = 0
+            elif action == "rotate_align":
+                # for a bottle, "align" = nudge the base toward the cell center
+                # (counteracts the lateral wedge) while lifting slightly off the rim
+                o = self.scene.env_origins[0]
+                bx = (self._obj.data.root_pose_w[0, 0] - o[0]).item()
+                by = (self._obj.data.root_pose_w[0, 1] - o[1]).item()
+                dx, dy = c.rack_x - bx, c.rack_y - by
+                nrm = (dx * dx + dy * dy) ** 0.5 + 1e-6
+                self._rec_off[0, 0] = (dx / nrm) * c.rec_lat
+                self._rec_off[0, 1] = (dy / nrm) * c.rec_lat
+                self._rec_off[0, 2] = 0.4 * c.rec_lift
+            elif action == "regrasp":
+                # re-seat the bottle in the gripper (reuse the warmup seat) + lift
+                self._warmup[0] = self.cfg.warmup_substeps
+                self._rec_off[0, 2] = 0.4 * c.rec_lift
 
         # ── Phase waypoint helpers ────────────────────────────────────────────
         def _phase_waypoint_world(self) -> torch.Tensor:
@@ -801,6 +977,23 @@ if ISAAC_AVAILABLE:
                 torch.zeros_like(self._cf_filt),
             )
             self._warmup = (self._warmup - 1).clamp(min=0)
+
+            # ── Recovery: force-signature history + maneuver bookkeeping ────────
+            base_z_now = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+            cvec = self._raw_contact_vec3()                       # (N,3) contact force vector
+            _p = self._sig_ptr % self._sig_len
+            self._cf_hist[:, _p]    = self._cf_filt
+            self._basez_hist[:, _p] = base_z_now
+            self._latx_hist[:, _p]  = cvec[:, 0]
+            self._laty_hist[:, _p]  = cvec[:, 1]
+            self._sig_ptr += 1
+            self._jam_cooldown = (self._jam_cooldown - 1).clamp(min=0)
+            _rec_active = self._rec_steps > 0
+            self._rec_steps = (self._rec_steps - 1).clamp(min=0)
+            _rec_done = _rec_active & (self._rec_steps == 0)
+            if _rec_done.any():
+                self._rec_off[_rec_done] = 0.0
+                self._rec_wiggle[_rec_done] = False
 
             # ── Seat the dynamic object in the gripper during warmup ───────────
             # While the grip settles, snap the object to the grasp centre (finger
@@ -910,8 +1103,35 @@ if ISAAC_AVAILABLE:
                 off_xy = self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2]   # base-to-EE horizontal offset
                 approach = (self._phase >= int(PickPlacePhase.TRANSPORT)).unsqueeze(-1)
                 p_fixed = torch.cat([p_fixed[:, :2] - approach.float() * off_xy, p_fixed[:, 2:3]], dim=-1)
+                # induced jam: bias the base-aim off-center so the bottle WEDGES on the cell rim.
+                # Gated by self._jam_on: a recovery models a corrected approach -> clears it.
+                if self.cfg.jam_dx != 0.0 or self.cfg.jam_dy != 0.0:
+                    jam = torch.zeros(self.num_envs, 2, device=self.device)
+                    jam[:, 0] = self.cfg.jam_dx
+                    jam[:, 1] = self.cfg.jam_dy
+                    gate = approach.float() * self._jam_on.float().unsqueeze(-1)
+                    p_fixed = torch.cat([p_fixed[:, :2] + gate * jam, p_fixed[:, 2:3]], dim=-1)
+            # ── recovery maneuver offset (world frame): lift / lateral search ──
+            rec = self._rec_off.clone()
+            if self._rec_wiggle.any():
+                wig = torch.zeros_like(rec)
+                wig[:, 0] = torch.sin(self._rec_phase.float() * 0.5) * self.cfg.rec_lat
+                rec = torch.where(self._rec_wiggle.unsqueeze(-1), rec + wig, rec)
+                self._rec_phase = torch.where(self._rec_wiggle, self._rec_phase + 1, self._rec_phase)
+            p_fixed = p_fixed + rec
             _lam = lam_eff.unsqueeze(-1)
             target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(min=-_lam, max=_lam)
+            # ── Soft force ceiling (FORGE force authority): when contact reaches
+            # the per-object budget, RETREAT the EE upward a little. This actively
+            # bounds the contact force to ~F_max (never near F_break): a wedge then
+            # oscillates at the ceiling with no net descent — which the recovery
+            # loop catches at LOW force. (Retreat, not freeze, so it can never
+            # deadlock once a recovery has cleared the misalignment.)
+            if self.cfg.place_strategy == "insert":
+                budget = self._obj_budget[self._obj_cls]              # (N,) F_max
+                over = self._cf_filt > 0.9 * budget
+                back_z = ee_pos_w[:, 2] + 0.004                       # 4 mm up -> relieves contact
+                target_w[:, 2] = torch.where(over, back_z, target_w[:, 2])
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
             _k400 = torch.full_like(ori_k, 400.0)
             stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
