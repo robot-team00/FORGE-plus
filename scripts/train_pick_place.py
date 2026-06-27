@@ -82,6 +82,8 @@ def main() -> None:
                    help="extrinsic curriculum stage A: place on the shelf WITHOUT the upright requirement")
     p.add_argument("--reset_std", type=float, default=None,
                    help="after --resume, reset policy log_std to this (re-inflate exploration for stage B)")
+    p.add_argument("--forge", action="store_true",
+                   help="FORGE-style LEARNED insertion: policy drives the EE, no scripted waypoints/base-aim (obs=34)")
     args = p.parse_args()
     dev  = torch.device(args.device)
 
@@ -116,13 +118,17 @@ def main() -> None:
     cfg.gripper        = args.gripper
     if args.no_upright:
         cfg.require_upright = False   # curriculum stage A
-    print(f"[train] place_strategy={cfg.place_strategy} require_upright={cfg.require_upright}", flush=True)
+    obs_dim = 37
+    if args.forge:
+        cfg.forge_mode = True         # LEARNED insertion: policy drives the EE (no waypoints/base-aim)
+        obs_dim = 34
+    print(f"[train] forge_mode={cfg.forge_mode} place_strategy={cfg.place_strategy} obs={obs_dim}", flush=True)
     env = FrankaPickPlaceEnv(cfg)
     N   = env.num_envs
-    print(f"[train] envs={N}  device={dev}  obs=37  act=7", flush=True)
+    print(f"[train] envs={N}  device={dev}  obs={obs_dim}  act=7", flush=True)
 
     # ── Networks ──────────────────────────────────────────────────────────
-    pcfg   = PolicyConfig(obs_dim=37, act_dim=7)   # +3 obj-up vector (extrinsic dexterity obs)
+    pcfg   = PolicyConfig(obs_dim=obs_dim, act_dim=7)
     policy = ForceConditionedPolicy(pcfg).to(dev)
     value  = ValueNetwork(pcfg).to(dev)
     aopt   = Adam(policy.parameters(), lr=args.lr)

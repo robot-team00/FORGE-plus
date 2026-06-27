@@ -257,6 +257,18 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     jam_progress_mm: float = 1.5   # net base descent (mm) over the window below which it's "stuck"
     jam_window:    int   = 15      # steps of no-progress at the ceiling to declare a jam
 
+    # ── FORGE-style LEARNED insertion (no scripted waypoints, no base-aim) ─────
+    # When True: the PPO policy outputs the EE motion (xyz delta) through the OSC
+    # controller and must LEARN to align + insert from force + relative-goal obs.
+    # The robot is reset to a randomized APPROACH pose above the cell (initial-state
+    # setup, exactly as FORGE) — the learned skill is everything after that.
+    forge_mode:       bool  = False
+    forge_approach_z: float = 0.60   # EE approach height above the cell at episode start
+    forge_start_lat:  float = 0.04   # ± random lateral start offset (m) the policy must correct
+    forge_setup_steps: int  = 160    # substeps to drive the EE to the approach pose (setup, not the skill)
+    keypoint_k:       float = 4.0    # dense keypoint reward scale (−k·dist to seated pose)
+    force_pen_beta:   float = 0.5    # FORGE force-overshoot penalty weight
+
     # Gripper
     gripper: str   = "franka_panda"
 
@@ -564,6 +576,11 @@ if ISAAC_AVAILABLE:
             self._rec_wiggle = torch.zeros(N, dtype=torch.bool, device=d)  # lateral search active
             self._rec_open   = torch.zeros(N, dtype=torch.bool, device=d)  # force fingers open (regrasp)
             self._jam_on     = torch.zeros(N, dtype=torch.bool, device=d)  # induced misalignment active
+            self._last_rec_action = None     # last recovery primitive applied (HUD)
+
+            # ── FORGE-mode state (learned insertion) ──
+            self._setup_ctr  = torch.zeros(N, dtype=torch.long, device=d)  # approach-pose setup countdown
+            self._start_off  = torch.zeros(N, 2, device=d)                 # random lateral start offset
             self._rec_phase  = torch.zeros(N, dtype=torch.long, device=d)  # wiggle phase counter
             self._jam_cooldown = torch.zeros(N, dtype=torch.long, device=d)  # suppress jam-detect after a recovery
             # Contact + base-height history for the force signature (ring buffers).
@@ -791,6 +808,102 @@ if ISAAC_AVAILABLE:
             """Normalised F_cmd in [0, 1] for policy conditioning."""
             return (self._f_cmd / 120.0).unsqueeze(-1)
 
+        # ══ FORGE-style learned insertion (no scripted waypoints / base-aim) ══════
+        def _forge_goal_w(self) -> torch.Tensor:
+            """Seated-pose target (cell center at the floor) in world frame."""
+            g = self.scene.env_origins.clone()
+            g[:, 0] += self.cfg.rack_x
+            g[:, 1] += self.cfg.rack_y
+            g[:, 2] += self.cfg.cell_floor_z
+            return g
+
+        def _forge_targets(self, ee_pos_w: torch.Tensor):
+            """EE target for FORGE mode. During the (non-learned) setup window the EE
+            is driven to a randomized APPROACH pose above the cell; after that the
+            LEARNED policy's xyz delta drives the alignment + insertion."""
+            c = self.cfg
+            orig = self.scene.env_origins
+            in_setup = (self._setup_ctr > 0).unsqueeze(-1)
+            appr = ee_pos_w.clone()
+            appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0]
+            appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
+            appr[:, 2] = orig[:, 2] + c.forge_approach_z
+            pol = ee_pos_w + self._actions[:, :3] * c.act_range      # learned EE delta
+            raw = torch.where(in_setup, appr, pol)
+            lam = c.lam
+            target = ee_pos_w + (raw - ee_pos_w).clamp(min=-lam, max=lam)
+            # ── FORGE force authority (safety, NOT the policy): retreat the EE when
+            # contact reaches the per-object budget, so force stays ~F_max and the
+            # bottle is never broken while the policy explores. The policy still
+            # learns to find the hole; the clamp just bounds the force.
+            budget = self._obj_budget[self._obj_cls]
+            over = (self._cf_filt > 0.9 * budget) & (self._setup_ctr == 0)
+            target[:, 2] = torch.where(over, ee_pos_w[:, 2] + 0.004, target[:, 2])
+            self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
+            ori_k = torch.full((self.num_envs,), c.ori_k_insert, device=self.device)
+            return target, ori_k
+
+        def _forge_get_observations(self) -> dict:
+            r = self._robot
+            jp = r.data.joint_pos[:, self._arm_ids]
+            jv = r.data.joint_vel[:, self._arm_ids]
+            ee_p = r.data.body_pos_w[:, self._ee_idx] - self.scene.env_origins
+            ee_q = r.data.body_quat_w[:, self._ee_idx]
+            ft = self._contact_wrench_6d()
+            base_w = self._obj.data.root_pose_w[:, :3]
+            base_to_goal = self._forge_goal_w() - base_w                 # (N,3) relative goal
+            obj_up = torch.bmm(matrix_from_quat(self._obj.data.root_pose_w[:, 3:7]),
+                               torch.tensor([0., 0., 1.], device=self.device).view(1, 3, 1)
+                               .expand(self.num_envs, 3, 1)).squeeze(-1)
+            fcmd = self.f_cmd_norm()
+            # 7+7+3+4+6+3+3+1 = 34
+            return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, base_to_goal, obj_up, fcmd], dim=-1)}
+
+        def _forge_get_rewards(self) -> torch.Tensor:
+            c = self.cfg
+            cf = self._contact_force()
+            base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
+            goal = self._forge_goal_w() - self.scene.env_origins
+            d = base - goal
+            dist = d.norm(dim=-1)
+            # FORGE keypoint reward: dense pull toward the seated pose.
+            r = -c.keypoint_k * dist
+            # force-overshoot penalty (FORGE): penalise contact above the budget.
+            excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
+            r = r - c.force_pen_beta * excess
+            # smoothness + time
+            jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
+            r = r - 0.05 * jvel
+            arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
+            r = r - 0.15 * arate
+            self._prev_actions = self._actions.clone()
+            r = r - 0.02
+            # terminal cliffs
+            r = r + self._succeeded.float() * 50.0
+            r = r - self._broke.float() * 6.0
+            # no learning signal during the (non-skill) setup window
+            r = torch.where(self._setup_ctr > 0, torch.zeros_like(r), r)
+            return r
+
+        def _forge_get_dones(self):
+            c = self.cfg
+            cf = self._contact_force()
+            base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
+            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.04) & ((base[:, 1] - c.rack_y).abs() < 0.04)
+            seated = in_cell & ((base[:, 2] - c.cell_floor_z).abs() < c.insert_depth_tol)
+            live = (self._setup_ctr == 0) & (self._warmup == 0)
+            self._broke = (cf > self._f_break) & live
+            self._settle_ctr = torch.where(seated & live, self._settle_ctr + 1,
+                                           (self._settle_ctr - 1).clamp(min=0))
+            self._succeeded = self._settle_ctr >= c.settle_steps
+            terminated = (self._broke | self._succeeded) & live
+            truncated = self.episode_length_buf >= self.max_episode_length - 1
+            self.extras["succ_mask"] = self._succeeded.clone()
+            self.extras["brk_mask"] = self._broke.clone()
+            self.extras["n_succ"] = float(self._succeeded.sum().item())
+            self.extras["n_brk"] = float(self._broke.sum().item())
+            return terminated, truncated
+
         # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════
         # These let the shared, task-agnostic RecoveryLoop drive this env. They
         # operate on a single instance (env 0) — the recovery demo runs one env.
@@ -827,6 +940,7 @@ if ISAAC_AVAILABLE:
             self._cf_hist.zero_(); self._basez_hist.zero_()
             self._latx_hist.zero_(); self._laty_hist.zero_()
             self._jam_on[:] = (self.cfg.jam_dx != 0.0 or self.cfg.jam_dy != 0.0)
+            self._last_rec_action = None
 
         def step_skill(self) -> None:
             """One control step under the nominal OSC + phase machine (zero action)."""
@@ -900,6 +1014,7 @@ if ISAAC_AVAILABLE:
             """Execute a recovery primitive on env 0 (F_max never changed here)."""
             c = self.cfg
             d = self.device
+            self._last_rec_action = action   # for HUD / logging
             dur = int(params.get("duration_steps", c.rec_dur_steps))
             self._jam_cooldown[0] = dur + c.jam_window
             self._rec_steps[0] = dur
@@ -1132,6 +1247,11 @@ if ISAAC_AVAILABLE:
                 over = self._cf_filt > 0.9 * budget
                 back_z = ee_pos_w[:, 2] + 0.004                       # 4 mm up -> relieves contact
                 target_w[:, 2] = torch.where(over, back_z, target_w[:, 2])
+            # ── FORGE-mode: the LEARNED policy drives the EE (overrides all of the
+            # scripted waypoint/base-aim/strategy logic above). Setup-drives to the
+            # approach pose first, then the policy's xyz delta does the insertion.
+            if self.cfg.forge_mode:
+                target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
             _k400 = torch.full_like(ori_k, 400.0)
             stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
@@ -1182,6 +1302,8 @@ if ISAAC_AVAILABLE:
 
         # ── Observations ──────────────────────────────────────────────────────
         def _get_observations(self) -> dict:
+            if self.cfg.forge_mode:
+                return self._forge_get_observations()
             r    = self._robot
             jp   = r.data.joint_pos[:, self._arm_ids]           # (N, 7)
             jv   = r.data.joint_vel[:, self._arm_ids]           # (N, 7)
@@ -1199,6 +1321,8 @@ if ISAAC_AVAILABLE:
 
         # ── Rewards ───────────────────────────────────────────────────────────
         def _get_rewards(self) -> torch.Tensor:
+            if self.cfg.forge_mode:
+                return self._forge_get_rewards()
             c    = self.cfg
             ee_z = (self._robot.data.body_pos_w[:, self._ee_idx, 2]
                     - self.scene.env_origins[:, 2])
@@ -1278,6 +1402,8 @@ if ISAAC_AVAILABLE:
 
         # ── Dones ─────────────────────────────────────────────────────────────
         def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+            if self.cfg.forge_mode:
+                return self._forge_get_dones()
             c  = self.cfg
             cf = self._contact_force()
 
@@ -1427,6 +1553,15 @@ if ISAAC_AVAILABLE:
             obj_state[:, 0:3] += self.scene.env_origins[env_ids]
             self._obj.write_root_pose_to_sim(obj_state[:, 0:7], env_ids=env_ids)
             self._obj.write_root_velocity_to_sim(obj_state[:, 7:13], env_ids=env_ids)
+
+            # FORGE mode: a setup window drives the EE to a RANDOMIZED approach pose
+            # (the policy must then correct the offset + insert from force).
+            if self.cfg.forge_mode:
+                n = len(env_ids)
+                lat = self.cfg.forge_start_lat
+                self._start_off[env_ids] = (torch.rand(n, 2, device=self.device) * 2 - 1) * lat
+                self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
+                self._settle_ctr[env_ids] = 0
 
             self._sample_episode(env_ids)
 
