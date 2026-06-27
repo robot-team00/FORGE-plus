@@ -61,6 +61,7 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`03-rendering.md`](03-rendering.md) | Headless RTX live-physics rendering, the "app.update() steps physics" gotcha, the render↔physics **sync bug** that froze the object, the proven render loop, camera, and HUD. |
 | [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
 | [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | **The current task.** Wine-cellar peg-in-hole: the rack scene, the three tricks (base-aim, firm grip, wide cell) that seat the bottle vertical, success detection, the zero-action render, photorealism, and troubleshooting. |
+| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop in Isaac.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), the soft force ceiling (stay under budget), the induced-jam scenario, and the verified jam→recover→seat result. |
 
 ## Key files
 
@@ -111,6 +112,11 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 - ✅ (Prior variant) **Bottle places STANDING upright** on an open shelf (final tilt ~0.8°) via
   **contact-then-verticalize**, and a force-conditioned policy trained to **succ 1.0 / break 0.0**.
   See [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
+- ✅ **Force-signature LLM recovery — closed loop, in Isaac** (proposal §07): on a wedged
+  insertion the system reads a text force signature (no vision, no `F_break`), the LLM picks a
+  recovery, applies it within the same `F_max`, and retries. Verified: jam caught at **13.7 N**
+  (≪ ~22 N break — no breakage) → `retract_and_reapproach` → seats. **SUCCESS in 2 attempts.**
+  Task-agnostic (one loop for all task envs). See [`06-recovery.md`](06-recovery.md).
 - ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
   (hard-exploration RL) — superseded by the cell-geometry insertion.
 
