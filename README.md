@@ -41,7 +41,9 @@ vertical** (tilt 0.0°), seated on the cell floor and dead-centered, with no jam
 rack. Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction
 grip, never teleported during the carry.
 
-<img src="docs/videos/task3/wine_cellar_insert_v2.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
+<div align="center">
+  <img src="docs/videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
+</div>
 
 
 ▶️ **[`docs/videos/task3/pick_place_eval_001.mp4`](docs/videos/task3/pick_place_eval_001.mp4)**
