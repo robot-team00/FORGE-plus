@@ -13,12 +13,22 @@
 
 ## What this task is
 
-A Franka Panda arm performs a **fragile PLACE**: it holds a realistic, breakable kitchen object
-(a LIBERO wine bottle), carries it to a shelf, and **sets it down gently** — keeping the contact
-force under a per-object "break force" budget the whole time. The policy is **force-conditioned**
-(it sees a safe-force budget as an observation) and is trained with PPO. Everything runs with
-**real physics** — the object is a dynamic rigid body held by a genuine friction grip, never
-teleported or kinematically attached during the carry.
+A Franka Panda arm performs a **fragile PLACE** of a realistic, breakable kitchen object (a
+LIBERO wine bottle). The current demonstrated variant is a **wine-cellar peg-in-hole insertion**:
+the arm carries the bottle to a wood wine-rack and **inserts it into a cell**, ending standing
+perfectly vertical (tilt ≈ 0°) on the cell floor — a clean, gentle, contact-rich placement with
+no flick. See **[`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md)**.
+
+The earlier variant set the bottle on an **open shelf** and righted it about the contact pivot
+(force-conditioned policy + "contact-then-verticalize"). Both run with **real physics** — the
+object is a dynamic rigid body held by a genuine friction grip, never teleported or kinematically
+attached during the carry. The placement strategy is selected by `cfg.place_strategy`:
+
+| `place_strategy` | What it does | Status |
+|---|---|---|
+| `"insert"` (current) | Wine-cellar peg-in-hole — insert the bottle into a rack cell | ✅ bottle ends vertical, doc 05 |
+| `"throw_upright"` | Open-shelf place + contact-then-verticalize ramp | ✅ stands (~0.8°), doc 02 §9 |
+| `"extrinsic"` | Learned gentle roll-up (extrinsic dexterity) | ⚠️ never converged (abandoned) |
 
 > ### ⚠️ Pick vs place — read this so you don't overclaim
 > We run the env in **`place_only=True`** mode: the episode **starts already holding the object**.
@@ -44,7 +54,8 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`01-algorithm.md`](01-algorithm.md) | FORGE algorithm, OSC controller, the 7-phase state machine, force budgets (LLM cache), reward shaping, PPO training, and the reward-hovering fix. |
 | [`02-grasp-and-placing.md`](02-grasp-and-placing.md) | Grasp physics (why flat faces work and round ones fail), the friction seat, geometric place detection, the gripper-release bug, the retract, and the standing-placement (topple) problem + object-selection rules. |
 | [`03-rendering.md`](03-rendering.md) | Headless RTX live-physics rendering, the "app.update() steps physics" gotcha, the render↔physics **sync bug** that froze the object, the proven render loop, camera, and HUD. |
-| [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, asset layout, and which object shapes to pick. |
+| [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
+| [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | **The current task.** Wine-cellar peg-in-hole: the rack scene, the three tricks (base-aim, firm grip, wide cell) that seat the bottle vertical, success detection, the zero-action render, photorealism, and troubleshooting. |
 
 ## Key files
 
@@ -57,7 +68,8 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | `llm/budget_cache.json` | Cached per-object force budgets (avoids re-querying the LLM each run). |
 | `checkpoints/task3_wine_bottle.pt` | Trained policy (gitignored — not in the repo; regenerate via training). |
 | `/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd` | The graspable object (outside the repo; `assets/` is gitignored). |
-| `docs/videos/task3/pick_place_eval_001.mp4` | Latest demo render. |
+| `/workspace/assets/libero/wine_rack/wine_rack.usd` | The procedural 3×3 wine-cellar rack (outside the repo; `assets/` is gitignored). See doc 04 §7. |
+| `docs/videos/task3/pick_place_eval_001.mp4` | Latest demo render (wine-cellar insertion). |
 
 ## Quickstart
 
@@ -73,22 +85,29 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
     --num_envs 256 --iterations 600 --gripper franka_panda \
     --ckpt checkpoints/task3_wine_bottle.pt
 
-# Render a demo (drives the trained policy):
+# Render the wine-cellar insertion demo (zero-action OSC; cfg.place_strategy="insert"):
 /workspace/.venv/bin/python scripts/render_pick_place.py
 # -> docs/videos/task3/pick_place_eval_001.mp4
 ```
 
+> The insertion render drives **zero actions** (the env's base-aim + firm grip + cell geometry
+> carry the insertion); it does **not** call the policy (obs is now 37-dim — see doc 05 §5). The
+> open-shelf `"throw_upright"` variant *does* drive the trained policy.
+
 ## Current status (2026-06-27)
 
+- ✅ **Wine-cellar peg-in-hole insertion** (current demo): the arm inserts the bottle into a rack
+  cell; it ends **standing perfectly vertical** (tilt 0.0°, base seated on the cell floor,
+  dead-centered, contact force ≈ 0 N — no jam) → release → retract. Real physics. See
+  [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md).
 - ✅ Real friction grasp of a realistic LIBERO wine bottle (gripped by the neck).
-- ✅ Carry → gentle place (contact ≤ ~1 N, budget 8.8 N, break ~22–27 N).
-- ✅ Policy trained to **succ 1.0 / break 0.0**.
-- ✅ Headless RTX render with the object correctly following the gripper on screen.
-- ✅ Gripper genuinely **releases** the bottle and the arm **retracts** away.
-- ✅ **Bottle places STANDING upright** (final tilt ~0.8°, base on the shelf) via **contact-then-
-  verticalize** — descend soft, then ramp OSC orientation stiffness on shelf-contact to right the
-  bottle about the contact pivot. Real physics, no retrain. See
-  [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
+- ✅ Headless RTX render (kitchen backdrop, wood counter, wood rack) with the object correctly
+  following the gripper on screen; gripper genuinely **releases** and the arm **retracts** away.
+- ✅ (Prior variant) **Bottle places STANDING upright** on an open shelf (final tilt ~0.8°) via
+  **contact-then-verticalize**, and a force-conditioned policy trained to **succ 1.0 / break 0.0**.
+  See [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
+- ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
+  (hard-exploration RL) — superseded by the cell-geometry insertion.
 
 ## The one-paragraph mental model
 

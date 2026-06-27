@@ -38,7 +38,7 @@ try:
     from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
     from isaaclab.sensors import ContactSensor, ContactSensorCfg
     from isaaclab.utils.math import (
-        quat_mul, quat_inv, matrix_from_quat,
+        quat_mul, quat_inv, matrix_from_quat, quat_from_angle_axis,
         subtract_frame_transforms, quat_apply_inverse,
     )
     from isaaclab.controllers import OperationalSpaceController, OperationalSpaceControllerCfg
@@ -200,28 +200,50 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     # Place target: the EE hand height at which the cup's base meets the shelf top.
     # Decoupled from the shelf geometry below. shelf_top 0.50 + cup half 0.045 + the
     # hand->grasp-point offset (~0.067) ≈ 0.61 -> the cup is SET DOWN gently on top.
-    place_ee_z:    float = 0.649   # EE hand height at which the firmly-gripped cup's
-                                   # base meets the shelf top (cup hangs ~0.078 below the
-                                   # hand; measured directly). 0.61 left it 3 cm high.
+    place_ee_z:    float = 0.53    # EE hand height for the PLACE_DESCEND waypoint. For "insert"
+                                   # this drives the bottle base down to the cell floor (~0.40).
     place_settle_tol: float = 0.02  # |cup_base - shelf_top| to count the cup as placed
     mug_grip_z: float = 0.12   # height up the mug (from its base origin) where the gripper grips
     # Hold the hand TOP-DOWN (approach axis straight down) so a neck-gripped tall object hangs
     # VERTICAL and can be PLACED STANDING. FORGE holds the part at a fixed correct roll/pitch;
     # here that's upright. Needs higher OSC orientation stiffness (the default 40 barely tracks).
     grasp_topdown: bool = False  # if True, command a fixed top-down ee_quat_des at warmup
-    ori_k_descend: float = 40.0    # OSC orientation stiffness during approach/descent (place works)
-    ori_k_vertical: float = 200.0  # ramped-to stiffness on shelf-contact to right the bottle
-    vert_ramp_steps: int = 18      # steps to ramp ori_k up once the base is on the shelf
+    # Placement strategy:
+    #   "throw_upright" = contact-then-verticalize (preserved old demo: rights the bottle against
+    #                     the shelf via a stiffness ramp — looks like flicking it upright).
+    #   "extrinsic"     = LEARNED extrinsic dexterity: the policy uses a wrist-pitch action +
+    #                     the counter contact to PIVOT the bottle upright, gently. No rigid hold.
+    #   "insert" = wine-cellar PEG-IN-HOLE: lower the bottle into a rack cell; the cell walls
+    #              align it (contact-rich, FORGE force-guided) and hold it upright. Success = the
+    #              base reaches the cell floor (inserted to depth) gently.
+    place_strategy: str = "insert"
+    rack_z: float = 0.38           # wine-rack origin z; cell top at +0.12 (=0.50), floor at +0.02 (=0.40)
+    cell_floor_z: float = 0.40     # bottle base target depth (cell floor) for a full insertion
+    insert_depth_tol: float = 0.03 # |base - cell_floor| below this counts as inserted
+    ori_k_insert: float = 110.0    # firmish grip during insertion (wide cell -> no bind) so the
+                                   # bottle goes in ~upright instead of leaning over
+    ori_k_descend: float = 40.0    # throw_upright: orientation stiffness during descent
+    ori_k_vertical: float = 200.0  # throw_upright: ramped-to stiffness on shelf-contact
+    vert_ramp_steps: int = 18      # throw_upright: ramp length
+    # extrinsic dexterity (validated mechanic): firm grip during carry to limit the lean, then a
+    # COMPLIANT grip once the base is on the shelf so the policy can roll the bottle upright about
+    # the contact with LATERAL position moves (the wrist-pitch route slammed it, so it's dropped).
+    ori_k_carry: float = 120.0     # firm-ish during LIFT/TRANSPORT/descent (keeps the lean small)
+    ori_k_extrinsic: float = 12.0  # COMPLIANT once planted, so it can pivot on the contact
+    compliant_band: float = 0.05   # base within shelf_top + this -> start ramping to compliant
+    comp_ramp: int = 15            # steps to SMOOTHLY ramp firm->compliant (avoids a lurch/force spike)
+    lam_place: float = 0.012       # extrinsic: SLOW per-step EE motion once planted, so the roll-up
+                                   # stays gentle (low contact force) regardless of action direction
+    upright_cos_tol: float = 0.985 # cos(tilt) above this (~10 deg) counts as upright
+    require_upright: bool = True   # curriculum: stage-A places (False), stage-B adds the pivot (True)
     grasp_com_drop: float = 0.0     # seat the cup centre this far BELOW the pads so the
                                     # grip is above the COM (pendulum-stable, stays upright)
-    shelf_top_z:   float = 0.50   # reachable-from-above shelf/counter surface
-    rack_z:        float = 0.72   # (legacy; kept for any external refs — unused for
-                                  #  the place waypoint, which now uses place_ee_z)
+    shelf_top_z:   float = 0.50   # reachable-from-above shelf/counter surface; = wine-cell top
 
     # Horizontal offsets from robot base in env frame
     table_x: float = 0.45   # table centre x
-    rack_x:  float = 0.35   # rack x (closer for reach)
-    rack_y:  float = 0.30   # rack y (non-zero → lateral reach demo)
+    rack_x:  float = 0.45   # rack/cell x (in front, well within reach for base-aimed insertion)
+    rack_y:  float = 0.12   # rack/cell y (modest lateral offset; reachable so the base centers)
 
     # Gripper
     gripper: str   = "franka_panda"
@@ -499,6 +521,7 @@ if ISAAC_AVAILABLE:
             # Contact-then-verticalize: counts steps the base has been on the shelf during
             # PLACE_DESCEND; ramps the OSC orientation stiffness up to right the bottle.
             self._vert_ctr   = torch.zeros(N, dtype=torch.long, device=d)
+            self._best_tilt  = torch.full((N,), 3.1416, device=d)   # extrinsic: best (min) tilt this place
             self._f_cmd      = torch.zeros(N, device=d)
             self._f_break    = torch.zeros(N, device=d)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
@@ -625,26 +648,19 @@ if ISAAC_AVAILABLE:
                 )
             )
 
-            # Shelf/counter: a compliant block whose TOP is at shelf_top_z (0.50 m) —
-            # low enough that the arm clears it during TRANSPORT (cup base ~0.59) and
-            # reaches over to SET the cup DOWN on top (place_ee_z 0.61). The old rack
-            # top (0.78) was above the Franka's reach there, so the arm rammed it.
-            _shelf_h = 0.46
+            # Wine-cellar RACK: a grid of vertical cells the bottle is INSERTED into (peg-in-hole).
+            # Origin = center-cell xy; cell bottom at +base_t, cell top at +0.12 in the rack frame.
+            # Placed so the center cell top sits at shelf_top_z (0.50) -> cell bottom at rack_z+0.02.
             self._rack = RigidObject(
                 RigidObjectCfg(
                     prim_path="/World/envs/env_.*/Rack",
-                    spawn=sim_utils.CuboidCfg(
-                        size=(0.45, 0.30, _shelf_h),
-                        activate_contact_sensors=True,
-                        physics_material=sim_utils.RigidBodyMaterialCfg(
-                            compliant_contact_stiffness=self._surf_ks,
-                            compliant_contact_damping=self._surf_kd,
-                        ),
+                    spawn=sim_utils.UsdFileCfg(
+                        usd_path="/workspace/assets/libero/wine_rack/wine_rack.usd",
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(
-                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.shelf_top_z - _shelf_h / 2),
+                        pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
                     ),
                 )
             )
@@ -837,9 +853,8 @@ if ISAAC_AVAILABLE:
                 self._joint_centers = r.data.joint_pos[:, self._arm_ids].clone()  # nominal posture
 
             if not self._osc_init:
+                self._ee_quat_natural = ee_quat_w.clone()   # the as-grasped hand orientation
                 if self.cfg.grasp_topdown:
-                    # Hand approach axis (local +z) -> world DOWN: quat (w,x,y,z)=(0,1,0,0).
-                    # The neck-gripped bottle then hangs vertical -> places standing.
                     self._ee_quat_des = torch.tensor(
                         [0.0, 1.0, 0.0, 0.0], device=self.device
                     ).expand(self.num_envs, 4).clone()
@@ -847,26 +862,56 @@ if ISAAC_AVAILABLE:
                     self._ee_quat_des = ee_quat_w.clone()   # hold the initial grasp orientation
                 self._osc_init = True
 
-            # ── Contact-then-verticalize (FORGE-style force-guided settle) ────────
-            # Descend with LOW orientation stiffness (place works). Once the bottle's BASE is
-            # on the shelf during PLACE_DESCEND, ramp orientation stiffness up and command a
-            # TOP-DOWN hand orientation -> the OSC rights the bottle about the base-contact
-            # pivot (it can't lift because the base is planted) -> it ends vertical -> stands.
-            base_z = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
-            on_shelf_now = (self._phase == int(PickPlacePhase.PLACE_DESCEND)) & \
-                           (base_z < self.cfg.shelf_top_z + self.cfg.place_settle_tol)
-            self._vert_ctr = torch.where(on_shelf_now, self._vert_ctr + 1, self._vert_ctr)
-            frac  = (self._vert_ctr.float() / float(max(1, self.cfg.vert_ramp_steps))).clamp(max=1.0)
-            ori_k = self.cfg.ori_k_descend + frac * (self.cfg.ori_k_vertical - self.cfg.ori_k_descend)  # (N,)
-            vmask = frac > 0.0
-            if vmask.any():
-                self._ee_quat_des[vmask] = torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device)
+            # ── Placement strategy: orientation stiffness + ee_quat_des ───────────
+            lam_eff = torch.full((self.num_envs,), self.cfg.lam, device=self.device)  # per-step EE motion cap
+            if self.cfg.place_strategy == "throw_upright":
+                # Contact-then-verticalize (preserved old demo): ramp orientation stiffness once
+                # the base is on the shelf and command top-down -> rights the bottle against the
+                # contact (looks like flicking it upright).
+                base_z = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+                on_shelf_now = (self._phase == int(PickPlacePhase.PLACE_DESCEND)) & \
+                               (base_z < self.cfg.shelf_top_z + self.cfg.place_settle_tol)
+                self._vert_ctr = torch.where(on_shelf_now, self._vert_ctr + 1, self._vert_ctr)
+                frac  = (self._vert_ctr.float() / float(max(1, self.cfg.vert_ramp_steps))).clamp(max=1.0)
+                ori_k = self.cfg.ori_k_descend + frac * (self.cfg.ori_k_vertical - self.cfg.ori_k_descend)
+                vmask = frac > 0.0
+                if vmask.any():
+                    self._ee_quat_des[vmask] = torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device)
+            elif self.cfg.place_strategy == "extrinsic":  # LEARNED extrinsic dexterity (validated mechanic)
+                base_z = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+                planted = (self._phase >= int(PickPlacePhase.PLACE_DESCEND)) & \
+                          (base_z < self.cfg.shelf_top_z + self.cfg.compliant_band)
+                self._vert_ctr = torch.where(planted, self._vert_ctr + 1, self._vert_ctr)
+                frac = (self._vert_ctr.float() / float(max(1, self.cfg.comp_ramp))).clamp(max=1.0)
+                ori_k = self.cfg.ori_k_carry - frac * (self.cfg.ori_k_carry - self.cfg.ori_k_extrinsic)
+                self._ee_quat_des = self._ee_quat_natural
+                lam_eff = torch.where(planted, torch.full_like(base_z, self.cfg.lam_place),
+                                      torch.full_like(base_z, self.cfg.lam))
+            else:  # "insert": wine-cellar PEG-IN-HOLE
+                # FIRM grip during carry (stable, base stays aligned -> base-aim can center it over
+                # the cell); soften to a MODERATE grip near the cell so it can align as it goes in.
+                # Slow the motion near the cell so the contact-rich insertion stays gentle.
+                base_z = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+                near = (self._phase >= int(PickPlacePhase.PLACE_DESCEND)) & \
+                       (base_z < self.cfg.cell_floor_z + 0.10)
+                ori_k = torch.where(near, torch.full_like(base_z, self.cfg.ori_k_insert),
+                                    torch.full_like(base_z, self.cfg.ori_k_carry))
+                self._ee_quat_des = self._ee_quat_natural
+                lam_eff = torch.where(near, torch.full_like(base_z, self.cfg.lam_place),
+                                      torch.full_like(base_z, self.cfg.lam))
 
             # Target pose = lam-rate-limited step toward the phase waypoint + policy
             # delta (keeps FORGE's bounded per-step motion), in base frame.
             p_fixed  = self._phase_waypoint_world()
             a        = self._actions[:, :3] * self.cfg.act_range
-            target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(-self.cfg.lam, self.cfg.lam)
+            # "insert": aim the BOTTLE BASE at the cell, not the gripper — the ~12 deg lean offsets
+            # the base ~6 cm from the EE, so move the EE target by that offset to center the base.
+            if self.cfg.place_strategy == "insert":
+                off_xy = self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2]   # base-to-EE horizontal offset
+                approach = (self._phase >= int(PickPlacePhase.TRANSPORT)).unsqueeze(-1)
+                p_fixed = torch.cat([p_fixed[:, :2] - approach.float() * off_xy, p_fixed[:, 2:3]], dim=-1)
+            _lam = lam_eff.unsqueeze(-1)
+            target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(min=-_lam, max=_lam)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
             _k400 = torch.full_like(ori_k, 400.0)
             stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
@@ -923,10 +968,14 @@ if ISAAC_AVAILABLE:
             ee_p = r.data.body_pos_w[:, self._ee_idx] - self.scene.env_origins  # (N, 3)
             ee_q = r.data.body_quat_w[:, self._ee_idx]         # (N, 4)
             ft   = self._contact_wrench_6d()                    # (N, 6)
+            # Object orientation: its local +z (up) axis in world. The policy needs this to
+            # sense the bottle's tilt/lean so it can pivot it upright (extrinsic dexterity).
+            obj_up = torch.bmm(matrix_from_quat(self._obj.data.root_pose_w[:, 3:7]),
+                               torch.tensor([0.,0.,1.], device=self.device).view(1,3,1).expand(self.num_envs,3,1)).squeeze(-1)  # (N,3)
             ph   = torch.zeros(self.num_envs, self.NUM_PHASES, device=self.device)
             ph.scatter_(1, self._phase.unsqueeze(1), 1.0)       # (N, 7) one-hot
-            # cat → (N, 7+7+3+4+6+7) = (N, 34)
-            return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, ph], dim=-1)}
+            # cat → (N, 7+7+3+4+6+3+7) = (N, 37)
+            return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, obj_up, ph], dim=-1)}
 
         # ── Rewards ───────────────────────────────────────────────────────────
         def _get_rewards(self) -> torch.Tensor:
@@ -958,12 +1007,33 @@ if ISAAC_AVAILABLE:
             # Small per-step time cost so waiting is strictly worse than committing.
             r = r - 0.02
 
+            # Uprightness shaping (extrinsic) — reward PROGRESS toward upright (a NEW best-so-far
+            # tilt), never penalising tilt increases. A symmetric reward punished the random
+            # exploration (which mostly increases tilt) and taught the policy to FREEZE; rewarding
+            # only new lows lets it explore the roll-up freely, and "new low" can't be farmed.
+            if self.cfg.place_strategy == "extrinsic":
+                up_z = matrix_from_quat(self._obj.data.root_pose_w[:, 3:7])[:, 2, 2].clamp(-1.0, 1.0)
+                tilt = torch.acos(up_z)                                    # radians from vertical
+                in_pivot = self._phase >= int(PickPlacePhase.PLACE_DESCEND)
+                first = in_pivot & (self._best_tilt >= 3.0)                # first pivot step this episode
+                self._best_tilt = torch.where(first, tilt, self._best_tilt)
+                improve = ((self._best_tilt - tilt).clamp(min=0.0)) * in_pivot.float()
+                r = r + 25.0 * improve                                    # reward each new low (progress)
+                self._best_tilt = torch.where(in_pivot, torch.minimum(self._best_tilt, tilt), self._best_tilt)
+
             # Force-excess penalty (FORGE: penalise exceeding F_cmd). Bounded so an
             # over-press guides the policy down instead of catastrophically swamping
             # the progression rewards (unbounded -2*excess hit ~-33/step at cf~150 vs
             # a 9 N budget, which taught the policy to avoid contact entirely).
             excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
             r = r - 0.5 * excess   # softer deterrent so the policy commits to contact
+
+            # Force-MARGIN penalty (extrinsic): the roll-up presses the base on the shelf, so keep
+            # a safety margin BELOW the break force — penalise the contact once it exceeds half of
+            # f_break, well before it actually breaks. Teaches a gentle roll-up instead of slamming.
+            if self.cfg.place_strategy == "extrinsic":
+                margin = ((cf - 0.5 * self._f_break).clamp(min=0.0) / self._f_break.clamp(min=1.0)).clamp(max=2.0)
+                r = r - 1.0 * margin
 
             # Smoothness regularizers (reduce the visibly shaky motion): penalise
             # fast joint motion and rapid action changes so the policy learns to
@@ -1037,15 +1107,24 @@ if ISAAC_AVAILABLE:
             # actually reaching the shelf surface, measured from the cup's real pose.
             cup_z     = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
             cup_bot   = cup_z   # mug origin is at its BASE, so root z == base height
-            on_shelf  = (cup_bot - c.shelf_top_z).abs() < c.place_settle_tol
+            if c.place_strategy == "insert":
+                # INSERTED = base down at the cell FLOOR (not the cell top) AND inside the cell xy.
+                base_xy = self._obj.data.root_pose_w[:, :2] - self.scene.env_origins[:, :2]
+                in_cell = ((base_xy[:, 0] - c.rack_x).abs() < 0.04) & ((base_xy[:, 1] - c.rack_y).abs() < 0.04)
+                on_shelf = ((cup_bot - c.cell_floor_z).abs() < c.insert_depth_tol) & in_cell
+            else:
+                on_shelf = (cup_bot - c.shelf_top_z).abs() < c.place_settle_tol
             place_dsc = self._phase == int(PickPlacePhase.PLACE_DESCEND)
-            # Only advance PLACE_DESCEND -> RELEASE once the base is on the shelf AND the
-            # contact-then-verticalize ramp has finished (bottle uprighted before release).
-            place_done = on_shelf & (self._vert_ctr >= c.vert_ramp_steps)
+            # Bottle upright? (cos of tilt = local-z's world z). For "extrinsic", the place only
+            # completes (advances to RELEASE) once the base is on the shelf AND it is UPRIGHT, so
+            # the policy must pivot it up before letting go; "throw_upright" needs only on_shelf.
+            up_z = matrix_from_quat(self._obj.data.root_pose_w[:, 3:7])[:, 2, 2]
+            upright = up_z > c.upright_cos_tol
+            need_up = (c.place_strategy == "extrinsic") and c.require_upright
+            place_done = (on_shelf & upright) if need_up else on_shelf
             close = close | (place_dsc & place_done)
 
             grasp_ok = ((self._phase == int(PickPlacePhase.GRASP)) & (cf > c.grasp_force_n)) |                        (self._phase != int(PickPlacePhase.GRASP))
-            # Dynamic object: gate the place on its BASE on the shelf + verticalized.
             place_ok = (place_dsc & place_done) | (~place_dsc)
 
             can_advance  = close & grasp_ok & place_ok & ~self._broke
@@ -1062,6 +1141,10 @@ if ISAAC_AVAILABLE:
             # the counter. Decrement (not hard-reset) so the oscillating contact
             # force doesn't prevent a settled placement from registering.
             gentle = (cf < self._f_cmd) & (self._phase == int(PickPlacePhase.RELEASE))
+            # Stage-B (require_upright): the bottle must also be standing UPRIGHT to count as
+            # settled — otherwise the policy could "succeed" by releasing it leaning/toppled.
+            if need_up:
+                gentle = gentle & upright
             self._settle_ctr = torch.where(
                 gentle, self._settle_ctr + 1, (self._settle_ctr - 1).clamp(min=0)
             )
@@ -1102,6 +1185,7 @@ if ISAAC_AVAILABLE:
             self._phase_ctr[env_ids]   = 0
             self._settle_ctr[env_ids]  = 0
             self._vert_ctr[env_ids]    = 0
+            self._best_tilt[env_ids]   = 3.1416
             self._broke[env_ids]       = False
             self._succeeded[env_ids]   = False
             self._set_reset[env_ids]   = True

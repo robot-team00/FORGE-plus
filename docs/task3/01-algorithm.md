@@ -39,7 +39,12 @@ target_w = ee_pos_w + clamp( (waypoint + action[:3]*act_range) - ee_pos_w, -lam,
 - `action[:3]` is an **EE-position delta** (the policy's main output), scaled by `act_range=0.05`.
 - `lam=0.025` clips motion to ≤2.5 cm/step — FORGE's bounded per-step motion. The arm therefore
   moves *slowly and smoothly*; episodes are long (`episode_length_s=30` → ~1800 sim steps).
-- `act_dim=7`, `obs_dim=34`.
+- `act_dim=7`. **`obs_dim=37`** as of the wine-cellar work: the observation is
+  `cat([joint_pos, joint_vel, ee_pos, ee_quat, force, obj_up, phase])`, where `obj_up` (3) is the
+  object's body-up axis in world frame (`matrix_from_quat(obj_quat) @ [0,0,1]`) — it gives the
+  policy the bottle's tilt directly. The older shelf-place policy `task3_wine_bottle.pt` was
+  trained at `obs_dim=34` (before `obj_up`); the insertion render therefore uses **zero actions**
+  rather than calling that policy (doc 05 §5). Train a new policy at 37 to drive insertion.
 
 ## 3. The 7-phase state machine
 
@@ -55,6 +60,14 @@ Each phase has a **waypoint** (`_phase_waypoint_world()`). Phase advances when t
   compliant surface stops the fingers above the sub-surface waypoint z.
 - `PLACE_DESCEND` completes **geometrically**: the object's base reaching the shelf
   (`|cup_bot - shelf_top| < place_settle_tol`), *not* by force (see §4 / place detection in doc 02).
+  In `"insert"` mode this gate becomes "base at the **cell floor** *and* inside the cell footprint"
+  (doc 05 §3).
+
+**Placement strategy (`cfg.place_strategy`):** the `PLACE_DESCEND → RELEASE` behaviour and the
+done-check are dispatched on a string — `"insert"` (wine-cellar peg-in-hole, current; doc 05),
+`"throw_upright"` (open-shelf contact-then-verticalize; doc 02 §9), or `"extrinsic"` (abandoned
+learned roll-up). The waypoints, OSC orientation stiffness schedule, and success test all branch
+on it inside `_apply_action` / `_get_dones`.
 
 **`place_only` mode (default `True`):** the episode starts at `LIFT` already holding the object
 (seated during warmup) and runs `LIFT → TRANSPORT → PLACE_DESCEND → RELEASE`. This is the

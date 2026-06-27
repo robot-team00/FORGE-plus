@@ -78,6 +78,10 @@ def main() -> None:
                    help="resume from checkpoint file")
     p.add_argument("--run",                    default=None,
                    help="W&B run name; defaults to today's date")
+    p.add_argument("--no_upright", action="store_true",
+                   help="extrinsic curriculum stage A: place on the shelf WITHOUT the upright requirement")
+    p.add_argument("--reset_std", type=float, default=None,
+                   help="after --resume, reset policy log_std to this (re-inflate exploration for stage B)")
     args = p.parse_args()
     dev  = torch.device(args.device)
 
@@ -110,12 +114,15 @@ def main() -> None:
     cfg = PickPlaceEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.gripper        = args.gripper
+    if args.no_upright:
+        cfg.require_upright = False   # curriculum stage A
+    print(f"[train] place_strategy={cfg.place_strategy} require_upright={cfg.require_upright}", flush=True)
     env = FrankaPickPlaceEnv(cfg)
     N   = env.num_envs
-    print(f"[train] envs={N}  device={dev}  obs=34  act=7", flush=True)
+    print(f"[train] envs={N}  device={dev}  obs=37  act=7", flush=True)
 
     # ── Networks ──────────────────────────────────────────────────────────
-    pcfg   = PolicyConfig(obs_dim=34, act_dim=7)
+    pcfg   = PolicyConfig(obs_dim=37, act_dim=7)   # +3 obj-up vector (extrinsic dexterity obs)
     policy = ForceConditionedPolicy(pcfg).to(dev)
     value  = ValueNetwork(pcfg).to(dev)
     aopt   = Adam(policy.parameters(), lr=args.lr)
@@ -126,6 +133,9 @@ def main() -> None:
         ckpt_data = torch.load(args.resume, map_location=dev, weights_only=False)
         policy.load_state_dict(ckpt_data["policy_state_dict"])
         print(f"[train] resumed from {args.resume}", flush=True)
+        if args.reset_std is not None and hasattr(policy, "log_std"):
+            policy.log_std.data.fill_(float(args.reset_std))
+            print(f"[train] reset log_std -> {args.reset_std} (re-inflate exploration)", flush=True)
 
     # ── Rollout + PPO loop ────────────────────────────────────────────────
     out = env.reset()
@@ -174,7 +184,7 @@ def main() -> None:
         ret = adv + V
 
         # Flatten for mini-batch updates
-        bO   = O.reshape(-1, 34)
+        bO   = O.reshape(-1, pcfg.obs_dim)
         bFc  = Fc.reshape(-1, 1)
         bA   = A.reshape(-1, 7)
         bLP  = LP.reshape(-1)

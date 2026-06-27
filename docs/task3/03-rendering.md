@@ -88,6 +88,14 @@ ffmpeg frames -> mp4    # BEFORE app.close() (RTX shutdown hangs; a watchdog for
 Render-only tweak: set `cfg.settle_steps` high (e.g. 400) so the env doesn't auto-reset the
 instant the place succeeds — we want to capture the release + retract, not loop into episode 2.
 
+**Wine-cellar insertion render (`place_strategy="insert"`, current — doc 05 §5):** the loop drives
+**zero actions** (`act = zeros(7)`) until the bottle is inserted, then the scripted lateral
+`RETRACT`. It does **not** call the policy — the env's base-aim + firm grip + cell geometry carry
+the insertion, and the obs is now 37-dim (an `obj_up` triple was added) so the 34-dim shelf-place
+policy would dim-mismatch. The renderer also binds a dark-wood PBR over the rack meshes
+(`/World/envs/env_0/Rack`) and titles the HUD "Wine-Cellar Bottle Insertion". The kitchen
+backdrop, wood floor, and wood counter are added for photorealism (§6, doc 05 §6).
+
 ## 6. Camera & HUD
 
 - Camera: elevated front 3/4 view from `+x, -y` (the arm reaches base→shelf along `+x,+y`, so

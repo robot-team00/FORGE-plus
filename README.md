@@ -367,3 +367,19 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99
 ```
 
 Videos are stored as `docs/videos/task3/eval_run_NNN.mp4`.
+
+### Task 3 demo — wine-cellar bottle insertion
+
+A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wood
+wine-cellar rack** (a contact-rich peg-in-hole placement). The bottle ends **standing perfectly
+vertical** (tilt 0.0°), seated on the cell floor and dead-centered, with no jamming
+(contact force ≈ 0 N); the gripper then releases and the arm retracts, leaving the bottle in the
+rack. Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction
+grip, never teleported during the carry.
+
+▶️ **[`docs/videos/task3/pick_place_eval_001.mp4`](docs/videos/task3/pick_place_eval_001.mp4)**
+ — wine-cellar insertion (kitchen backdrop, wood counter + rack, RTX path-traced).
+
+Full write-up (algorithm, rendering, photorealism, asset pipeline) is in
+**[`docs/task3/`](docs/task3/README.md)** — see
+[`05-wine-cellar-insertion.md`](docs/task3/05-wine-cellar-insertion.md) for this demo.
