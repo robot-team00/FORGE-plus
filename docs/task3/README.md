@@ -19,7 +19,8 @@ the arm carries the bottle to a wood wine-rack and **inserts it into a cell**, e
 perfectly vertical (tilt ≈ 0°) on the cell floor — a clean, gentle, contact-rich placement with
 no flick. See **[`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md)**.
 
-![Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell](../videos/task3/wine_cellar_insert_v2.png)
+<img src="../videos/task3/wine_cellar_insert_v2.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
+
 
 The earlier variant set the bottle on an **open shelf** and righted it about the contact pivot
 (force-conditioned policy + "contact-then-verticalize"). Both run with **real physics** — the
