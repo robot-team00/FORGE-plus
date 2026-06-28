@@ -270,6 +270,10 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     forge_start_lat:  float = 0.015  # ± random lateral start offset (m) the policy must correct
     forge_setup_steps: int  = 150    # substeps to drive the EE to the approach pose (setup, not the skill)
     forge_act_range:  float = 0.03   # per-step EE delta the policy commands (smaller = gentler, fewer blowups)
+    forge_lam:        float = 0.004  # per-step EE motion cap during the LEARNED insertion (m). Small =
+                                     # slow approach -> low impact impulse at contact (the 58N spikes that
+                                     # broke the glass were impact momentum, not steady force). Setup still
+                                     # uses the fast c.lam to traverse to the cell.
     keypoint_k:       float = 60.0   # PBRS reward scale — must dominate the motion penalties so the
                                      # policy descends to seat instead of freezing to dodge penalties
     force_pen_beta:   float = 0.5    # FORGE force-overshoot penalty weight
@@ -549,6 +553,7 @@ if ISAAC_AVAILABLE:
 
             # Contact force (low-pass filter)
             self._cf_filt  = torch.zeros(N, device=d)
+            self._cf_insert = torch.zeros(N, device=d)   # filtered bottle↔rack insertion force only
             self._cf_alpha = 0.15
 
             # Episode state
@@ -757,6 +762,24 @@ if ISAAC_AVAILABLE:
                 )
             )
 
+            # INSERTION-ONLY sensor: the pairwise contact force between the Object and
+            # the Rack (force_matrix_w). This is the TRUE insertion force that should
+            # gate breakage — it excludes the grip (gripper↔object), hand↔rack bumps,
+            # and the impulse artifacts that pollute the whole-body surf sensor.
+            # (FORGE gates on the arm EE force J†·τ_ext for the same reason.)
+            # Sensor on the RACK (which has the contact-reporter API; the bottle USD
+            # does not), filtered to the Object -> force on the rack from the bottle =
+            # the insertion contact (Newton's 3rd law, same magnitude).
+            self._insert_sensor = ContactSensor(
+                ContactSensorCfg(
+                    prim_path="/World/envs/env_.*/Rack",
+                    update_period=0.0,
+                    history_length=1,
+                    track_air_time=False,
+                    filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                )
+            )
+
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
             self.scene.rigid_objects["table"]  = self._table
@@ -764,6 +787,7 @@ if ISAAC_AVAILABLE:
             self.scene.rigid_objects["rack"]   = self._rack
             self.scene.sensors["contact"]      = self._contact_sensor
             self.scene.sensors["surf"]         = self._surf_sensor
+            self.scene.sensors["insert"]       = self._insert_sensor
             self.scene.clone_environments(copy_from_source=False)
 
             # Cache joint / body indices
@@ -799,9 +823,22 @@ if ISAAC_AVAILABLE:
                 return torch.norm(fm, dim=-1).sum(dim=(1, 2))
             return torch.zeros(self.num_envs, device=self.device)
 
+        def _raw_insertion_force(self) -> torch.Tensor:
+            """Pairwise Object↔Rack contact force magnitude (the TRUE insertion force).
+            Excludes the grip, hand↔rack bumps, and other-body impulses."""
+            data = getattr(self._insert_sensor, "data", None)
+            fm = getattr(data, "force_matrix_w", None) if data is not None else None
+            if fm is not None and fm.numel() > 0:
+                return torch.norm(fm.reshape(self.num_envs, -1, 3), dim=-1).sum(dim=1)
+            return torch.zeros(self.num_envs, device=self.device)
+
         def _contact_force(self) -> torch.Tensor:
-            """Low-pass filtered scalar contact force."""
+            """Low-pass filtered scalar contact force (whole object+rack surf sensor)."""
             return self._cf_filt
+
+        def _insertion_force(self) -> torch.Tensor:
+            """Low-pass filtered Object↔Rack insertion force (gates breakage in forge)."""
+            return self._cf_insert
 
         def _contact_wrench_6d(self) -> torch.Tensor:
             """6D force-torque for observation (ft_wrench slot)."""
@@ -856,8 +893,12 @@ if ISAAC_AVAILABLE:
             appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z)
             pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
             raw = torch.where(in_setup, appr, pol)
-            lam = c.lam
-            target = ee_pos_w + (raw - ee_pos_w).clamp(min=-lam, max=lam)
+            # Fast traverse during setup, SLOW (low-impulse) approach during the learned
+            # insertion so the bottle never hits the cell with breaking momentum.
+            lam = torch.where(in_setup, torch.full_like(appr[:, :1], c.lam),
+                              torch.full_like(appr[:, :1], c.forge_lam))
+            delta = torch.maximum(torch.minimum(raw - ee_pos_w, lam), -lam)
+            target = ee_pos_w + delta
             # ── FORGE force authority (safety, NOT the policy): when axial contact
             # reaches the per-object budget, FREEZE the descent (don't push the EE
             # lower) — but leave xy free so the policy can still slide/align, and
@@ -865,7 +906,7 @@ if ISAAC_AVAILABLE:
             # Compliant stiffness (forge_pos_k) keeps lateral rams survivable. This
             # bounds the force to ~F_max without preventing the gentle insertion.
             budget = self._obj_budget[self._obj_cls]
-            over = (self._cf_filt > budget) & (self._setup_ctr == 0)
+            over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
             self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
@@ -928,7 +969,7 @@ if ISAAC_AVAILABLE:
 
         def _forge_get_dones(self):
             c = self.cfg
-            cf = self._contact_force()
+            cf = self._insertion_force()       # gate breakage on the TRUE bottle↔rack insertion force
             base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
             in_cell = ((base[:, 0] - c.rack_x).abs() < 0.04) & ((base[:, 1] - c.rack_y).abs() < 0.04)
             seated = in_cell & ((base[:, 2] - c.cell_floor_z).abs() < c.insert_depth_tol)
@@ -961,6 +1002,9 @@ if ISAAC_AVAILABLE:
             mdl = self._min_dist < 9.0
             self.extras["fmin"] = float((self._min_dist * mdl.float()).sum().item() / mdl.float().sum().clamp(min=1).item())
             self.extras["fdxy"] = float(((base[:, :2] - goal[:, :2]).norm(dim=-1) * lm).sum().item() / denom.item())
+            # force diagnostics: insertion-only (gates break) vs whole-body surf signal
+            self.extras["fins"] = float((self._cf_insert * lm).sum().item() / denom.item())
+            self.extras["fsurf"] = float((self._cf_filt * lm).sum().item() / denom.item())
             return terminated, truncated
 
         # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════
@@ -1158,6 +1202,13 @@ if ISAAC_AVAILABLE:
                 _live,
                 (1.0 - self._cf_alpha) * self._cf_filt + self._cf_alpha * _raw,
                 torch.zeros_like(self._cf_filt),
+            )
+            # Insertion-only contact (bottle↔rack) — gates breakage/ceiling in forge.
+            _raw_ins = self._raw_insertion_force()
+            self._cf_insert = torch.where(
+                _live,
+                (1.0 - self._cf_alpha) * self._cf_insert + self._cf_alpha * _raw_ins,
+                torch.zeros_like(self._cf_insert),
             )
             self._warmup = (self._warmup - 1).clamp(min=0)
 
@@ -1604,6 +1655,7 @@ if ISAAC_AVAILABLE:
             self._succeeded[env_ids]   = False
             self._set_reset[env_ids]   = True
             self._cf_filt[env_ids]     = 0.0
+            self._cf_insert[env_ids]   = 0.0
             self._warmup[env_ids]      = self.cfg.warmup_substeps
             self._az_filt[env_ids]     = -1.0
             # Gripper closed when starting in carry/place mode (holding the object).
