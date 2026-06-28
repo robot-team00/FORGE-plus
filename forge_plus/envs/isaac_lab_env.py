@@ -139,6 +139,7 @@ def _build_inner_env(cfg: IsaacLabEnvConfig):
             tau = torch.bmm(J.transpose(1,2), act_w.unsqueeze(-1)).squeeze(-1)
             tau = tau - self._KD_J * dq
             tau = torch.clamp(tau, -self._eft_lim, self._eft_lim)
+            tau = torch.where(torch.isfinite(tau), tau, torch.zeros_like(tau))  # NaN safety
             r.set_joint_effort_target(tau, joint_ids=list(range(7)))
 
         def _get_observations(self):
@@ -160,7 +161,9 @@ def _build_inner_env(cfg: IsaacLabEnvConfig):
 
         def _get_dones(self):
             mx = int(self.cfg.episode_length_s / (self.cfg.sim.dt * self.cfg.decimation))
-            return self._broken.clone(), (self._steps >= mx)
+            # Hard safety limit: terminate if forces are extreme (prevent PhysX crash)
+            hard_stop = self._cf > 300.0
+            return (self._broken | hard_stop).clone(), (self._steps >= mx)
 
         def _reset_idx(self, env_ids):
             if env_ids is None or len(env_ids) == 0: return
@@ -200,6 +203,7 @@ class IsaacLabAssemblyEnv(BaseAssemblyEnv):
         self._last_ft: Wrench = Wrench(0, 0, 0, 0, 0, 0)
         self._insert_pos_mm = 0.0
         self._history: list[ContactStep] = []
+        self._autoreset_pending: bool = False  # True after Isaac auto-reset
         self._init_isaac()
 
     def _init_isaac(self) -> None:
@@ -225,8 +229,13 @@ class IsaacLabAssemblyEnv(BaseAssemblyEnv):
         self._insert_pos_mm = 0.0
         self._history = []
         self._last_ft = Wrench(0, 0, 0, 0, 0, 0)
-        obs_dict, _ = self._inner.reset()
-        self._last_obs_dict = obs_dict
+        if self._autoreset_pending:
+            # Isaac Lab already auto-reset after terminal step; reuse that obs
+            obs_dict = self._last_obs_dict
+            self._autoreset_pending = False
+        else:
+            obs_dict, _ = self._inner.reset()
+            self._last_obs_dict = obs_dict
         return self._make_obs(obs_dict)
 
     def step(self, wrench_cmd: Wrench) -> tuple[EnvObservation, TaskOutcome]:
@@ -258,6 +267,7 @@ class IsaacLabAssemblyEnv(BaseAssemblyEnv):
             self._phase = TaskPhase.INSERT
         if broken or bool(terminated[0].item()):
             self._done = True
+            self._autoreset_pending = True  # Isaac auto-reset, skip in next outer reset()
             self._outcome = TaskOutcome.BROKEN
             return self._make_obs(obs_dict), self._outcome
         if self._insert_pos_mm >= self._cfg.success_insertion_mm:
@@ -266,6 +276,7 @@ class IsaacLabAssemblyEnv(BaseAssemblyEnv):
             return self._make_obs(obs_dict), self._outcome
         if bool(truncated[0].item()) or self._step_count >= self._cfg.episode_max_steps:
             self._done = True
+            self._autoreset_pending = True  # Isaac auto-reset, skip in next outer reset()
             self._outcome = TaskOutcome.FAILURE_TIMEOUT
             return self._make_obs(obs_dict), self._outcome
         return self._make_obs(obs_dict), TaskOutcome.IN_PROGRESS
