@@ -276,7 +276,9 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                      # uses the fast c.lam to traverse to the cell.
     keypoint_k:       float = 60.0   # PBRS reward scale — must dominate the motion penalties so the
                                      # policy descends to seat instead of freezing to dodge penalties
-    force_pen_beta:   float = 0.5    # FORGE force-overshoot penalty weight
+    force_pen_beta:   float = 2.5    # FORGE force-overshoot penalty weight — must be strong enough
+                                     # that pushing over budget costs more than the success it buys,
+                                     # so the policy learns to seat GENTLY instead of forcing it.
     forge_pos_k:      float = 120.0  # COMPLIANT stiffness during the learned insertion (setup uses
                                      # stiff 400 for reach). Low stiffness keeps contact force
                                      # = k·penetration small -> gentle on the fragile bottle.
@@ -840,6 +842,17 @@ if ISAAC_AVAILABLE:
             """Low-pass filtered Object↔Rack insertion force (gates breakage in forge)."""
             return self._cf_insert
 
+        def _ee_arm_force(self) -> torch.Tensor:
+            """Force the ARM feels at the wrist (the reaction wrench at the EE joint),
+            FORGE-style — immune to the bottle↔rack contact-solver artifact because it
+            reflects what the robot actually transmits, not the solver's penetration
+            impulse. Returns the linear force magnitude; 0 if the API is unavailable."""
+            d = getattr(self._robot, "data", None)
+            w = getattr(d, "body_incoming_joint_wrench_b", None)
+            if w is not None and self._ee_idx >= 0 and w.numel() > 0:
+                return torch.norm(w[:, self._ee_idx, :3], dim=-1)
+            return torch.zeros(self.num_envs, device=self.device)
+
         def _contact_wrench_6d(self) -> torch.Tensor:
             """6D force-torque for observation (ft_wrench slot)."""
             data = getattr(self._contact_sensor, "data", None)
@@ -909,11 +922,16 @@ if ISAAC_AVAILABLE:
             over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
+            # Orientation: STIFF during setup (hold the bottle upright while traversing
+            # to the cell) but COMPLIANT during the learned insertion. A rigid wrist
+            # fighting the constrained bottle produces a large force at the base via the
+            # bottle's lever arm (the real ~39N that breaks the glass — position is
+            # bounded to k_p·lam≈1.6N, so the wrist torque is the only possible source).
+            # The cell walls keep the bottle upright during insertion, so compliant is safe.
+            ori_k = torch.where(self._setup_ctr > 0,
+                                torch.full((self.num_envs,), 400.0, device=self.device),
+                                torch.full((self.num_envs,), 40.0, device=self.device))
             self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
-            # Hold the bottle RIGIDLY upright (high orientation stiffness) so it
-            # hangs straight and its base stays under the gripper — a loose hold
-            # lets it lean ~10 cm sideways and the base never centers over the cell.
-            ori_k = torch.full((self.num_envs,), 400.0, device=self.device)
             return target, ori_k
 
         def _forge_get_observations(self) -> dict:
@@ -934,7 +952,7 @@ if ISAAC_AVAILABLE:
 
         def _forge_get_rewards(self) -> torch.Tensor:
             c = self.cfg
-            cf = self._contact_force()
+            cf = self._insertion_force()       # penalise the TRUE insertion force (matches break gate)
             base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
             goal = self._forge_goal_w() - self.scene.env_origins
             d = base - goal
@@ -1005,6 +1023,8 @@ if ISAAC_AVAILABLE:
             # force diagnostics: insertion-only (gates break) vs whole-body surf signal
             self.extras["fins"] = float((self._cf_insert * lm).sum().item() / denom.item())
             self.extras["fsurf"] = float((self._cf_filt * lm).sum().item() / denom.item())
+            _farm = self._ee_arm_force()
+            self.extras["farm"] = float((_farm * lm).sum().item() / denom.item())
             return terminated, truncated
 
         # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════

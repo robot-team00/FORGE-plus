@@ -186,6 +186,7 @@ def main() -> None:
             diag_fdxy  = res[4].get("fdxy", -1.0)    # xy offset from cell center
             diag_fins  = res[4].get("fins", -1.0)    # insertion-only force (gates break)
             diag_fsurf = res[4].get("fsurf", -1.0)   # whole-body surf force (artifact-prone)
+            diag_farm  = res[4].get("farm", -1.0)    # arm EE reaction force (FORGE-style, artifact-free)
             obs = res[0]["policy"].to(dev)
 
         # ── Generalised Advantage Estimation (GAE) ────────────────────────
@@ -245,7 +246,7 @@ def main() -> None:
                 f"succ {succ:.3f}  brk {brk:.3f}  "
                 f"dist {diag_fdist:.3f} dxy {diag_fdxy:.3f} bz {diag_fbz:.3f} "
                 f"min {diag_fmin:.3f} seat {diag_fseat:.2f}  "
-                f"Fins {diag_fins:.1f} Fsurf {diag_fsurf:.1f}  "
+                f"Fins {diag_fins:.1f} Fsurf {diag_fsurf:.1f} Farm {diag_farm:.1f}  "
                 f"fps {fps:.0f}",
                 flush=True,
             )
