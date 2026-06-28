@@ -101,7 +101,9 @@ class RecoveryLoop:
     selector: RecoverySelector
     k_max: int = 4
 
-    def run(self, env: RecoveryEnv) -> RecoveryEpisodeResult:
+    def run(self, env: RecoveryEnv, on_step=None) -> RecoveryEpisodeResult:
+        """Run the closed loop. ``on_step(env, attempt, step)`` (optional) is
+        called after every control step — used by the renderer to capture a frame."""
         result = RecoveryEpisodeResult(
             outcome=RecoveryOutcome.FAIL_NO_ATTEMPTS_LEFT,
             attempts=0,
@@ -116,6 +118,8 @@ class RecoveryLoop:
             while steps < env.max_steps_per_attempt:
                 env.step_skill()
                 steps += 1
+                if on_step is not None:
+                    on_step(env, attempt, steps)
                 if env.is_success():
                     outcome = "success"
                     break
