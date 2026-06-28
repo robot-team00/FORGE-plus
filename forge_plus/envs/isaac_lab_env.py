@@ -175,11 +175,16 @@ def _build_inner_env(cfg: IsaacLabEnvConfig):
             self._broken[env_ids] = False
 
         def _refresh(self):
-            nf = getattr(self._contact.data, "net_forces_w", None)
-            self._cf = torch.norm(nf, dim=-1).sum(dim=1) if (nf is not None and nf.numel()>0) else self._cf.zero_() or self._cf
             ez = self._robot.data.body_pos_w[:, -1, 2]
             sz = self._socket.data.body_pos_w[:, 0, 2]
             self._depth = (sz + 0.01 - ez).clamp(min=0.0)
+            # Estimate contact force from commanded EEF wrench (quasi-static approx).
+            # ContactSensor on panda_hand never fires: actual contact is at finger
+            # bodies (panda_leftfinger/rightfinger). Instead, use Newton's 3rd law:
+            # when EEF is at socket level (depth > 0), contact reaction ~ applied force.
+            in_contact = (self._depth > 1e-4)
+            eef_f = torch.norm(self._action[:, :3], dim=-1)
+            self._cf = torch.where(in_contact, eef_f, torch.zeros_like(eef_f))
             self._broken = self._cf > self.cfg.f_break_n
 
         def depth_m(self): return self._depth.cpu().numpy()
