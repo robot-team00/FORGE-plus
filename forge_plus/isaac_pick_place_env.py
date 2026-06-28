@@ -1321,16 +1321,7 @@ if ISAAC_AVAILABLE:
             if self.cfg.forge_mode:
                 target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
-            if self.cfg.forge_mode:
-                # STIFF during setup (accurate reach to the cell); COMPLIANT during the
-                # learned insertion (low stiffness -> contact force = k·penetration stays
-                # low -> gentle on the fragile bottle). Force authority via compliance,
-                # which actually keeps contact under F_break (the freeze-z ceiling alone
-                # did not). setup_ctr was decremented in _forge_targets already.
-                _in_setup = (self._setup_ctr > 0).float()
-                _kpos = _in_setup * 400.0 + (1.0 - _in_setup) * self.cfg.forge_pos_k
-            else:
-                _kpos = torch.full_like(ori_k, 400.0)
+            _kpos = torch.full_like(ori_k, 400.0)   # stiff positioning (matches the trained robust policy)
             stiffness = torch.stack([_kpos, _kpos, _kpos, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
             command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 
