@@ -84,6 +84,8 @@ def main() -> None:
                    help="after --resume, reset policy log_std to this (re-inflate exploration for stage B)")
     p.add_argument("--forge", action="store_true",
                    help="FORGE-style LEARNED insertion: policy drives the EE, no scripted waypoints/base-aim (obs=34)")
+    p.add_argument("--forge_obj", type=int, default=None,
+                   help="fix the forge training object class (0=glass bottle/fragile, 2=metal/robust)")
     args = p.parse_args()
     dev  = torch.device(args.device)
 
@@ -126,6 +128,8 @@ def main() -> None:
         # reaches the cell (as the scripted insertion proved); the base-aim SETUP
         # corrects the resulting lean so the base still starts centered.
         cfg.grasp_topdown = False
+        if args.forge_obj is not None:
+            cfg.forge_obj_cls = args.forge_obj   # 0=fragile glass bottle, 2=robust
         obs_dim = 34
     print(f"[train] forge_mode={cfg.forge_mode} place_strategy={cfg.place_strategy} obs={obs_dim}", flush=True)
     env = FrankaPickPlaceEnv(cfg)

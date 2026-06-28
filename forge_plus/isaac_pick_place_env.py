@@ -273,10 +273,11 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     keypoint_k:       float = 60.0   # PBRS reward scale — must dominate the motion penalties so the
                                      # policy descends to seat instead of freezing to dodge penalties
     force_pen_beta:   float = 0.5    # FORGE force-overshoot penalty weight
-    forge_pos_k:      float = 400.0  # task-space position stiffness. Needs to be high enough for the
-                                     # OSC to actually reach the cell (low stiffness -> large steady-
-                                     # state error -> base never centers). Force is bounded by the
-                                     # ceiling + trained on a robust object, so 400 doesn't break it.
+    forge_pos_k:      float = 120.0  # COMPLIANT stiffness during the learned insertion (setup uses
+                                     # stiff 400 for reach). Low stiffness keeps contact force
+                                     # = k·penetration small -> gentle on the fragile bottle.
+    forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
+                                     # reset away before the camera captures the release/retract)
     forge_obj_cls:    int   = 2      # fix the training object (2=metal_plate, robust) so breakage does
                                      # not derail learning the SEAT; -1 = randomize. Fragility curriculum
                                      # (transfer to glass) is a follow-up once seating is learned.
@@ -591,6 +592,7 @@ if ISAAC_AVAILABLE:
             self._last_rec_action = None     # last recovery primitive applied (HUD)
 
             # ── FORGE-mode state (learned insertion) ──
+            self._skill_policy = None     # optional loaded policy that drives step_skill (forge)
             self._setup_ctr  = torch.zeros(N, dtype=torch.long, device=d)  # approach-pose setup countdown
             self._start_off  = torch.zeros(N, 2, device=d)                 # random lateral start offset
             self._best_dist  = torch.full((N,), 9.9, device=d)             # best (min) dist-to-goal this episode
@@ -939,6 +941,8 @@ if ISAAC_AVAILABLE:
             # blown-up state is reset instead of polluting training with huge dist.
             dropped = base[:, 2] < 0.25
             terminated = (self._broke | self._succeeded | (dropped & live)) & live
+            if c.forge_no_term:
+                terminated = torch.zeros_like(terminated)   # render: keep the seated bottle in place
             truncated = self.episode_length_buf >= self.max_episode_length - 1
             self.extras["succ_mask"] = self._succeeded.clone()
             self.extras["brk_mask"] = self._broke.clone()
@@ -998,8 +1002,17 @@ if ISAAC_AVAILABLE:
             self._last_rec_action = None
 
         def step_skill(self) -> None:
-            """One control step under the nominal OSC + phase machine (zero action)."""
-            self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))
+            """One control step under the skill. In forge_mode with a loaded policy,
+            the LEARNED policy drives the EE; otherwise zero-action OSC."""
+            pol = getattr(self, "_skill_policy", None)
+            if pol is not None:
+                with torch.no_grad():
+                    obs = self._get_observations()["policy"]
+                    mean, _ = pol(obs, self.f_cmd_norm())
+                    act = mean.clamp(-1.0, 1.0)
+                self.step(act)
+            else:
+                self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))
 
         def _base_xyz0(self):
             o = self.scene.env_origins[0]
@@ -1308,7 +1321,16 @@ if ISAAC_AVAILABLE:
             if self.cfg.forge_mode:
                 target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
-            _kpos = torch.full_like(ori_k, self.cfg.forge_pos_k if self.cfg.forge_mode else 400.0)
+            if self.cfg.forge_mode:
+                # STIFF during setup (accurate reach to the cell); COMPLIANT during the
+                # learned insertion (low stiffness -> contact force = k·penetration stays
+                # low -> gentle on the fragile bottle). Force authority via compliance,
+                # which actually keeps contact under F_break (the freeze-z ceiling alone
+                # did not). setup_ctr was decremented in _forge_targets already.
+                _in_setup = (self._setup_ctr > 0).float()
+                _kpos = _in_setup * 400.0 + (1.0 - _in_setup) * self.cfg.forge_pos_k
+            else:
+                _kpos = torch.full_like(ori_k, 400.0)
             stiffness = torch.stack([_kpos, _kpos, _kpos, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
             command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 

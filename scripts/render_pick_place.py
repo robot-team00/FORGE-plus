@@ -88,6 +88,7 @@ except Exception as ex:
     print("rtx quality settings skipped: " + str(ex), flush=True)
 
 # ── Environment (single env) ─────────────────────────────────────────────────
+FORGE = bool(os.environ.get("FORGE"))   # render the LEARNED forge insertion policy
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs = 1
 cfg.gripper = "franka_panda"
@@ -95,6 +96,11 @@ cfg.gripper = "franka_panda"
 # steps after RELEASE) — we want to CAPTURE the hand retracting and leaving the bottle
 # standing. A large settle_steps pushes the success/reset past the captured retract.
 cfg.settle_steps = 400
+if FORGE:
+    cfg.forge_mode = True          # LEARNED policy drives the EE (no scripted insertion)
+    cfg.grasp_topdown = False      # natural grasp (reaches the cell)
+    cfg.forge_no_term = True       # keep the seated bottle in place for the camera
+    cfg.forge_obj_cls = 0          # render the fragile GLASS bottle (budget ~8.8 N)
 # Keep the TRAINING decimation so _get_dones / phase timing matches training
 # (decimation=1 ran the phase logic every substep -> phases rushed). One captured
 # frame per env.step (policy step). Buzz is fixed by joint damping, so smooth.
@@ -102,7 +108,8 @@ env = FrankaPickPlaceEnv(cfg)
 print("env built", flush=True)
 
 # ── Policy (ckpt policy_cfg may be a plain dict after the weights_only re-save) ─
-CKPT = "/workspace/FORGE-plus_task3/checkpoints/task3_wine_bottle.pt"
+CKPT = ("/workspace/FORGE-plus_task3/checkpoints/task3_forge_insert.pt" if FORGE
+        else "/workspace/FORGE-plus_task3/checkpoints/task3_wine_bottle.pt")
 ckpt = torch.load(CKPT, map_location=env.device, weights_only=False)
 pc = ckpt["policy_cfg"]
 pcfg = pc if isinstance(pc, PolicyConfig) else PolicyConfig(**pc)
@@ -412,7 +419,9 @@ def _hud(img, k, phase_idx, cf, broke, succ):
     dr = ImageDraw.Draw(img, "RGBA")
     # top banner
     dr.rectangle([0, 0, W, 86], fill=(0, 0, 0, 130))
-    dr.text((20, 8),  "FORGE+ Task 3  -  Wine-Cellar Bottle Insertion", font=F_TITLE, fill=(255,255,255))
+    _title = ("FORGE+ Task 3  -  LEARNED Wine-Cellar Insertion (PPO policy)" if FORGE
+              else "FORGE+ Task 3  -  Wine-Cellar Bottle Insertion")
+    dr.text((20, 8),  _title, font=F_TITLE, fill=(255,255,255))
     dr.text((20, 38), "object: %-13s  F_break=%5.1f N   F_cmd(LLM)=%5.1f N"
             % (OBJ_KEY, F_BREAK, F_CMD), font=F_MED, fill=(200,220,255))
     dr.text((20, 60), "frame %3d   phase[%d/7]: %s" % (k+1, phase_idx+1, PHASE_NAMES[phase_idx]),
@@ -480,7 +489,16 @@ for k in range(N_MAX):
     # the cell (env aims the base) and inserts it. After it's inserted (RELEASE / term_at), hold
     # briefly while the gripper opens, then RETRACT the hand up/back, leaving the bottle in the cell.
     RAMP = 28
-    if term_at is None or (k - term_at) < RAMP:
+    if FORGE:
+        # The LEARNED policy drives the EE (setup positions the arm, then the policy
+        # corrects the lean + descends + inserts). After it seats, RETRACT to release.
+        if term_at is None:
+            with torch.no_grad():
+                _mean, _ = policy(obs, fcmd)
+                act = _mean.clamp(-1.0, 1.0)
+        else:
+            act = RETRACT
+    elif term_at is None or (k - term_at) < RAMP:
         act = torch.zeros(env.num_envs, 7, device=env.device)   # nominal OSC insertion
     else:
         act = RETRACT
@@ -508,7 +526,7 @@ for k in range(N_MAX):
 
     # If the env has auto-reset after the place (phase dropped back below RELEASE), end
     # NOW — before grabbing/saving — so the video ends on the placed bottle, not a 2nd run.
-    if term_at is not None and k > term_at and phase_idx < int(PickPlacePhase.RELEASE):
+    if (not FORGE) and term_at is not None and k > term_at and phase_idx < int(PickPlacePhase.RELEASE):
         print("episode reset detected at step %d -> ending" % k, flush=True)
         break
 
