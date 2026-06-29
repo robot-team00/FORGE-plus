@@ -282,6 +282,14 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     forge_pos_k:      float = 120.0  # COMPLIANT stiffness during the learned insertion (setup uses
                                      # stiff 400 for reach). Low stiffness keeps contact force
                                      # = k·penetration small -> gentle on the fragile bottle.
+    # Compliant contact on the RACK: makes the bottle↔rack (and hand↔rack) contact a
+    # SOFT spring (force = k·penetration) instead of a rigid impulse — kills the
+    # impulsive force spikes that break the fragile glass. On the rack only, so the
+    # bottle↔gripper grip stays rigid (the grasp still holds).
+    contact_stiffness: float = 900.0    # compliant_contact_stiffness (N/m); 0 = rigid. Soft enough that
+                                        # even peak penetrations keep the bottle↔rack force under the
+                                        # ~12 N glass break floor.
+    contact_damping:   float = 60.0     # compliant_contact_damping
     forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
                                      # reset away before the camera captures the release/retract)
     forge_obj_cls:    int   = 2      # fix the training object (2=metal_plate, robust) so breakage does
@@ -727,7 +735,7 @@ if ISAAC_AVAILABLE:
                         usd_path="/workspace/assets/libero/wine_rack/wine_rack.usd",
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
-                    ),
+                    ),  # compliant contact material applied post-spawn (UsdFileCfg rejects it)
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
                     ),
@@ -790,11 +798,43 @@ if ISAAC_AVAILABLE:
             self.scene.sensors["contact"]      = self._contact_sensor
             self.scene.sensors["surf"]         = self._surf_sensor
             self.scene.sensors["insert"]       = self._insert_sensor
+            # ── Compliant contact on the rack (soft spring, not rigid impulse) ──
+            if self.cfg.contact_stiffness > 0:
+                self._apply_rack_compliance()
             self.scene.clone_environments(copy_from_source=False)
 
             # Cache joint / body indices
             self._arm_ids = list(range(7))
             self._ee_idx  = -1  # resolved lazily in _reset_idx (data not ready at setup time)
+
+        def _apply_rack_compliance(self) -> None:
+            """Bind a COMPLIANT-contact physics material to the rack collisions, so the
+            bottle↔rack contact is a soft spring (force = k·penetration) instead of a
+            rigid impulse. Applied to the source env_0 rack before cloning."""
+            try:
+                import omni.usd
+                from pxr import UsdShade, UsdPhysics, PhysxSchema
+                stage = omni.usd.get_context().get_stage()
+                matp = "/World/CompliantRackMat"
+                mat = UsdShade.Material.Define(stage, matp)
+                UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+                fr = UsdPhysics.MaterialAPI(mat.GetPrim())
+                fr.CreateStaticFrictionAttr(0.8); fr.CreateDynamicFrictionAttr(0.8)
+                px = PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+                px.CreateCompliantContactStiffnessAttr(float(self.cfg.contact_stiffness))
+                px.CreateCompliantContactDampingAttr(float(self.cfg.contact_damping))
+                n = 0
+                for prim in stage.Traverse():
+                    pth = prim.GetPath().pathString
+                    if "/Rack" in pth and prim.HasAPI(UsdPhysics.CollisionAPI):
+                        UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                            mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants,
+                            materialPurpose="physics")
+                        n += 1
+                print(f"[compliant] bound soft-contact material (k={self.cfg.contact_stiffness}) "
+                      f"to {n} rack collision prims", flush=True)
+            except Exception as exc:
+                print(f"[compliant] FAILED to apply rack compliance: {exc}", flush=True)
 
         # ── Episode sampling ──────────────────────────────────────────────────
         def _sample_episode(self, ids) -> None:
@@ -922,12 +962,12 @@ if ISAAC_AVAILABLE:
             over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
-            # Orientation: STIFF during setup (hold the bottle upright while traversing
-            # to the cell) but COMPLIANT during the learned insertion. A rigid wrist
-            # fighting the constrained bottle produces a large force at the base via the
-            # bottle's lever arm (the real ~39N that breaks the glass — position is
-            # bounded to k_p·lam≈1.6N, so the wrist torque is the only possible source).
-            # The cell walls keep the bottle upright during insertion, so compliant is safe.
+            # Wrist: STIFF during setup (hold upright while traversing), COMPLIANT during
+            # the learned insertion. Best config found: a firm wrist levers a large force
+            # against the constrained bottle (the soft contact only lets it penetrate
+            # further, not lower the force), so compliant wins — successful insertions
+            # then keep contact ~5N. (Residual: ~90% of attempts still spike >F_break
+            # somewhere and the policy drifts; not fully solved.)
             ori_k = torch.where(self._setup_ctr > 0,
                                 torch.full((self.num_envs,), 400.0, device=self.device),
                                 torch.full((self.num_envs,), 40.0, device=self.device))
