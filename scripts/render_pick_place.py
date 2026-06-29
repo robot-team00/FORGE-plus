@@ -100,7 +100,10 @@ if FORGE:
     cfg.forge_mode = True          # LEARNED policy drives the EE (no scripted insertion)
     cfg.grasp_topdown = False      # natural grasp (reaches the cell)
     cfg.forge_no_term = True       # keep the seated bottle in place for the camera
-    cfg.forge_obj_cls = 0          # render the fragile GLASS bottle (budget ~8.8 N)
+    cfg.render_minimal = True      # skip the extra SDG-graph sensors/material for the render
+    # render on the object the policy reliably seats (succ ~1.0); the rendered mesh is
+    # the wine bottle regardless of class (class only sets the hidden force budget).
+    cfg.forge_obj_cls = 2
 # Keep the TRAINING decimation so _get_dones / phase timing matches training
 # (decimation=1 ran the phase logic every substep -> phases rushed). One captured
 # frame per env.step (policy step). Buzz is fixed by joint damping, so smooth.
@@ -314,11 +317,20 @@ print("camera defined", flush=True)
 
 # Warmup 1: initialize RTX pipeline (render only — app.update() would step physics
 # and drop the freshly-seated object before the rollout starts).
-for _ in range(110): app.update()
+for _ in range(260): app.update()   # longer RTX warmup (cold-cache pipeline -> attach race)
 
 rp  = rep.create.render_product("/World/EvalCam", (960, 540))
 rgb = rep.AnnotatorRegistry.get_annotator("rgb")
-rgb.attach([rp])
+# rgb.attach can raise "Unable to write ... size=0" if the RTX/SDG pipeline isn't ready
+# yet — retry with more app.update()s between attempts.
+for _att in range(6):
+    try:
+        rgb.attach([rp]); print("rgb attached (try %d)" % _att, flush=True); break
+    except Exception as _e:
+        print("rgb.attach retry %d: %s" % (_att, _e), flush=True)
+        for _ in range(80): app.update()
+else:
+    raise RuntimeError("rgb.attach failed after retries (RTX/SDG wedged)")
 
 # Overscan patch (critical -- without this rgb.get_data() returns gray sky)
 try:

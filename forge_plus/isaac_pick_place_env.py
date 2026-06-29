@@ -292,6 +292,8 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     contact_damping:   float = 60.0     # compliant_contact_damping
     forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
                                      # reset away before the camera captures the release/retract)
+    render_minimal:   bool  = False  # render-only: skip the filtered insert-sensor + compliant-material
+                                     # binding (extra SDG-graph state not needed to capture frames)
     forge_obj_cls:    int   = 2      # fix the training object (2=metal_plate, robust) so breakage does
                                      # not derail learning the SEAT; -1 = randomize. Fragility curriculum
                                      # (transfer to glass) is a follow-up once seating is learned.
@@ -780,15 +782,18 @@ if ISAAC_AVAILABLE:
             # Sensor on the RACK (which has the contact-reporter API; the bottle USD
             # does not), filtered to the Object -> force on the rack from the bottle =
             # the insertion contact (Newton's 3rd law, same magnitude).
-            self._insert_sensor = ContactSensor(
-                ContactSensorCfg(
-                    prim_path="/World/envs/env_.*/Rack",
-                    update_period=0.0,
-                    history_length=1,
-                    track_air_time=False,
-                    filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+            if self.cfg.render_minimal:
+                self._insert_sensor = None   # render: skip the extra filtered sensor
+            else:
+                self._insert_sensor = ContactSensor(
+                    ContactSensorCfg(
+                        prim_path="/World/envs/env_.*/Rack",
+                        update_period=0.0,
+                        history_length=1,
+                        track_air_time=False,
+                        filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                    )
                 )
-            )
 
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
@@ -797,9 +802,10 @@ if ISAAC_AVAILABLE:
             self.scene.rigid_objects["rack"]   = self._rack
             self.scene.sensors["contact"]      = self._contact_sensor
             self.scene.sensors["surf"]         = self._surf_sensor
-            self.scene.sensors["insert"]       = self._insert_sensor
+            if self._insert_sensor is not None:
+                self.scene.sensors["insert"]   = self._insert_sensor
             # ── Compliant contact on the rack (soft spring, not rigid impulse) ──
-            if self.cfg.contact_stiffness > 0:
+            if self.cfg.contact_stiffness > 0 and not self.cfg.render_minimal:
                 self._apply_rack_compliance()
             self.scene.clone_environments(copy_from_source=False)
 
@@ -868,6 +874,8 @@ if ISAAC_AVAILABLE:
         def _raw_insertion_force(self) -> torch.Tensor:
             """Pairwise Object↔Rack contact force magnitude (the TRUE insertion force).
             Excludes the grip, hand↔rack bumps, and other-body impulses."""
+            if getattr(self, "_insert_sensor", None) is None:
+                return torch.zeros(self.num_envs, device=self.device)
             data = getattr(self._insert_sensor, "data", None)
             fm = getattr(data, "force_matrix_w", None) if data is not None else None
             if fm is not None and fm.numel() > 0:
