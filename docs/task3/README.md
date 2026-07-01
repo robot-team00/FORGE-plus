@@ -14,13 +14,21 @@
 ## What this task is
 
 A Franka Panda arm performs a **fragile PLACE** of a realistic, breakable kitchen object (a
-LIBERO wine bottle). The current demonstrated variant is a **wine-cellar peg-in-hole insertion**:
-the arm carries the bottle to a wood wine-rack and **inserts it into a cell**, ending standing
-perfectly vertical (tilt ≈ 0°) on the cell floor — a clean, gentle, contact-rich placement with
-no flick. See **[`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md)**.
+LIBERO wine bottle). The current demonstrated variant is a **learned wine-cellar peg-in-hole
+insertion + safe release**: a **FORGE PPO policy** descends the bottle into a rack cell under
+force control (contact stays gentle, ~0–4 N), keeps it vertical, and **decides when to let go**,
+leaving it standing upright while the arm retracts.
+
+> ### ▶️ Start here for the real demo: **[`07-learned-place-release.md`](07-learned-place-release.md)**
+> That is the **learned** policy (algorithm, reward shaping, the gripper-open bug, the render
+> pipeline, and the learned-vs-scripted HUD). The insertion in
+> [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) was an earlier **scripted
+> scaffold** — now superseded.
+> Video: **[`docs/videos/task3/forge_release.mp4`](../videos/task3/forge_release.mp4)**.
 
 <div align="center">
-  <img src="../videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
+  <img src="../videos/task3/forge_release.png" width="560" alt="Learned FORGE insertion: the PPO policy descends the wine bottle into the rack cell under gentle force; HUD shows the green LEARNED force-guided-insertion phase and the contact-force gauge">
+  <br><em>The learned PPO policy descending the bottle into the cell (HUD: green “LEARNED — force-guided insertion”; force gauge well under the break limit).</em>
 </div>
 
 
@@ -60,7 +68,9 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`02-grasp-and-placing.md`](02-grasp-and-placing.md) | Grasp physics (why flat faces work and round ones fail), the friction seat, geometric place detection, the gripper-release bug, the retract, and the standing-placement (topple) problem + object-selection rules. |
 | [`03-rendering.md`](03-rendering.md) | Headless RTX live-physics rendering, the "app.update() steps physics" gotcha, the render↔physics **sync bug** that froze the object, the proven render loop, camera, and HUD. |
 | [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
-| [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | **The current task.** Wine-cellar peg-in-hole: the rack scene, the three tricks (base-aim, firm grip, wide cell) that seat the bottle vertical, success detection, the zero-action render, photorealism, and troubleshooting. |
+| [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | Wine-cellar peg-in-hole scene, asset pipeline, photorealism. **⚠️ The insertion shown there was a SCRIPTED scaffold (zero policy action + base-aim), not a learned policy — being replaced by a learned FORGE PPO policy.** |
+| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop in Isaac.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), the soft force ceiling (stay under budget), the induced-jam scenario, and the verified jam→recover→seat result. |
+| [`07-learned-place-release.md`](07-learned-place-release.md) | **✅ The current, LEARNED policy — start here.** FORGE PPO that descends the bottle into the cell (force-guided insertion), learns *when to release* (8-dim action), and safely places it upright before the arm retracts. The algorithm, reward shaping, the finger-open bug, the numpy-1.26 render-killer, the render harness, and the learned-vs-scripted HUD + force gauge. |
 
 ## Key files
 
@@ -90,27 +100,38 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
     --num_envs 256 --iterations 600 --gripper franka_panda \
     --ckpt checkpoints/task3_wine_bottle.pt
 
-# Render the wine-cellar insertion demo (zero-action OSC; cfg.place_strategy="insert"):
+# Render the wine-cellar insertion SCAFFOLD (scripted; being replaced by a learned policy):
 /workspace/.venv/bin/python scripts/render_pick_place.py
 # -> docs/videos/task3/pick_place_eval_001.mp4
 ```
 
-> The insertion render drives **zero actions** (the env's base-aim + firm grip + cell geometry
-> carry the insertion); it does **not** call the policy (obs is now 37-dim — see doc 05 §5). The
-> open-shelf `"throw_upright"` variant *does* drive the trained policy.
+> ⚠️ The current insertion render is a **scripted scaffold**: it drives **zero policy action** and
+> the env's hand-coded **base-aim** + phase waypoints do the work — **no learned policy**. This is
+> being replaced by a **learned FORGE-style PPO policy** (`cfg.forge_mode`, in progress) that
+> outputs the EE motion and learns the alignment/insertion from force, with no scripted waypoints.
 
-## Current status (2026-06-27)
+## Current status (2026-07-01)
 
-- ✅ **Wine-cellar peg-in-hole insertion** (current demo): the arm inserts the bottle into a rack
-  cell; it ends **standing perfectly vertical** (tilt 0.0°, base seated on the cell floor,
-  dead-centered, contact force ≈ 0 N — no jam) → release → retract. Real physics. See
-  [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md).
-- ✅ Real friction grasp of a realistic LIBERO wine bottle (gripped by the neck).
-- ✅ Headless RTX render (kitchen backdrop, wood counter, wood rack) with the object correctly
-  following the gripper on screen; gripper genuinely **releases** and the arm **retracts** away.
-- ✅ (Prior variant) **Bottle places STANDING upright** on an open shelf (final tilt ~0.8°) via
-  **contact-then-verticalize**, and a force-conditioned policy trained to **succ 1.0 / break 0.0**.
-  See [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
+- ✅ **Learned FORGE insertion + safe release** (`cfg.forge_mode` + `cfg.forge_release_mode`) —
+  **the real goal, done.** A PPO policy descends the bottle **into the cell** under force control
+  (gentle ~0–4 N), keeps it vertical, and **learns when to release** (8th action dim); it then
+  places it upright and the arm retracts. ~68% success, **break 0**, no scripted waypoints /
+  base-aim for the insertion. Full write-up: **[`07-learned-place-release.md`](07-learned-place-release.md)**;
+  video [`docs/videos/task3/forge_release.mp4`](../videos/task3/forge_release.mp4). The HUD labels
+  every phase **LEARNED (green)** vs **SCRIPTED (orange)** in real time.
+- 🗄️ **Wine-cellar peg-in-hole insertion (scripted scaffold)** — the earlier stopgap (zero policy
+  action + base-aim + phase waypoints) that built the scene/asset. **Superseded** by the learned
+  policy above. See [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md).
+- ✅ Real friction grasp of a realistic LIBERO wine bottle (gripped by the neck); RTX render
+  (kitchen, wood counter + rack); gripper genuinely **releases** and the arm **retracts**.
+- ✅ (Prior variant) Open-shelf place with a **learned** force-conditioned policy (obs=34) trained
+  to **succ 1.0 / break 0.0** — this one *was* policy-driven. See
+  [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
+- ✅ **Force-signature LLM recovery — closed loop, in Isaac** (proposal §07): on a wedged
+  insertion the system reads a text force signature (no vision, no `F_break`), the LLM picks a
+  recovery, applies it within the same `F_max`, and retries. Verified: jam caught at **13.7 N**
+  (≪ ~22 N break — no breakage) → `retract_and_reapproach` → seats. **SUCCESS in 2 attempts.**
+  Task-agnostic (one loop for all task envs). See [`06-recovery.md`](06-recovery.md).
 - ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
   (hard-exploration RL) — superseded by the cell-geometry insertion.
 

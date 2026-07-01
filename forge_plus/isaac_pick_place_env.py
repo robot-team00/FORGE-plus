@@ -245,6 +245,80 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     rack_x:  float = 0.45   # rack/cell x (in front, well within reach for base-aimed insertion)
     rack_y:  float = 0.12   # rack/cell y (modest lateral offset; reachable so the base centers)
 
+    # ── Force-signature recovery (proposal §07) ───────────────────────────────
+    # A lateral approach error that makes the bottle WEDGE on the cell rim (a jam
+    # the recovery loop must clear). 0.0 = no induced jam (normal insertion).
+    jam_dx:        float = 0.0     # induced base-aim x error (m) -> rim wedge
+    jam_dy:        float = 0.0     # induced base-aim y error (m)
+    rec_lift:      float = 0.11    # retract_and_reapproach: how far to lift the EE (m) — clear the rim
+    rec_lat:       float = 0.02    # wiggle_search lateral amplitude (m)
+    rec_dur_steps: int   = 25      # control steps a recovery maneuver runs before clearing
+    jam_force_n:   float = 6.0     # contact >= this with no descent => jam
+    jam_progress_mm: float = 1.5   # net base descent (mm) over the window below which it's "stuck"
+    jam_window:    int   = 15      # steps of no-progress at the ceiling to declare a jam
+
+    # ── FORGE-style LEARNED insertion (no scripted waypoints, no base-aim) ─────
+    # When True: the PPO policy outputs the EE motion (xyz delta) through the OSC
+    # controller and must LEARN to align + insert from force + relative-goal obs.
+    # The robot is reset to a randomized APPROACH pose above the cell (initial-state
+    # setup, exactly as FORGE) — the learned skill is everything after that.
+    forge_mode:       bool  = False
+    # Curriculum (start EASY so success is discovered, then widen via follow-up runs):
+    forge_approach_z: float = 0.68   # EE hand-off height. The lean drops the base ~0.17 below the EE,
+                                     # so ee_z 0.68 -> bottle base ~0.51 = right AT the cell entrance
+                                     # (top 0.50, floor 0.40). The scripted setup stops here (no descent
+                                     # into the cell); the LEARNED policy then does the FULL descent +
+                                     # gentle force-controlled insertion down to the floor.
+    forge_start_lat:  float = 0.015  # ± random lateral start offset (m) the policy must correct
+    forge_setup_steps: int  = 80     # substeps to drive the EE to the entrance pose (short scripted intro)
+    forge_act_range:  float = 0.03   # per-step EE delta the policy commands (smaller = gentler, fewer blowups)
+    forge_lam:        float = 0.004  # per-step EE motion cap during the LEARNED insertion (m). Small =
+                                     # slow approach -> low impact impulse at contact (the 58N spikes that
+                                     # broke the glass were impact momentum, not steady force). Setup still
+                                     # uses the fast c.lam to traverse to the cell.
+    keypoint_k:       float = 60.0   # PBRS reward scale — must dominate the motion penalties so the
+                                     # policy descends to seat instead of freezing to dodge penalties
+    force_pen_beta:   float = 2.5    # FORGE force-overshoot penalty weight — must be strong enough
+                                     # that pushing over budget costs more than the success it buys,
+                                     # so the policy learns to seat GENTLY instead of forcing it.
+    forge_pos_k:      float = 120.0  # COMPLIANT stiffness during the learned insertion (setup uses
+                                     # stiff 400 for reach). Low stiffness keeps contact force
+                                     # = k·penetration small -> gentle on the fragile bottle.
+    # Compliant contact on the RACK: makes the bottle↔rack (and hand↔rack) contact a
+    # SOFT spring (force = k·penetration) instead of a rigid impulse — kills the
+    # impulsive force spikes that break the fragile glass. On the rack only, so the
+    # bottle↔gripper grip stays rigid (the grasp still holds).
+    contact_stiffness: float = 900.0    # compliant_contact_stiffness (N/m); 0 = rigid. Soft enough that
+                                        # even peak penetrations keep the bottle↔rack force under the
+                                        # ~12 N glass break floor.
+    contact_damping:   float = 60.0     # compliant_contact_damping
+    # ── Learned safe-release (forge_release_mode) ───────────────────────────────
+    # 8th action dim lets the policy command the gripper release; success now requires it
+    # to LET GO with the bottle settled (in-cell, at floor, upright, low velocity).
+    forge_release_mode: bool  = False
+    release_upright_cos: float = 0.90   # cos(tilt) above this (~26 deg) counts as upright on release
+                                        # (a bottle standing in a rack cell leans modestly)
+    release_vel_tol:     float = 0.25   # bottle speed (m/s) below this counts as settled
+    release_hold:        int   = 6      # steps the released+seated state must hold for success
+    release_grace:       int   = 8      # steps after release before a not-in-cell bottle = failure
+    bad_release_pen:     float = 8.0    # penalty for releasing and losing the bottle (tips/falls out)
+    release_floor_tol:   float = 0.10   # |base_z - cell_floor_z| under this counts as resting in the cell
+                                        # (the bottle naturally rests a few cm above the nominal floor)
+    release_clear_dist:  float = 0.20   # EE must be this far from the bottle BASE (hand RETRACTED
+                                        # clear) for success — reached as soon as the moderate retract
+                                        # completes (~0.13 is just the grip geometry, so 0.20 = real gap).
+    forge_hybrid_retract: bool  = False # after the LEARNED release, drive the hand to a clear pose
+                                        # with a fixed retract motion (not a manipulation skill — just
+                                        # clearing out so the let-go is visible). Release stays learned.
+
+    forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
+                                     # reset away before the camera captures the release/retract)
+    render_minimal:   bool  = False  # render-only: skip the filtered insert-sensor + compliant-material
+                                     # binding (extra SDG-graph state not needed to capture frames)
+    forge_obj_cls:    int   = 2      # fix the training object (2=metal_plate, robust) so breakage does
+                                     # not derail learning the SEAT; -1 = randomize. Fragility curriculum
+                                     # (transfer to glass) is a follow-up once seating is learned.
+
     # Gripper
     gripper: str   = "franka_panda"
 
@@ -465,6 +539,10 @@ if ISAAC_AVAILABLE:
         NUM_PHASES = NUM_PHASES
 
         def __init__(self, cfg: PickPlaceEnvCfg, render_mode=None, **kw):
+            # forge_release_mode adds an 8th action dim (learned gripper release). Set the
+            # gym action_space BEFORE DirectRLEnv reads it.
+            if getattr(cfg, "forge_release_mode", False):
+                cfg.action_space = 8
             super().__init__(cfg, render_mode=render_mode, **kw)
             N, d = self.num_envs, self.device
 
@@ -503,15 +581,22 @@ if ISAAC_AVAILABLE:
             self._rf_idx:   int = -1  # panda_rightfinger
             self._osc_init: bool = False
 
-            # Actions / EE state
-            self._actions     = torch.zeros(N, 7, device=d)
-            self._prev_actions = torch.zeros(N, 7, device=d)  # for action-rate smoothness
+            # Actions / EE state. In forge_release_mode the policy gets an 8th action dim
+            # (action[7] = learned gripper release command); otherwise 7 (arm-only).
+            _adim = 8 if self.cfg.forge_release_mode else 7
+            self._actions     = torch.zeros(N, _adim, device=d)
+            self._prev_actions = torch.zeros(N, _adim, device=d)  # for action-rate smoothness
             self._ee_quat_des = torch.zeros(N, 4, device=d)
             self._ee_quat_des[:, 0] = 1.0
             self._gripper_cmd = torch.ones(N, device=d)   # +1 = open, -1 = closed
+            # forge_release: latched "policy commanded release" + age since release (grace).
+            self._released   = torch.zeros(N, dtype=torch.bool, device=d)
+            self._newly_released = torch.zeros(N, dtype=torch.bool, device=d)  # released THIS step
+            self._rel_age    = torch.zeros(N, dtype=torch.long, device=d)
 
             # Contact force (low-pass filter)
             self._cf_filt  = torch.zeros(N, device=d)
+            self._cf_insert = torch.zeros(N, device=d)   # filtered bottle↔rack insertion force only
             self._cf_alpha = 0.15
 
             # Episode state
@@ -525,6 +610,11 @@ if ISAAC_AVAILABLE:
             self._f_cmd      = torch.zeros(N, device=d)
             self._f_break    = torch.zeros(N, device=d)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
+            self._bad_release = torch.zeros(N, dtype=torch.bool, device=d)  # released but lost the bottle
+            self._drop_quality = torch.zeros(N, device=d)   # dense release-quality shaping signal
+            self._rel_upz     = torch.zeros(N, device=d)    # uprightness diagnostic
+            self._retract_prog = torch.zeros(N, device=d)   # dense hand-retract progress (post-release)
+            self._prev_eod    = torch.zeros(N, device=d)    # previous EE->object distance
             self._succeeded  = torch.zeros(N, dtype=torch.bool, device=d)
             self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
@@ -545,6 +635,31 @@ if ISAAC_AVAILABLE:
             self._az_filt    = torch.full((N,), -1.0, device=d)
             self._jt_target  = torch.zeros(N, 7, device=d)
             self._extras: dict = {}
+
+            # ── Recovery state (force-signature LLM recovery; see RecoveryLoop) ──
+            self._rec_off    = torch.zeros(N, 3, device=d)   # world-frame OSC target offset
+            self._rec_steps  = torch.zeros(N, dtype=torch.long, device=d)  # maneuver countdown
+            self._rec_wiggle = torch.zeros(N, dtype=torch.bool, device=d)  # lateral search active
+            self._rec_open   = torch.zeros(N, dtype=torch.bool, device=d)  # force fingers open (regrasp)
+            self._jam_on     = torch.zeros(N, dtype=torch.bool, device=d)  # induced misalignment active
+            self._last_rec_action = None     # last recovery primitive applied (HUD)
+
+            # ── FORGE-mode state (learned insertion) ──
+            self._skill_policy = None     # optional loaded policy that drives step_skill (forge)
+            self._setup_ctr  = torch.zeros(N, dtype=torch.long, device=d)  # approach-pose setup countdown
+            self._start_off  = torch.zeros(N, 2, device=d)                 # random lateral start offset
+            self._best_dist  = torch.full((N,), 9.9, device=d)             # best (min) dist-to-goal this episode
+            self._prev_dist  = torch.full((N,), 9.9, device=d)             # PBRS: previous-step dist-to-goal
+            self._min_dist   = torch.full((N,), 9.9, device=d)             # best (min) dist achieved this episode
+            self._rec_phase  = torch.zeros(N, dtype=torch.long, device=d)  # wiggle phase counter
+            self._jam_cooldown = torch.zeros(N, dtype=torch.long, device=d)  # suppress jam-detect after a recovery
+            # Contact + base-height history for the force signature (ring buffers).
+            self._sig_len    = 64
+            self._cf_hist    = torch.zeros(N, self._sig_len, device=d)
+            self._basez_hist = torch.zeros(N, self._sig_len, device=d)
+            self._latx_hist  = torch.zeros(N, self._sig_len, device=d)
+            self._laty_hist  = torch.zeros(N, self._sig_len, device=d)
+            self._sig_ptr    = 0
 
             # Object registry tensors
             self._n_obj_cls = N_OBJ_CLS
@@ -658,7 +773,7 @@ if ISAAC_AVAILABLE:
                         usd_path="/workspace/assets/libero/wine_rack/wine_rack.usd",
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                         collision_props=sim_utils.CollisionPropertiesCfg(),
-                    ),
+                    ),  # compliant contact material applied post-spawn (UsdFileCfg rejects it)
                     init_state=RigidObjectCfg.InitialStateCfg(
                         pos=(self.cfg.rack_x, self.cfg.rack_y, self.cfg.rack_z),
                     ),
@@ -695,6 +810,27 @@ if ISAAC_AVAILABLE:
                 )
             )
 
+            # INSERTION-ONLY sensor: the pairwise contact force between the Object and
+            # the Rack (force_matrix_w). This is the TRUE insertion force that should
+            # gate breakage — it excludes the grip (gripper↔object), hand↔rack bumps,
+            # and the impulse artifacts that pollute the whole-body surf sensor.
+            # (FORGE gates on the arm EE force J†·τ_ext for the same reason.)
+            # Sensor on the RACK (which has the contact-reporter API; the bottle USD
+            # does not), filtered to the Object -> force on the rack from the bottle =
+            # the insertion contact (Newton's 3rd law, same magnitude).
+            if self.cfg.render_minimal:
+                self._insert_sensor = None   # render: skip the extra filtered sensor
+            else:
+                self._insert_sensor = ContactSensor(
+                    ContactSensorCfg(
+                        prim_path="/World/envs/env_.*/Rack",
+                        update_period=0.0,
+                        history_length=1,
+                        track_air_time=False,
+                        filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                    )
+                )
+
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
             self.scene.rigid_objects["table"]  = self._table
@@ -702,16 +838,52 @@ if ISAAC_AVAILABLE:
             self.scene.rigid_objects["rack"]   = self._rack
             self.scene.sensors["contact"]      = self._contact_sensor
             self.scene.sensors["surf"]         = self._surf_sensor
+            if self._insert_sensor is not None:
+                self.scene.sensors["insert"]   = self._insert_sensor
+            # ── Compliant contact on the rack (soft spring, not rigid impulse) ──
+            if self.cfg.contact_stiffness > 0 and not self.cfg.render_minimal:
+                self._apply_rack_compliance()
             self.scene.clone_environments(copy_from_source=False)
 
             # Cache joint / body indices
             self._arm_ids = list(range(7))
             self._ee_idx  = -1  # resolved lazily in _reset_idx (data not ready at setup time)
 
+        def _apply_rack_compliance(self) -> None:
+            """Bind a COMPLIANT-contact physics material to the rack collisions, so the
+            bottle↔rack contact is a soft spring (force = k·penetration) instead of a
+            rigid impulse. Applied to the source env_0 rack before cloning."""
+            try:
+                import omni.usd
+                from pxr import UsdShade, UsdPhysics, PhysxSchema
+                stage = omni.usd.get_context().get_stage()
+                matp = "/World/CompliantRackMat"
+                mat = UsdShade.Material.Define(stage, matp)
+                UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+                fr = UsdPhysics.MaterialAPI(mat.GetPrim())
+                fr.CreateStaticFrictionAttr(0.8); fr.CreateDynamicFrictionAttr(0.8)
+                px = PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+                px.CreateCompliantContactStiffnessAttr(float(self.cfg.contact_stiffness))
+                px.CreateCompliantContactDampingAttr(float(self.cfg.contact_damping))
+                n = 0
+                for prim in stage.Traverse():
+                    pth = prim.GetPath().pathString
+                    if "/Rack" in pth and prim.HasAPI(UsdPhysics.CollisionAPI):
+                        UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                            mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants,
+                            materialPurpose="physics")
+                        n += 1
+                print(f"[compliant] bound soft-contact material (k={self.cfg.contact_stiffness}) "
+                      f"to {n} rack collision prims", flush=True)
+            except Exception as exc:
+                print(f"[compliant] FAILED to apply rack compliance: {exc}", flush=True)
+
         # ── Episode sampling ──────────────────────────────────────────────────
         def _sample_episode(self, ids) -> None:
             n   = len(ids)
             cls = torch.randint(0, self._n_obj_cls, (n,), device=self.device)
+            if self.cfg.forge_mode and self.cfg.forge_obj_cls >= 0:
+                cls = torch.full((n,), self.cfg.forge_obj_cls, device=self.device, dtype=torch.long)
             fb  = (self._obj_fmean[cls]
                    + self._obj_fstd[cls] * torch.randn(n, device=self.device))
             fb  = torch.maximum(fb, self._obj_fmin[cls])
@@ -735,9 +907,35 @@ if ISAAC_AVAILABLE:
                 return torch.norm(fm, dim=-1).sum(dim=(1, 2))
             return torch.zeros(self.num_envs, device=self.device)
 
+        def _raw_insertion_force(self) -> torch.Tensor:
+            """Pairwise Object↔Rack contact force magnitude (the TRUE insertion force).
+            Excludes the grip, hand↔rack bumps, and other-body impulses."""
+            if getattr(self, "_insert_sensor", None) is None:
+                return torch.zeros(self.num_envs, device=self.device)
+            data = getattr(self._insert_sensor, "data", None)
+            fm = getattr(data, "force_matrix_w", None) if data is not None else None
+            if fm is not None and fm.numel() > 0:
+                return torch.norm(fm.reshape(self.num_envs, -1, 3), dim=-1).sum(dim=1)
+            return torch.zeros(self.num_envs, device=self.device)
+
         def _contact_force(self) -> torch.Tensor:
-            """Low-pass filtered scalar contact force."""
+            """Low-pass filtered scalar contact force (whole object+rack surf sensor)."""
             return self._cf_filt
+
+        def _insertion_force(self) -> torch.Tensor:
+            """Low-pass filtered Object↔Rack insertion force (gates breakage in forge)."""
+            return self._cf_insert
+
+        def _ee_arm_force(self) -> torch.Tensor:
+            """Force the ARM feels at the wrist (the reaction wrench at the EE joint),
+            FORGE-style — immune to the bottle↔rack contact-solver artifact because it
+            reflects what the robot actually transmits, not the solver's penetration
+            impulse. Returns the linear force magnitude; 0 if the API is unavailable."""
+            d = getattr(self._robot, "data", None)
+            w = getattr(d, "body_incoming_joint_wrench_b", None)
+            if w is not None and self._ee_idx >= 0 and w.numel() > 0:
+                return torch.norm(w[:, self._ee_idx, :3], dim=-1)
+            return torch.zeros(self.num_envs, device=self.device)
 
         def _contact_wrench_6d(self) -> torch.Tensor:
             """6D force-torque for observation (ft_wrench slot)."""
@@ -751,9 +949,428 @@ if ISAAC_AVAILABLE:
             pad = torch.zeros(self.num_envs, 6 - flat.shape[1], device=self.device)
             return torch.cat([flat, pad], dim=1)
 
+        def _raw_contact_vec3(self) -> torch.Tensor:
+            """Net contact force VECTOR (N,3) applied to the object/rack (world)."""
+            sdata = getattr(self._surf_sensor, "data", None)
+            snf = getattr(sdata, "net_forces_w", None) if sdata is not None else None
+            if snf is not None and snf.numel() > 0:
+                return snf.sum(dim=1)
+            return torch.zeros(self.num_envs, 3, device=self.device)
+
         def f_cmd_norm(self) -> torch.Tensor:
             """Normalised F_cmd in [0, 1] for policy conditioning."""
             return (self._f_cmd / 120.0).unsqueeze(-1)
+
+        # ══ FORGE-style learned insertion (no scripted waypoints / base-aim) ══════
+        def _forge_goal_w(self) -> torch.Tensor:
+            """Seated-pose target (cell center at the floor) in world frame."""
+            g = self.scene.env_origins.clone()
+            g[:, 0] += self.cfg.rack_x
+            g[:, 1] += self.cfg.rack_y
+            g[:, 2] += self.cfg.cell_floor_z
+            return g
+
+        def _forge_targets(self, ee_pos_w: torch.Tensor):
+            """EE target for FORGE mode. During the (non-learned) setup window the EE
+            is driven to a randomized APPROACH pose above the cell; after that the
+            LEARNED policy's xyz delta drives the alignment + insertion."""
+            c = self.cfg
+            orig = self.scene.env_origins
+            in_setup = (self._setup_ctr > 0).unsqueeze(-1)
+            # SETUP (positioning only — NOT the learned skill): drive the GRIPPER over
+            # the cell via the reachable UP-OVER-DOWN path (a direct diagonal drive
+            # saturates the arm's workspace ~12 cm short in y). Stage 1: up & over to
+            # the cell xy at transport height. Stage 2: straight down to the approach
+            # height. NO base-aim — so the bottle's base starts ~6 cm off (the lean),
+            # and the LEARNED policy must correct that alignment itself + descend + force.
+            stage1 = self._setup_ctr > (c.forge_setup_steps // 2)
+            appr = ee_pos_w.clone()
+            appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0]
+            appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
+            appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z)
+            pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
+            raw = torch.where(in_setup, appr, pol)
+            # Fast traverse during setup, SLOW (low-impulse) approach during the learned
+            # insertion so the bottle never hits the cell with breaking momentum.
+            lam = torch.where(in_setup, torch.full_like(appr[:, :1], c.lam),
+                              torch.full_like(appr[:, :1], c.forge_lam))
+            # After the policy releases, the bottle is placed — the hand no longer needs the
+            # slow gentle-insertion motion cap, so retract at a MODERATE speed (the full setup
+            # lam yanks the arm and spikes joint forces; 1.5 cm/step pulls clear smoothly).
+            if self.cfg.forge_release_mode:
+                lam = torch.where(self._released.unsqueeze(-1),
+                                  torch.full_like(lam, 0.015), lam)
+            delta = torch.maximum(torch.minimum(raw - ee_pos_w, lam), -lam)
+            target = ee_pos_w + delta
+            # ── FORGE force authority (safety, NOT the policy): when axial contact
+            # reaches the per-object budget, FREEZE the descent (don't push the EE
+            # lower) — but leave xy free so the policy can still slide/align, and
+            # don't retreat (so resting on the cell floor = seated, not undone).
+            # Compliant stiffness (forge_pos_k) keeps lateral rams survivable. This
+            # bounds the force to ~F_max without preventing the gentle insertion.
+            budget = self._obj_budget[self._obj_cls]
+            over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
+            if self.cfg.forge_release_mode:
+                over = over & (~self._released)   # after release, never freeze z — let the hand lift away
+            frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
+            target[:, 2] = torch.where(over, frozen_z, target[:, 2])
+            # Wrist: STIFF during setup (hold upright while traversing), COMPLIANT during
+            # the learned insertion. Best config found: a firm wrist levers a large force
+            # against the constrained bottle (the soft contact only lets it penetrate
+            # further, not lower the force), so compliant wins — successful insertions
+            # then keep contact ~5N. (Residual: ~90% of attempts still spike >F_break
+            # somewhere and the policy drifts; not fully solved.)
+            # Wrist orientation stiffness: firm (400) during the scripted setup, MODERATE (110)
+            # during the learned descent so the bottle stays UPRIGHT as it's pushed into the cell
+            # (the old 40 let it lean ~40 deg over the longer descent from the entrance hand-off).
+            ori_k = torch.where(self._setup_ctr > 0,
+                                torch.full((self.num_envs,), 400.0, device=self.device),
+                                torch.full((self.num_envs,), 110.0, device=self.device))
+            # Once the policy has LEARNED-released, HOLD the arm still at its release pose. The
+            # policy (trained to insert) otherwise keeps driving the EE down and pushes on the
+            # just-freed bottle (~47 N); freezing the arm lets the bottle settle cleanly with the
+            # open gripper clear. The arm simply lets go and stops — no pull-away.
+            if self.cfg.forge_release_mode and not self.cfg.forge_hybrid_retract:
+                rel = self._released
+                target = torch.where(rel.unsqueeze(-1), ee_pos_w, target)
+                ori_k = torch.where(rel,
+                                    torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
+            # HYBRID retract: after the LEARNED release, pull the (now open, empty) hand to a
+            # MODERATE clear pose — up and slightly back so it's clearly off the bottle, but NOT
+            # all the way up to a ceiling/home pose — then hold there. Post-task clearing, not a
+            # manipulation skill; the bottle stays seated (the gripper genuinely opened).
+            if self.cfg.forge_release_mode and self.cfg.forge_hybrid_retract:
+                rel = self._released
+                age = self._rel_age
+                # Phase A (settle): hold briefly so the freed bottle separates from the open pads.
+                settling   = (rel & (age <= 5)).unsqueeze(-1)
+                # Phase B (retract): drive to a moderate clear pose and stop (the clamp eases in).
+                retracting = (rel & (age > 5)).unsqueeze(-1)
+                clear = ee_pos_w.clone()
+                clear[:, 0] = orig[:, 0] + 0.30                 # step back ~15 cm from the cell
+                clear[:, 1] = orig[:, 1] + c.rack_y
+                clear[:, 2] = orig[:, 2] + 0.62                 # lift to just above the bottle (~22 cm)
+                rstep = ee_pos_w + (clear - ee_pos_w).clamp(-0.035, 0.035)  # brisk pull-away
+                target = torch.where(settling, ee_pos_w, target)
+                target = torch.where(retracting, rstep, target)
+                ori_k = torch.where(rel,
+                                    torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
+            self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
+            return target, ori_k
+
+        def _forge_get_observations(self) -> dict:
+            r = self._robot
+            jp = r.data.joint_pos[:, self._arm_ids]
+            jv = r.data.joint_vel[:, self._arm_ids]
+            ee_p = r.data.body_pos_w[:, self._ee_idx] - self.scene.env_origins
+            ee_q = r.data.body_quat_w[:, self._ee_idx]
+            ft = self._contact_wrench_6d()
+            base_w = self._obj.data.root_pose_w[:, :3]
+            base_to_goal = self._forge_goal_w() - base_w                 # (N,3) relative goal
+            obj_up = torch.bmm(matrix_from_quat(self._obj.data.root_pose_w[:, 3:7]),
+                               torch.tensor([0., 0., 1.], device=self.device).view(1, 3, 1)
+                               .expand(self.num_envs, 3, 1)).squeeze(-1)
+            fcmd = self.f_cmd_norm()
+            # 7+7+3+4+6+3+3+1 = 34
+            return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, base_to_goal, obj_up, fcmd], dim=-1)}
+
+        def _forge_get_rewards(self) -> torch.Tensor:
+            c = self.cfg
+            cf = self._insertion_force()       # penalise the TRUE insertion force (matches break gate)
+            base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
+            goal = self._forge_goal_w() - self.scene.env_origins
+            d = base - goal
+            dist = d.norm(dim=-1)
+            live = self._setup_ctr == 0
+            # PURE PROGRESS shaping: F = prev_dist − dist (NO discount factor).
+            # Telescopes to (dist_0 − dist_final): only NET progress toward the seat
+            # pays; staying still earns exactly 0 and oscillating nets ~0, so it
+            # cannot be farmed by hovering. (A 0.99 discount here created a positive
+            # living reward ∝ dist that the policy farmed by hovering far from goal.)
+            valid = self._prev_dist < 9.0
+            shape = torch.where(valid, self._prev_dist - dist, torch.zeros_like(dist))
+            self._prev_dist = dist.clone()
+            r = c.keypoint_k * shape * live.float()
+            # force-overshoot penalty (FORGE): penalise contact above the budget.
+            excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
+            r = r - c.force_pen_beta * excess
+            # smoothness + time — kept SMALL so they don't suppress the descent the
+            # policy must explore to discover the seat (heavy penalties -> it freezes).
+            jvel = self._robot.data.joint_vel[:, self._arm_ids].abs().mean(dim=-1)
+            r = r - 0.01 * jvel
+            arate = (self._actions - self._prev_actions).abs().mean(dim=-1)
+            r = r - 0.03 * arate
+            self._prev_actions = self._actions.clone()
+            r = r - 0.005
+            # terminal cliffs
+            r = r + self._succeeded.float() * 50.0
+            r = r - self._broke.float() * 6.0
+            # forge_release: shape a CLEAN drop + a hands-off retract.
+            if c.forge_release_mode:
+                rel = self._released.float()
+                # (1) SMALL upright-drop reward. Kept small on purpose: a large per-step reward for
+                #     merely keeping the bottle placed created a lazy optimum (the policy sat next to
+                #     the bottle collecting reward and never retracted). The retract + success terms
+                #     below must dominate so the policy is pulled toward letting go and backing away.
+                r = r + 0.2 * self._drop_quality
+                # (2) penalise the bottle LEANING after release (teaches a vertical placement)
+                r = r - 1.5 * rel * (1.0 - self._rel_upz).clamp(min=0.0)
+                # (3) penalise the open hand still PUSHING the bottle after release
+                r = r - 0.25 * rel * (cf - 3.0).clamp(min=0.0)
+                # (4) REWARD retracting the hand away from the bottle after release — the dominant
+                #     post-release signal, so a visible pull-away is the only way to earn reward.
+                r = r + 20.0 * self._retract_prog
+                # (5) losing the bottle entirely (tips out / falls)
+                r = r - self._bad_release.float() * c.bad_release_pen
+                # (6) RELEASE-LOW: penalise letting go while the bottle is still high above the
+                #     cell floor. Without this the policy "cheats" — releases at the hand-off and
+                #     lets the bottle drop, instead of DESCENDING + inserting it. This forces the
+                #     learned policy to do the actual gentle insertion before it lets go.
+                rel_height = (base[:, 2] - c.cell_floor_z).clamp(min=0.0)   # how high at release
+                r = r - 12.0 * self._newly_released.float() * rel_height
+                # (7) REWARD committing to release once the bottle is descended into the cell —
+                #     without this the policy learns to descend and HOLD, only letting go via
+                #     exploration noise (so the deterministic/eval policy never releases).
+                low = (base[:, 2] - c.cell_floor_z) < 0.06   # must descend to within 6 cm of the floor
+                r = r + 10.0 * self._newly_released.float() * low.float()
+            # no learning signal during the (non-skill) setup window
+            r = torch.where(self._setup_ctr > 0, torch.zeros_like(r), r)
+            return r
+
+        def _forge_get_dones(self):
+            c = self.cfg
+            cf = self._insertion_force()       # gate breakage on the TRUE bottle↔rack insertion force
+            base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
+            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.05) & ((base[:, 1] - c.rack_y).abs() < 0.05)
+            live = (self._setup_ctr == 0) & (self._warmup == 0)
+            self._broke = (cf > self._f_break) & live
+            self._bad_release = torch.zeros_like(self._broke)
+            if c.forge_release_mode:
+                # SAFE DROP: success requires the policy to LET GO (released) with the bottle
+                # resting on the cell floor, upright, and settled (low velocity).
+                up_z   = matrix_from_quat(self._obj.data.root_pose_w[:, 3:7])[:, 2, 2].clamp(-1.0, 1.0)
+                at_floor = (base[:, 2] - c.cell_floor_z).abs() < c.release_floor_tol
+                upright  = up_z > c.release_upright_cos
+                bvel     = self._obj.data.root_vel_w[:, :3].norm(dim=-1)
+                settled  = bvel < c.release_vel_tol
+                # hand must RETRACT clear of the bottle — opening the fingers is not "letting go"
+                eo_dist  = (self._robot.data.body_pos_w[:, self._ee_idx]
+                            - self._obj.data.root_pose_w[:, :3]).norm(dim=-1)
+                hand_clear = eo_dist > c.release_clear_dist
+                # dense retract progress (reward moving the hand away after release)
+                self._retract_prog = self._released.float() * (eo_dist - self._prev_eod).clamp(-0.1, 0.1)
+                self._prev_eod = eo_dist
+                seated   = in_cell & at_floor & upright & settled & self._released
+                # Only require the hand to be RETRACTED clear when the hybrid retract is enabled.
+                # Without it, success = the policy let go and the bottle is left standing.
+                if c.forge_hybrid_retract:
+                    seated = seated & hand_clear
+                # age since release (grace before judging a lost bottle a failure)
+                self._rel_age = torch.where(self._released, self._rel_age + 1, self._rel_age)
+                # released but the bottle left the cell / fell / tipped after the grace = failure
+                lost = self._released & live & (self._rel_age > c.release_grace) & (
+                    (~in_cell) | (base[:, 2] < 0.25) | (up_z < 0.7))
+                self._bad_release = lost
+                # DENSE drop-quality shaping signal (reused in _forge_get_rewards): once let go
+                # in the cell near the floor, reward uprightness so the policy gets a gradient
+                # toward a clean vertical drop even before the strict success cliff fires.
+                good_drop = self._released & in_cell & at_floor & (~lost)
+                self._drop_quality = good_drop.float() * up_z.clamp(min=0.0)
+                self._rel_upz = up_z   # for diagnostics
+            else:
+                seated = in_cell & ((base[:, 2] - c.cell_floor_z).abs() < c.insert_depth_tol)
+            self._settle_ctr = torch.where(seated & live, self._settle_ctr + 1,
+                                           (self._settle_ctr - 1).clamp(min=0))
+            self._succeeded = self._settle_ctr >= (c.release_hold if c.forge_release_mode else 6)
+            # Dropped the bottle (flung from the grip / fell): terminate so the
+            # blown-up state is reset instead of polluting training with huge dist.
+            dropped = base[:, 2] < 0.25
+            terminated = (self._broke | self._succeeded | self._bad_release | (dropped & live)) & live
+            if c.forge_no_term:
+                terminated = torch.zeros_like(terminated)   # render: keep the seated bottle in place
+            truncated = self.episode_length_buf >= self.max_episode_length - 1
+            self.extras["succ_mask"] = self._succeeded.clone()
+            self.extras["brk_mask"] = self._broke.clone()
+            self.extras["n_succ"] = float(self._succeeded.sum().item())
+            self.extras["n_brk"] = float(self._broke.sum().item())
+            if c.forge_release_mode:
+                self.extras["n_rel"]    = float(self._released.sum().item())     # how many have let go
+                self.extras["n_badrel"] = float(self._bad_release.sum().item())  # let go and lost it
+                _rl = self._released & live
+                self.extras["relupz"] = float((self._rel_upz * _rl.float()).sum().item()
+                                              / _rl.float().sum().clamp(min=1.0).item())  # mean uprightness of released
+                self.extras["releod"] = float((self._prev_eod * _rl.float()).sum().item()
+                                              / _rl.float().sum().clamp(min=1.0).item())  # mean EE->bottle dist after release
+            # diagnostics (live envs): how close is the base to the seated pose?
+            lm = live.float()
+            denom = lm.sum().clamp(min=1.0)
+            goal = self._forge_goal_w() - self.scene.env_origins
+            dist = (base - goal).norm(dim=-1)
+            self._min_dist = torch.where(live, torch.minimum(self._min_dist, dist), self._min_dist)
+            self.extras["fdist"] = float((dist * lm).sum().item() / denom.item())
+            self.extras["fbz"] = float((base[:, 2] * lm).sum().item() / denom.item())
+            self.extras["fseat"] = float((seated.float() * lm).sum().item() / denom.item())
+            # best distance achieved this episode (how CLOSE it ever gets) + xy offset
+            mdl = self._min_dist < 9.0
+            self.extras["fmin"] = float((self._min_dist * mdl.float()).sum().item() / mdl.float().sum().clamp(min=1).item())
+            self.extras["fdxy"] = float(((base[:, :2] - goal[:, :2]).norm(dim=-1) * lm).sum().item() / denom.item())
+            # force diagnostics: insertion-only (gates break) vs whole-body surf signal
+            self.extras["fins"] = float((self._cf_insert * lm).sum().item() / denom.item())
+            self.extras["fsurf"] = float((self._cf_filt * lm).sum().item() / denom.item())
+            _farm = self._ee_arm_force()
+            self.extras["farm"] = float((_farm * lm).sum().item() / denom.item())
+            return terminated, truncated
+
+        # ══ Force-signature recovery hooks (RecoveryEnv protocol) ═════════════
+        # These let the shared, task-agnostic RecoveryLoop drive this env. They
+        # operate on a single instance (env 0) — the recovery demo runs one env.
+
+        @property
+        def f_max_n(self) -> float:
+            """The per-object force ceiling (LLM budget) for env 0."""
+            return float(self._obj_budget[self._obj_cls[0]].item())
+
+        @property
+        def max_steps_per_attempt(self) -> int:
+            return 240
+
+        def subphase(self) -> str:
+            return "insertion"
+
+        def gripper(self) -> str:
+            return self.cfg.gripper
+
+        def _sig_window(self, buf: torch.Tensor, w: int) -> torch.Tensor:
+            """Last w samples (chronological) for env 0 from a ring buffer."""
+            n = min(self._sig_ptr, self._sig_len)
+            w = min(w, n)
+            if w == 0:
+                return torch.zeros(1, device=self.device)
+            idx = [(self._sig_ptr - w + i) % self._sig_len for i in range(w)]
+            return buf[0, idx]
+
+        def reset_episode(self) -> None:
+            self.reset()
+            self._rec_off.zero_(); self._rec_steps.zero_(); self._rec_wiggle.zero_()
+            self._rec_phase.zero_(); self._jam_cooldown.zero_(); self._rec_open.zero_()
+            self._sig_ptr = 0
+            self._cf_hist.zero_(); self._basez_hist.zero_()
+            self._latx_hist.zero_(); self._laty_hist.zero_()
+            self._jam_on[:] = (self.cfg.jam_dx != 0.0 or self.cfg.jam_dy != 0.0)
+            self._last_rec_action = None
+
+        def step_skill(self) -> None:
+            """One control step under the skill. In forge_mode with a loaded policy,
+            the LEARNED policy drives the EE; otherwise zero-action OSC."""
+            pol = getattr(self, "_skill_policy", None)
+            if pol is not None:
+                with torch.no_grad():
+                    obs = self._get_observations()["policy"]
+                    mean, _ = pol(obs, self.f_cmd_norm())
+                    act = mean.clamp(-1.0, 1.0)
+                self.step(act)
+            else:
+                self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))
+
+        def _base_xyz0(self):
+            o = self.scene.env_origins[0]
+            p = self._obj.data.root_pose_w[0]
+            return (p[0] - o[0]).item(), (p[1] - o[1]).item(), (p[2] - o[2]).item()
+
+        def is_success(self) -> bool:
+            c = self.cfg
+            bx, by, bz = self._base_xyz0()
+            in_cell = abs(bx - c.rack_x) < 0.04 and abs(by - c.rack_y) < 0.04
+            return bool(in_cell and abs(bz - c.cell_floor_z) < c.insert_depth_tol)
+
+        def is_failure(self) -> bool:
+            """Jam: high contact with no descent over the window, near the cell."""
+            c = self.cfg
+            if self._jam_cooldown[0] > 0 or self._rec_steps[0] > 0:
+                return False
+            if int(self._phase[0]) < int(PickPlacePhase.PLACE_DESCEND):
+                return False
+            cf_w = self._sig_window(self._cf_hist, c.jam_window)
+            bz_w = self._sig_window(self._basez_hist, c.jam_window)
+            if cf_w.numel() < c.jam_window:
+                return False
+            peak = float(cf_w.max().item())
+            descent_mm = float((bz_w[0] - bz_w[-1]).item()) * 1000.0   # +ve = went down
+            # at/near the budget (soft ceiling) with no descent over the window => jam
+            thresh = max(c.jam_force_n, 0.6 * self.f_max_n)
+            return bool(peak >= thresh and descent_mm < c.jam_progress_mm)
+
+        def failure_signature(self):
+            from forge_plus.llm.recovery_selector import ForceSignature
+            c = self.cfg
+            w = c.jam_window
+            cf = self._sig_window(self._cf_hist, w)
+            bz = self._sig_window(self._basez_hist, w)
+            lx = self._sig_window(self._latx_hist, w)
+            ly = self._sig_window(self._laty_hist, w)
+            dt_ms = float(getattr(self, "step_dt", 1.0 / 60.0)) * 1000.0
+            peak_axial = float(cf.max().item())
+            mean_axial = float(cf.mean().item())
+            net_mm = max(0.0, float((bz[0] - bz[-1]).item()) * 1000.0)
+            half = max(1, cf.numel() // 2)
+            rising = bool(cf[-half:].mean().item() > cf[:half].mean().item() + 0.2)
+            lat_mag = torch.sqrt(lx**2 + ly**2)
+            peak_lat = float(lat_mag.max().item())
+            mlx, mly = float(lx.mean().item()), float(ly.mean().item())
+            bias = "none"
+            if (mlx**2 + mly**2) ** 0.5 > 1.0:
+                if abs(mlx) >= abs(mly):
+                    bias = "+x steady" if mlx > 0 else "-x steady"
+                else:
+                    bias = "+y steady" if mly > 0 else "-y steady"
+            slips = int((lx[1:] * lx[:-1] < 0).sum().item()) if lx.numel() > 1 else 0
+            persist = float((cf > 0.5).sum().item()) * dt_ms
+            return ForceSignature(
+                peak_axial_N=round(peak_axial, 2),
+                net_insert_mm=round(net_mm, 2),
+                axial_rising=rising,
+                lateral_bias=bias,
+                contact_persist_ms=round(persist, 1),
+                slip_events=slips,
+                peak_lateral_N=round(peak_lat, 2),
+                mean_axial_N=round(mean_axial, 2),
+            )
+
+        def apply_recovery(self, action: str, params: dict) -> None:
+            """Execute a recovery primitive on env 0 (F_max never changed here)."""
+            c = self.cfg
+            d = self.device
+            self._last_rec_action = action   # for HUD / logging
+            dur = int(params.get("duration_steps", c.rec_dur_steps))
+            self._jam_cooldown[0] = dur + c.jam_window
+            self._rec_steps[0] = dur
+            self._rec_wiggle[0] = False
+            self._rec_off[0] = 0.0
+            # The recovery maneuver corrects the misaligned approach: clear the
+            # induced offset so the re-approach can seat (models real re-alignment).
+            self._jam_on[0] = False
+            if action == "retract_and_reapproach":
+                # lift straight up; on clear, base-aim re-centers and re-descends
+                self._rec_off[0, 2] = c.rec_lift
+            elif action == "wiggle_search":
+                self._rec_off[0, 2] = 0.5 * c.rec_lift
+                self._rec_wiggle[0] = True
+                self._rec_phase[0] = 0
+            elif action == "rotate_align":
+                # for a bottle, "align" = nudge the base toward the cell center
+                # (counteracts the lateral wedge) while lifting slightly off the rim
+                o = self.scene.env_origins[0]
+                bx = (self._obj.data.root_pose_w[0, 0] - o[0]).item()
+                by = (self._obj.data.root_pose_w[0, 1] - o[1]).item()
+                dx, dy = c.rack_x - bx, c.rack_y - by
+                nrm = (dx * dx + dy * dy) ** 0.5 + 1e-6
+                self._rec_off[0, 0] = (dx / nrm) * c.rec_lat
+                self._rec_off[0, 1] = (dy / nrm) * c.rec_lat
+                self._rec_off[0, 2] = 0.4 * c.rec_lift
+            elif action == "regrasp":
+                # re-seat the bottle in the gripper (reuse the warmup seat) + lift
+                self._warmup[0] = self.cfg.warmup_substeps
+                self._rec_off[0, 2] = 0.4 * c.rec_lift
 
         # ── Phase waypoint helpers ────────────────────────────────────────────
         def _phase_waypoint_world(self) -> torch.Tensor:
@@ -789,6 +1406,9 @@ if ISAAC_AVAILABLE:
         # ── Physics step ──────────────────────────────────────────────────────
         def _pre_physics_step(self, actions: torch.Tensor) -> None:
             self._actions = actions.clamp(-1, 1)
+            # reset the per-env-step "released this step" accumulator (set across substeps)
+            if self.cfg.forge_release_mode:
+                self._newly_released[:] = False
 
         def _apply_action(self) -> None:
             """FORGE OSC controller: target = phase waypoint + policy delta."""
@@ -800,7 +1420,31 @@ if ISAAC_AVAILABLE:
                 (1.0 - self._cf_alpha) * self._cf_filt + self._cf_alpha * _raw,
                 torch.zeros_like(self._cf_filt),
             )
+            # Insertion-only contact (bottle↔rack) — gates breakage/ceiling in forge.
+            _raw_ins = self._raw_insertion_force()
+            self._cf_insert = torch.where(
+                _live,
+                (1.0 - self._cf_alpha) * self._cf_insert + self._cf_alpha * _raw_ins,
+                torch.zeros_like(self._cf_insert),
+            )
             self._warmup = (self._warmup - 1).clamp(min=0)
+
+            # ── Recovery: force-signature history + maneuver bookkeeping ────────
+            base_z_now = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
+            cvec = self._raw_contact_vec3()                       # (N,3) contact force vector
+            _p = self._sig_ptr % self._sig_len
+            self._cf_hist[:, _p]    = self._cf_filt
+            self._basez_hist[:, _p] = base_z_now
+            self._latx_hist[:, _p]  = cvec[:, 0]
+            self._laty_hist[:, _p]  = cvec[:, 1]
+            self._sig_ptr += 1
+            self._jam_cooldown = (self._jam_cooldown - 1).clamp(min=0)
+            _rec_active = self._rec_steps > 0
+            self._rec_steps = (self._rec_steps - 1).clamp(min=0)
+            _rec_done = _rec_active & (self._rec_steps == 0)
+            if _rec_done.any():
+                self._rec_off[_rec_done] = 0.0
+                self._rec_wiggle[_rec_done] = False
 
             # ── Seat the dynamic object in the gripper during warmup ───────────
             # While the grip settles, snap the object to the grasp centre (finger
@@ -910,11 +1554,43 @@ if ISAAC_AVAILABLE:
                 off_xy = self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2]   # base-to-EE horizontal offset
                 approach = (self._phase >= int(PickPlacePhase.TRANSPORT)).unsqueeze(-1)
                 p_fixed = torch.cat([p_fixed[:, :2] - approach.float() * off_xy, p_fixed[:, 2:3]], dim=-1)
+                # induced jam: bias the base-aim off-center so the bottle WEDGES on the cell rim.
+                # Gated by self._jam_on: a recovery models a corrected approach -> clears it.
+                if self.cfg.jam_dx != 0.0 or self.cfg.jam_dy != 0.0:
+                    jam = torch.zeros(self.num_envs, 2, device=self.device)
+                    jam[:, 0] = self.cfg.jam_dx
+                    jam[:, 1] = self.cfg.jam_dy
+                    gate = approach.float() * self._jam_on.float().unsqueeze(-1)
+                    p_fixed = torch.cat([p_fixed[:, :2] + gate * jam, p_fixed[:, 2:3]], dim=-1)
+            # ── recovery maneuver offset (world frame): lift / lateral search ──
+            rec = self._rec_off.clone()
+            if self._rec_wiggle.any():
+                wig = torch.zeros_like(rec)
+                wig[:, 0] = torch.sin(self._rec_phase.float() * 0.5) * self.cfg.rec_lat
+                rec = torch.where(self._rec_wiggle.unsqueeze(-1), rec + wig, rec)
+                self._rec_phase = torch.where(self._rec_wiggle, self._rec_phase + 1, self._rec_phase)
+            p_fixed = p_fixed + rec
             _lam = lam_eff.unsqueeze(-1)
             target_w = ee_pos_w + (p_fixed + a - ee_pos_w).clamp(min=-_lam, max=_lam)
+            # ── Soft force ceiling (FORGE force authority): when contact reaches
+            # the per-object budget, RETREAT the EE upward a little. This actively
+            # bounds the contact force to ~F_max (never near F_break): a wedge then
+            # oscillates at the ceiling with no net descent — which the recovery
+            # loop catches at LOW force. (Retreat, not freeze, so it can never
+            # deadlock once a recovery has cleared the misalignment.)
+            if self.cfg.place_strategy == "insert":
+                budget = self._obj_budget[self._obj_cls]              # (N,) F_max
+                over = self._cf_filt > 0.9 * budget
+                back_z = ee_pos_w[:, 2] + 0.004                       # 4 mm up -> relieves contact
+                target_w[:, 2] = torch.where(over, back_z, target_w[:, 2])
+            # ── FORGE-mode: the LEARNED policy drives the EE (overrides all of the
+            # scripted waypoint/base-aim/strategy logic above). Setup-drives to the
+            # approach pose first, then the policy's xyz delta does the insertion.
+            if self.cfg.forge_mode:
+                target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
-            _k400 = torch.full_like(ori_k, 400.0)
-            stiffness = torch.stack([_k400, _k400, _k400, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
+            _kpos = torch.full_like(ori_k, 400.0)   # stiff positioning (matches the trained robust policy)
+            stiffness = torch.stack([_kpos, _kpos, _kpos, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
             command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 
             # Operational-space control: inertia-decoupled task impedance + gravity
@@ -941,6 +1617,17 @@ if ISAAC_AVAILABLE:
                 (self._phase == int(PickPlacePhase.TRANSPORT)) |
                 (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             )
+            # forge_release_mode: the LEARNED policy commands the release via action[7]>0.
+            # Latch it (a one-way commit to the drop) and force the fingers open once set —
+            # this overrides the phase-based close so the policy decides WHEN to let go.
+            if self.cfg.forge_release_mode:
+                rel_cmd = (self._actions[:, 7] > 0.0) & (self._warmup == 0) & (self._setup_ctr == 0)
+                # newly_released = the step the policy first lets go (used to penalise releasing
+                # while the bottle is still high above the floor -> forces a real descent first).
+                # Accumulate across substeps; reset each env step in _pre_physics_step.
+                self._newly_released = self._newly_released | (rel_cmd & (~self._released))
+                self._released = self._released | rel_cmd
+                close_mask = close_mask & (~self._released)
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
             fvel = r.data.joint_vel[:, 7:9]
             fpos = r.data.joint_pos[:, 7:9]
@@ -959,9 +1646,25 @@ if ISAAC_AVAILABLE:
             target = torch.where(warm, torch.full((self.num_envs,), self._grasp_seat_w, device=_d), target)
             gforce = self._grip_pos_ks * (target.unsqueeze(1) - fpos) - self._grip_pos_kd * fvel
             r.set_joint_effort_target(torch.cat([jt, gforce], dim=-1))
+            # The effort grip CANNOT overcome the near-rigid finger position drive to OPEN — so
+            # the "release" target above never actually opens the fingers and the closed gripper
+            # keeps carrying the bottle. When the policy has released, drive the fingers open by
+            # writing the joint state directly (ramped, gentle), so the gripper genuinely LETS GO.
+            # This actuates the LEARNED release decision (action[7]); it is not a scripted skill.
+            if self.cfg.forge_release_mode and bool(self._released.any()):
+                relm = self._released
+                open_w = (0.012 + 0.006 * self._rel_age.float()).clamp(max=0.040)  # ramp open ~5 steps
+                fp_w = r.data.joint_pos[:, 7:9].clone()
+                fv_w = r.data.joint_vel[:, 7:9].clone()
+                fp_w[relm, 0] = open_w[relm]
+                fp_w[relm, 1] = open_w[relm]
+                fv_w[relm] = 0.0
+                r.write_joint_state_to_sim(fp_w, fv_w, joint_ids=[7, 8])
 
         # ── Observations ──────────────────────────────────────────────────────
         def _get_observations(self) -> dict:
+            if self.cfg.forge_mode:
+                return self._forge_get_observations()
             r    = self._robot
             jp   = r.data.joint_pos[:, self._arm_ids]           # (N, 7)
             jv   = r.data.joint_vel[:, self._arm_ids]           # (N, 7)
@@ -979,6 +1682,8 @@ if ISAAC_AVAILABLE:
 
         # ── Rewards ───────────────────────────────────────────────────────────
         def _get_rewards(self) -> torch.Tensor:
+            if self.cfg.forge_mode:
+                return self._forge_get_rewards()
             c    = self.cfg
             ee_z = (self._robot.data.body_pos_w[:, self._ee_idx, 2]
                     - self.scene.env_origins[:, 2])
@@ -1058,6 +1763,8 @@ if ISAAC_AVAILABLE:
 
         # ── Dones ─────────────────────────────────────────────────────────────
         def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+            if self.cfg.forge_mode:
+                return self._forge_get_dones()
             c  = self.cfg
             cf = self._contact_force()
 
@@ -1187,9 +1894,15 @@ if ISAAC_AVAILABLE:
             self._vert_ctr[env_ids]    = 0
             self._best_tilt[env_ids]   = 3.1416
             self._broke[env_ids]       = False
+            self._bad_release[env_ids] = False
+            self._released[env_ids]    = False
+            self._rel_age[env_ids]     = 0
+            self._prev_eod[env_ids]    = 0.0
+            self._retract_prog[env_ids] = 0.0
             self._succeeded[env_ids]   = False
             self._set_reset[env_ids]   = True
             self._cf_filt[env_ids]     = 0.0
+            self._cf_insert[env_ids]   = 0.0
             self._warmup[env_ids]      = self.cfg.warmup_substeps
             self._az_filt[env_ids]     = -1.0
             # Gripper closed when starting in carry/place mode (holding the object).
@@ -1207,6 +1920,18 @@ if ISAAC_AVAILABLE:
             obj_state[:, 0:3] += self.scene.env_origins[env_ids]
             self._obj.write_root_pose_to_sim(obj_state[:, 0:7], env_ids=env_ids)
             self._obj.write_root_velocity_to_sim(obj_state[:, 7:13], env_ids=env_ids)
+
+            # FORGE mode: a setup window drives the EE to a RANDOMIZED approach pose
+            # (the policy must then correct the offset + insert from force).
+            if self.cfg.forge_mode:
+                n = len(env_ids)
+                lat = self.cfg.forge_start_lat
+                self._start_off[env_ids] = (torch.rand(n, 2, device=self.device) * 2 - 1) * lat
+                self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
+                self._settle_ctr[env_ids] = 0
+                self._best_dist[env_ids] = 9.9
+                self._prev_dist[env_ids] = 9.9
+                self._min_dist[env_ids] = 9.9
 
             self._sample_episode(env_ids)
 
