@@ -4,7 +4,15 @@
 > trained PPO insertion policy (`checkpoints/task3_forge_entrance.pt`, `forge_mode`), not the old
 > zero-action scaffold. The same task-agnostic loop + LLM recovery selection sit on top. Use
 > `--scripted` to fall back to the zero-action base-aim skill (the original scaffold) for
-> comparison. See §5 for the learned-policy results.
+> comparison. See §5 for the learned-policy results and §7 for the **rendered fragile-object
+> recovery episode**: [`docs/videos/task3/forge_recovery.mp4`](../videos/task3/forge_recovery.mp4).
+
+<div align="center">
+  <img src="../videos/task3/forge_recovery.png" width="560" alt="RTX render of the fragile recovery episode: the JAM DETECTED card shows the force signature (peak 11.4 N, net insert 1.4 mm) and the LLM's retract_and_reapproach decision while the arm lifts the glass bottle clear of the rim">
+  <br><em>The rendered recovery moment: jam caught from the force signature at 11.4 N (break 22.9 N),
+  the LLM picks <code>retract_and_reapproach</code>, and the arm lifts clear before the LEARNED
+  policy re-inserts.</em>
+</div>
 
 The proposal's **recovery layer** (§07), now active on the **real contact-rich Isaac env**: when
 an insertion jams, the system reads a **text force/contact signature** (no vision, no `F_break`),
@@ -149,3 +157,41 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 
 Backends: `heuristic` (deterministic, force-reasoned, no API), `local` (Ollama), `anthropic`
 (API key). All read only the text force signature — the recovery never sees an image.
+
+## 7. The rendered fragile-object recovery episode
+
+**Video: [`docs/videos/task3/forge_recovery.mp4`](../videos/task3/forge_recovery.mp4)** (~7 s).
+`scripts/render_recovery.py` (retry wrapper `scripts/render_recovery_until_success.sh`) renders
+the closed loop **on the fragile glass object** (`--obj 0`, per-episode sampled `F_break` ≈ 22 N,
+budget `F_max` 8.8 N) with the induced jam. Built on the proven `render_forge_min.py` RTX harness
+(numpy 1.26, GI/DLSS off — see doc 07 §5); the episode is driven end-to-end by
+`RecoveryLoop.run(env, on_step=capture_frame)` — the render loop never touches the control.
+
+Why the fragile object works *here* but not in the single-shot demo: one attempt usually stalls
+under the low budget (the force-freeze), but the loop's **retries are exactly the missing piece**
+— the verified take seats it in 2 attempts with **peak insertion force 11.4 N ≪ 22.9 N break**.
+
+The HUD keeps the honesty rules from doc 07 §6 and adds the recovery story:
+- **CONTROL line** — `SCRIPTED — approach positioning` (orange) → `LEARNED — force-guided
+  insertion (PPO policy)` (green) → `SCRIPTED — RECOVERY primitive: <action> (picked by the LLM)`
+  (orange) → back to LEARNED for the re-insertion → `SEATED`.
+- **JAM DETECTED card** (flashes ~2 s) — the actual `ForceSignature` values the LLM saw (peak
+  axial N, net insert mm, rising, lateral bias), the chosen action, and its rationale, labeled
+  *"from the force signature alone (no vision)"* and *"same F_max — never press harder"*.
+- **Force gauge** — shows `_insertion_force()` (the same bottle↔rack channel that gates breakage
+  and the FORGE budget freeze, so the bar, the `F_max`/`F_brk` markers, and the BREAK state are
+  mutually consistent), plus a running *peak N — under break* readout.
+- An *induced misalignment* note is shown while the seeded fault is live (the demo's jam is
+  deliberately injected; the recovery is not).
+
+```bash
+# render until a take ends RESULT SUCCESS (seated, no break) — keeps the first good clip:
+bash scripts/render_recovery_until_success.sh 5
+# knobs (env vars): JAM=0.05 OBJ=0 K_MAX=5 CAP_EVERY=1 CKPT=... OUT=...
+```
+
+Reliability note: in testing, **9/9 recovery episodes on the fragile object reached SUCCESS**
+(2–3 attempts each, breaks 0) — the loop makes the under-budget fragile insertion reliable even
+though a single attempt rarely seats it. One caveat inherited from doc 07: `step_skill` samples
+the policy's action distribution, so takes vary; the wrapper keeps the first seated, break-free
+take.

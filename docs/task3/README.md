@@ -134,7 +134,9 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
   re-inserts. Verified: induced jam caught at **~17 N** (≪ 180 N break) → `retract_and_reapproach`
   → the learned policy seats it. **SUCCESS in 3 attempts.** The loop also lifts the imperfect
   learned insertion (~68 %/attempt) to reliable success on the clean case. One loop for all task
-  envs. See [`06-recovery.md`](06-recovery.md).
+  envs. **Rendered on the FRAGILE glass object** (break ~22 N): jam caught at **11.4 N**, LLM picks
+  `retract_and_reapproach`, re-inserts, seats — 9/9 episodes, breaks 0. Video:
+  [`forge_recovery.mp4`](../videos/task3/forge_recovery.mp4). See [`06-recovery.md`](06-recovery.md).
 - ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
   (hard-exploration RL) — superseded by the cell-geometry insertion.
 
