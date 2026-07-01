@@ -127,11 +127,14 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 - ✅ (Prior variant) Open-shelf place with a **learned** force-conditioned policy (obs=34) trained
   to **succ 1.0 / break 0.0** — this one *was* policy-driven. See
   [`02-grasp-and-placing.md`](02-grasp-and-placing.md#9-standing-placement-solved-via-contact-then-verticalize).
-- ✅ **Force-signature LLM recovery — closed loop, in Isaac** (proposal §07): on a wedged
-  insertion the system reads a text force signature (no vision, no `F_break`), the LLM picks a
-  recovery, applies it within the same `F_max`, and retries. Verified: jam caught at **13.7 N**
-  (≪ ~22 N break — no breakage) → `retract_and_reapproach` → seats. **SUCCESS in 2 attempts.**
-  Task-agnostic (one loop for all task envs). See [`06-recovery.md`](06-recovery.md).
+- ✅ **Force-signature LLM recovery — closed loop, driving the LEARNED policy** (proposal §07): the
+  task-agnostic `RecoveryLoop` now runs the **trained FORGE policy** as its skill (`step_skill` →
+  `env._skill_policy`). On a wedged insertion it reads a text force signature (no vision, no
+  `F_break`), the LLM picks a recovery, applies it within the same `F_max`, and the learned policy
+  re-inserts. Verified: induced jam caught at **~17 N** (≪ 180 N break) → `retract_and_reapproach`
+  → the learned policy seats it. **SUCCESS in 3 attempts.** The loop also lifts the imperfect
+  learned insertion (~68 %/attempt) to reliable success on the clean case. One loop for all task
+  envs. See [`06-recovery.md`](06-recovery.md).
 - ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
   (hard-exploration RL) — superseded by the cell-geometry insertion.
 

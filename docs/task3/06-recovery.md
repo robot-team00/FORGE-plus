@@ -1,11 +1,10 @@
 # 06 — Force-signature LLM recovery (closed loop, in Isaac)
 
-> **⚠️ Corrected status — the arm *skill* used here was a SCRIPTED scaffold, not a learned policy.**
-> The recovery **loop** and the **LLM recovery selection** are real and force-driven. But the skill
-> that drove the *insertion motion* was the **scripted zero-action OSC** (no learned policy). That
-> scaffold is **being replaced by a learned FORGE PPO policy**; the same recovery loop will then
-> drive the *learned* skill. Treat the results below as validating the recovery loop's plumbing, not
-> as a learned-policy demonstration.
+> **✅ Status — the recovery loop now drives the LEARNED FORGE policy.** `step_skill()` runs the
+> trained PPO insertion policy (`checkpoints/task3_forge_entrance.pt`, `forge_mode`), not the old
+> zero-action scaffold. The same task-agnostic loop + LLM recovery selection sit on top. Use
+> `--scripted` to fall back to the zero-action base-aim skill (the original scaffold) for
+> comparison. See §5 for the learned-policy results.
 
 The proposal's **recovery layer** (§07), now active on the **real contact-rich Isaac env**: when
 an insertion jams, the system reads a **text force/contact signature** (no vision, no `F_break`),
@@ -26,7 +25,7 @@ orchestrator through a tiny protocol (`RecoveryEnv`). `RecoveryLoop.run(env)`:
 reset episode
 for attempt in range(k_max):
     while steps < max_steps_per_attempt:
-        env.step_skill()                 # nominal force-conditioned skill (OSC + phase machine)
+        env.step_skill()                 # nominal skill = the LEARNED FORGE policy (or scripted OSC)
         if env.is_success(): return SUCCESS
         if env.is_failure(): break       # jam / over-force / no-progress
     sig = env.failure_signature()        # TEXT force signature — no vision, no F_break
@@ -44,11 +43,19 @@ with **no vision** and **poses assumed known**; see [`05-wine-cellar-insertion.m
 
 | Hook | What it does |
 |---|---|
-| `step_skill()` | One control step under the nominal zero-action OSC + phase machine. |
+| `step_skill()` | One control step under the **learned FORGE policy** (`env._skill_policy`), sampled from its action distribution (as the renderer runs it — the deterministic mean is shy and stalls). Falls back to zero-action OSC if no policy is loaded. |
 | `is_success()` | Geometric seat: base centered in the cell **and** at the cell floor. |
-| `is_failure()` | **Jam**: contact at/near the budget with **no net descent** over a short window (`jam_window`), once past `PLACE_DESCEND`. |
+| `is_failure()` | **Jam**: contact ≥ `max(jam_force_n, jam_force_frac·F_max)` with **no net descent** (`< jam_progress_mm`) over a **sustained** window (`jam_window` = 40 steps). In `forge_mode` the gate is "setup done **and** near the cell mouth" (forge doesn't advance the phase machine). |
 | `failure_signature()` | A `ForceSignature` from a contact+pose **ring buffer**: peak/mean axial force, net insertion (mm), rising trend, lateral bias, slip events, contact persistence. **No images, no `F_break`.** |
 | `apply_recovery(action, params)` | OSC maneuvers (below). Sets `F_max`-preserving target offsets; **never changes `F_max`**. |
+
+**How the learned skill routes through the hooks.** In `forge_mode` the EE target comes from
+`_forge_targets` (the policy's bounded per-step delta), which *overrides* the scripted waypoint
+path — so the induced jam and the recovery maneuver are injected **inside `_forge_targets`**
+(guarded so they are inert whenever no jam is configured and no recovery is running, i.e. in all
+normal training/rendering). The jam base-aims the bottle at an off-center wedge point; a recovery
+drives the hand to a fixed clear pose above the cell (entrance height + the recovery offset) and
+then hands back to the policy, which re-descends now that the misalignment is cleared.
 
 **Recovery primitives** (the fixed menu → OSC motions):
 - `retract_and_reapproach` — lift the EE clear of the rim (`rec_lift`), then re-approach; base-aim re-centers on the way back down.
@@ -59,37 +66,70 @@ with **no vision** and **poses assumed known**; see [`05-wine-cellar-insertion.m
 
 ## 3. Force authority — staying under budget (FORGE)
 
-The key faithfulness point: a jam must be caught **without exceeding the force budget** (a glass
-bottle would shatter otherwise). The env enforces a **soft force ceiling** in `_apply_action`:
-when the filtered contact force reaches ~`0.9·F_max`, the EE **retreats** a few mm instead of
-pushing further down. So a wedge **oscillates at the ceiling with no net descent** — exactly the
-"at `F_max`, no progress" signal the recovery loop catches, and the contact force stays far below
-`F_break`. (Retreat, not freeze: freezing the target z deadlocks once a recovery has cleared the
-misalignment; retreating never does.)
+The key faithfulness point: a jam must be caught **well below the break force** (`F_break`). Two
+mechanisms keep it there and make the wedge legible:
+
+- **Force authority (FORGE).** In `_forge_targets` the descent target-z **freezes** once the
+  filtered insertion force exceeds the object budget, so the policy cannot ram the wedge deeper —
+  the contact force plateaus instead of climbing toward break. A recovery clears the misalignment,
+  so the freeze never deadlocks.
+- **A jam is a wedge, not a force spike.** The learned insertion is genuinely contact-rich — it
+  grinds the bottle into the tight cell at ~14 N with brief no-descent phases even on a *clean*
+  seat. So the detector keys on the real invariant — **sustained no descent** — not on force
+  alone: `jam_window` = 40 steps of `< 2 mm` net descent, with the force merely above a **low**
+  fraction of budget (`jam_force_frac` = 0.18 → ~13 N on the robust object). That catches a real
+  wedge (17 N, never descends) while a clean grind (which *does* net-descend over 40 steps, or
+  seats and trips `is_success` first) passes through.
+
+Because the detector is deliberately **conservative** (a slow-but-fine grind can trip it) and the
+recovery is **benign** (lift + realign, always within `F_max`), a false positive costs only an
+extra attempt — the loop still converges to a seated bottle. Everything is caught **far below
+`F_break`** (14–17 N vs the robust object's 180 N; a fragile 22 N object would be caught at ~9 N).
 
 ## 4. The induced-jam scenario
 
 To exercise the loop, `cfg.jam_dx` (a lateral base-aim error, m) makes the bottle **wedge on the
-cell rim**. It is gated by `self._jam_on`, which a recovery clears — modeling a **corrected
-approach** (the recovery realigned the insertion). Set `--jam 0.0` for the clean insertion (no
-jam, no recovery needed). This is a deliberately simple, controllable failure to demonstrate the
-closed loop; richer jam models (angular catch, burr) are future work.
+cell rim**: in `_forge_targets` the bottle base is aimed at a point `jam_dx` off the cell center,
+so as the learned policy descends it wedges (high contact, no descent). It is gated by
+`self._jam_on`, which a recovery clears — modeling a **corrected approach** (the recovery
+realigned the insertion). Set `--jam 0.0` for the clean insertion; note the learned skill is
+imperfect (~68 %/attempt) and **also** relies on the loop's retries to seat reliably (see §5).
+This is a deliberately simple, controllable failure; richer jam models (angular catch, burr) are
+future work.
+
+> **Object choice.** The recovery demo runs on the **robust** class (`--obj 2`, metal_plate,
+> `F_break` 180 N) because the learned policy reliably *seats* it. The truly **fragile** glass
+> (`--obj 0`, `F_break` 22 N, budget 8.8 N) is where the recovery story is sharpest — the jam is
+> caught at ~9 N, well below break — **but the learned policy cannot seat the fragile object**: the
+> low force budget freezes the descent before it bottoms out (the known open fragile-insertion gap,
+> see doc 07). So the robust object is used to show the *closed loop end-to-end on the learned
+> policy*; the fragile force-authority story is validated separately in the scripted demo.
 
 ## 5. Verified result
 
-`scripts/run_recovery_insertion.py --jam 0.05 --backend heuristic` (no API key, no GPU vision):
+`scripts/run_recovery_insertion.py --jam 0.05 --obj 2 --backend heuristic` — the **learned FORGE
+policy** driving the insertion (no API key, no GPU vision):
 
 ```
-F_max = 8.8 N (object budget, from the LLM)      backend = heuristic
-attempt 0: failure  [peak_axial=13.7N  net_insert=0.59mm  rising=True]  -> retract_and_reapproach
-attempt 1: success
-final bottle base (env frame): (0.451, 0.118, 0.429)   cell=(0.45, 0.12, 0.40)
-OUTCOME: SUCCESS in 2 attempts
+skill = LEARNED FORGE policy (checkpoints/task3_forge_entrance.pt)
+jam_dx = 0.050 m   F_max (robust) — F_break 180 N     backend = heuristic
+attempt 0: failure  [peak_axial=16.6N  net_insert=1.6mm  rising=True]  -> retract_and_reapproach
+attempt 1: failure  [peak_axial=13.9N  net_insert=2.0mm  rising=True]  -> retract_and_reapproach
+attempt 2: success
+final bottle base (env frame): (0.447, 0.105, 0.429)   cell=(0.45, 0.12, 0.40)
+OUTCOME: SUCCESS in 3 attempts
 ```
 
-- The wedge is caught at **peak 13.7 N — well below the ~22 N break force** (force authority held; no breakage).
-- The recovery is chosen **from the force signature alone** (no vision) and applied **within the same `F_max`**.
-- The re-approach **seats** the bottle: base centered, at the cell floor.
+- The wedge is caught **from the force signature alone** (no vision), at **peak ~17 N — far below
+  the 180 N break** (force authority held; no breakage), and the recovery is applied **within the
+  same `F_max`** (`F_max` never relaxed).
+- Each recovery lifts the hand clear, and the **learned policy re-descends** and finally **seats**
+  the bottle: base centered, at the cell floor.
+- **Clean insertion** (`--jam 0.0`) also reaches `SUCCESS` — but typically in **2–3 attempts**,
+  because the learned skill is imperfect (~68 %/attempt) and its contact-rich grind trips the
+  conservative jam detector; the loop's benign lift-and-retry seats it. This is the honest value of
+  the layer: **it makes an imperfect learned insertion reliable**, whether the stall came from an
+  induced misalignment or the policy's own marginality.
 
 The same loop is validated on a CPU fake env in `tests/test_recovery_loop.py` (jam → signature →
 `rotate_align` → recover → success; budget never relaxed; unrecoverable jam escalates to `abort`).
@@ -98,10 +138,12 @@ The same loop is validated on a CPU fake env in `tests/test_recovery_loop.py` (j
 
 ```bash
 export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/workspace/FORGE-plus_task3
-# closed-loop recovery on a wedged insertion:
-/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.05 --backend heuristic
-# clean insertion (no jam, no recovery):
-/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.0
+# closed-loop recovery driving the LEARNED policy on a wedged insertion:
+/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.05 --obj 2 --backend heuristic
+# clean insertion (no induced jam) — still learned-policy driven:
+/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.0 --obj 2
+# fall back to the original SCRIPTED zero-action skill (for comparison):
+/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.05 --scripted
 # real local LLM instead of the heuristic:  --backend local   (Ollama)
 ```
 
