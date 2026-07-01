@@ -14,10 +14,17 @@
 ## What this task is
 
 A Franka Panda arm performs a **fragile PLACE** of a realistic, breakable kitchen object (a
-LIBERO wine bottle). The current demonstrated variant is a **wine-cellar peg-in-hole insertion**:
-the arm carries the bottle to a wood wine-rack and **inserts it into a cell**, ending standing
-perfectly vertical (tilt ≈ 0°) on the cell floor — a clean, gentle, contact-rich placement with
-no flick. See **[`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md)**.
+LIBERO wine bottle). The current demonstrated variant is a **learned wine-cellar peg-in-hole
+insertion + safe release**: a **FORGE PPO policy** descends the bottle into a rack cell under
+force control (contact stays gentle, ~0–4 N), keeps it vertical, and **decides when to let go**,
+leaving it standing upright while the arm retracts.
+
+> ### ▶️ Start here for the real demo: **[`07-learned-place-release.md`](07-learned-place-release.md)**
+> That is the **learned** policy (algorithm, reward shaping, the gripper-open bug, the render
+> pipeline, and the learned-vs-scripted HUD). The insertion in
+> [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) was an earlier **scripted
+> scaffold** — now superseded.
+> Video: **[`docs/videos/task3/forge_release.mp4`](../videos/task3/forge_release.mp4)**.
 
 <div align="center">
   <img src="../videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
@@ -62,6 +69,7 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
 | [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | Wine-cellar peg-in-hole scene, asset pipeline, photorealism. **⚠️ The insertion shown there was a SCRIPTED scaffold (zero policy action + base-aim), not a learned policy — being replaced by a learned FORGE PPO policy.** |
 | [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop in Isaac.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), the soft force ceiling (stay under budget), the induced-jam scenario, and the verified jam→recover→seat result. |
+| [`07-learned-place-release.md`](07-learned-place-release.md) | **✅ The current, LEARNED policy — start here.** FORGE PPO that descends the bottle into the cell (force-guided insertion), learns *when to release* (8-dim action), and safely places it upright before the arm retracts. The algorithm, reward shaping, the finger-open bug, the numpy-1.26 render-killer, the render harness, and the learned-vs-scripted HUD + force gauge. |
 
 ## Key files
 
@@ -101,15 +109,18 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 > being replaced by a **learned FORGE-style PPO policy** (`cfg.forge_mode`, in progress) that
 > outputs the EE motion and learns the alignment/insertion from force, with no scripted waypoints.
 
-## Current status (2026-06-27)
+## Current status (2026-07-01)
 
-- ⏳ **Learned FORGE-style insertion policy** (`cfg.forge_mode`) — the real goal: a PPO policy
-  outputs the EE motion (via the OSC controller) and learns alignment + insertion from force, **no
-  scripted waypoints, no base-aim**. In progress.
-- ⚠️ **Wine-cellar peg-in-hole insertion (scripted scaffold)**: the arm seats the bottle vertical
-  in a rack cell — but driven by **zero policy action + base-aim + phase waypoints**, i.e. **not a
-  learned policy**. A stopgap that built the scene/asset; superseded by the learned policy above.
-  See [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md).
+- ✅ **Learned FORGE insertion + safe release** (`cfg.forge_mode` + `cfg.forge_release_mode`) —
+  **the real goal, done.** A PPO policy descends the bottle **into the cell** under force control
+  (gentle ~0–4 N), keeps it vertical, and **learns when to release** (8th action dim); it then
+  places it upright and the arm retracts. ~68% success, **break 0**, no scripted waypoints /
+  base-aim for the insertion. Full write-up: **[`07-learned-place-release.md`](07-learned-place-release.md)**;
+  video [`docs/videos/task3/forge_release.mp4`](../videos/task3/forge_release.mp4). The HUD labels
+  every phase **LEARNED (green)** vs **SCRIPTED (orange)** in real time.
+- 🗄️ **Wine-cellar peg-in-hole insertion (scripted scaffold)** — the earlier stopgap (zero policy
+  action + base-aim + phase waypoints) that built the scene/asset. **Superseded** by the learned
+  policy above. See [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md).
 - ✅ Real friction grasp of a realistic LIBERO wine bottle (gripped by the neck); RTX render
   (kitchen, wood counter + rack); gripper genuinely **releases** and the arm **retracts**.
 - ✅ (Prior variant) Open-shelf place with a **learned** force-conditioned policy (obs=34) trained

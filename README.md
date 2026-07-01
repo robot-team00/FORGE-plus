@@ -36,29 +36,27 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ## Task 3 demo — wine-cellar bottle insertion
 
-A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wood
-wine-cellar rack** (a contact-rich peg-in-hole placement). The bottle ends **standing perfectly
-vertical** (tilt 0.0°), seated on the cell floor and dead-centered, with no jamming
-(contact force ≈ 0 N); the gripper then releases and the arm retracts, leaving the bottle in the
-rack. Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction
-grip, never teleported during the carry.
+A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
+rack, then safely releases it** — a contact-rich peg-in-hole **place + release**. A **learned
+FORGE PPO policy** descends the bottle into the cell under force control (contact stays gentle,
+~0–4 N — far below breaking), keeps it vertical, and **decides when to let go** (a learned 8th
+action dimension); it seats the bottle standing upright and the arm retracts. Real physics
+throughout — the bottle is a dynamic rigid body held by a genuine friction grip, never teleported
+during the carry.
 
-> ⚠️ **This demo is currently a scripted scaffold, not a learned policy.** The motion comes from
-> zero policy action + a hand-coded alignment ("base-aim") + phase waypoints. It built the scene
-> and asset; it is **being replaced by a learned FORGE-style PPO policy** (no scripted waypoints).
-> See [`docs/task3/`](docs/task3/README.md).
+> ✅ **This is a learned policy** (FORGE PPO), not a scripted scaffold. The **force-guided
+> insertion and the release timing are learned**; only the pre-approach positioning and the
+> post-task gripper-open + retract are scripted. The demo HUD labels every phase **LEARNED
+> (green)** vs **SCRIPTED (orange)** in real time, with a live contact-force gauge (vs the
+> `F_cmd` budget and `F_brk` break limit). Full write-up:
+> [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md).
 
-<div align="center">
-  <img src="docs/videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
-</div>
+▶️ **[`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4)**
+ — the learned insertion + safe release (RTX, learned-vs-scripted HUD + force gauge).
 
-
-▶️ **[`docs/videos/task3/pick_place_eval_001.mp4`](docs/videos/task3/pick_place_eval_001.mp4)**
- — full wine-cellar insertion clip (kitchen backdrop, wood counter + rack, RTX path-traced).
-
-Full write-up (algorithm, rendering, photorealism, asset pipeline) is in
-**[`docs/task3/`](docs/task3/README.md)** — see
-[`05-wine-cellar-insertion.md`](docs/task3/05-wine-cellar-insertion.md) for this demo.
+Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) is in
+**[`docs/task3/`](docs/task3/README.md)** — start with
+[`07-learned-place-release.md`](docs/task3/07-learned-place-release.md).
 
 ---
 

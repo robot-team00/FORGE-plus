@@ -264,11 +264,13 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     # setup, exactly as FORGE) — the learned skill is everything after that.
     forge_mode:       bool  = False
     # Curriculum (start EASY so success is discovered, then widen via follow-up runs):
-    forge_approach_z: float = 0.56   # EE approach height (natural grasp). Matches the height the
-                                     # scripted insertion reached the cell at; base ~= ee_z - 0.13 so
-                                     # the base starts ~0.43, just above the cell floor (0.40).
+    forge_approach_z: float = 0.68   # EE hand-off height. The lean drops the base ~0.17 below the EE,
+                                     # so ee_z 0.68 -> bottle base ~0.51 = right AT the cell entrance
+                                     # (top 0.50, floor 0.40). The scripted setup stops here (no descent
+                                     # into the cell); the LEARNED policy then does the FULL descent +
+                                     # gentle force-controlled insertion down to the floor.
     forge_start_lat:  float = 0.015  # ± random lateral start offset (m) the policy must correct
-    forge_setup_steps: int  = 150    # substeps to drive the EE to the approach pose (setup, not the skill)
+    forge_setup_steps: int  = 80     # substeps to drive the EE to the entrance pose (short scripted intro)
     forge_act_range:  float = 0.03   # per-step EE delta the policy commands (smaller = gentler, fewer blowups)
     forge_lam:        float = 0.004  # per-step EE motion cap during the LEARNED insertion (m). Small =
                                      # slow approach -> low impact impulse at contact (the 58N spikes that
@@ -290,6 +292,25 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                         # even peak penetrations keep the bottle↔rack force under the
                                         # ~12 N glass break floor.
     contact_damping:   float = 60.0     # compliant_contact_damping
+    # ── Learned safe-release (forge_release_mode) ───────────────────────────────
+    # 8th action dim lets the policy command the gripper release; success now requires it
+    # to LET GO with the bottle settled (in-cell, at floor, upright, low velocity).
+    forge_release_mode: bool  = False
+    release_upright_cos: float = 0.90   # cos(tilt) above this (~26 deg) counts as upright on release
+                                        # (a bottle standing in a rack cell leans modestly)
+    release_vel_tol:     float = 0.25   # bottle speed (m/s) below this counts as settled
+    release_hold:        int   = 6      # steps the released+seated state must hold for success
+    release_grace:       int   = 8      # steps after release before a not-in-cell bottle = failure
+    bad_release_pen:     float = 8.0    # penalty for releasing and losing the bottle (tips/falls out)
+    release_floor_tol:   float = 0.10   # |base_z - cell_floor_z| under this counts as resting in the cell
+                                        # (the bottle naturally rests a few cm above the nominal floor)
+    release_clear_dist:  float = 0.20   # EE must be this far from the bottle BASE (hand RETRACTED
+                                        # clear) for success — reached as soon as the moderate retract
+                                        # completes (~0.13 is just the grip geometry, so 0.20 = real gap).
+    forge_hybrid_retract: bool  = False # after the LEARNED release, drive the hand to a clear pose
+                                        # with a fixed retract motion (not a manipulation skill — just
+                                        # clearing out so the let-go is visible). Release stays learned.
+
     forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
                                      # reset away before the camera captures the release/retract)
     render_minimal:   bool  = False  # render-only: skip the filtered insert-sensor + compliant-material
@@ -518,6 +539,10 @@ if ISAAC_AVAILABLE:
         NUM_PHASES = NUM_PHASES
 
         def __init__(self, cfg: PickPlaceEnvCfg, render_mode=None, **kw):
+            # forge_release_mode adds an 8th action dim (learned gripper release). Set the
+            # gym action_space BEFORE DirectRLEnv reads it.
+            if getattr(cfg, "forge_release_mode", False):
+                cfg.action_space = 8
             super().__init__(cfg, render_mode=render_mode, **kw)
             N, d = self.num_envs, self.device
 
@@ -556,12 +581,18 @@ if ISAAC_AVAILABLE:
             self._rf_idx:   int = -1  # panda_rightfinger
             self._osc_init: bool = False
 
-            # Actions / EE state
-            self._actions     = torch.zeros(N, 7, device=d)
-            self._prev_actions = torch.zeros(N, 7, device=d)  # for action-rate smoothness
+            # Actions / EE state. In forge_release_mode the policy gets an 8th action dim
+            # (action[7] = learned gripper release command); otherwise 7 (arm-only).
+            _adim = 8 if self.cfg.forge_release_mode else 7
+            self._actions     = torch.zeros(N, _adim, device=d)
+            self._prev_actions = torch.zeros(N, _adim, device=d)  # for action-rate smoothness
             self._ee_quat_des = torch.zeros(N, 4, device=d)
             self._ee_quat_des[:, 0] = 1.0
             self._gripper_cmd = torch.ones(N, device=d)   # +1 = open, -1 = closed
+            # forge_release: latched "policy commanded release" + age since release (grace).
+            self._released   = torch.zeros(N, dtype=torch.bool, device=d)
+            self._newly_released = torch.zeros(N, dtype=torch.bool, device=d)  # released THIS step
+            self._rel_age    = torch.zeros(N, dtype=torch.long, device=d)
 
             # Contact force (low-pass filter)
             self._cf_filt  = torch.zeros(N, device=d)
@@ -579,6 +610,11 @@ if ISAAC_AVAILABLE:
             self._f_cmd      = torch.zeros(N, device=d)
             self._f_break    = torch.zeros(N, device=d)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
+            self._bad_release = torch.zeros(N, dtype=torch.bool, device=d)  # released but lost the bottle
+            self._drop_quality = torch.zeros(N, device=d)   # dense release-quality shaping signal
+            self._rel_upz     = torch.zeros(N, device=d)    # uprightness diagnostic
+            self._retract_prog = torch.zeros(N, device=d)   # dense hand-retract progress (post-release)
+            self._prev_eod    = torch.zeros(N, device=d)    # previous EE->object distance
             self._succeeded  = torch.zeros(N, dtype=torch.bool, device=d)
             self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
@@ -958,6 +994,12 @@ if ISAAC_AVAILABLE:
             # insertion so the bottle never hits the cell with breaking momentum.
             lam = torch.where(in_setup, torch.full_like(appr[:, :1], c.lam),
                               torch.full_like(appr[:, :1], c.forge_lam))
+            # After the policy releases, the bottle is placed — the hand no longer needs the
+            # slow gentle-insertion motion cap, so retract at a MODERATE speed (the full setup
+            # lam yanks the arm and spikes joint forces; 1.5 cm/step pulls clear smoothly).
+            if self.cfg.forge_release_mode:
+                lam = torch.where(self._released.unsqueeze(-1),
+                                  torch.full_like(lam, 0.015), lam)
             delta = torch.maximum(torch.minimum(raw - ee_pos_w, lam), -lam)
             target = ee_pos_w + delta
             # ── FORGE force authority (safety, NOT the policy): when axial contact
@@ -968,6 +1010,8 @@ if ISAAC_AVAILABLE:
             # bounds the force to ~F_max without preventing the gentle insertion.
             budget = self._obj_budget[self._obj_cls]
             over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
+            if self.cfg.forge_release_mode:
+                over = over & (~self._released)   # after release, never freeze z — let the hand lift away
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
             # Wrist: STIFF during setup (hold upright while traversing), COMPLIANT during
@@ -976,9 +1020,41 @@ if ISAAC_AVAILABLE:
             # further, not lower the force), so compliant wins — successful insertions
             # then keep contact ~5N. (Residual: ~90% of attempts still spike >F_break
             # somewhere and the policy drifts; not fully solved.)
+            # Wrist orientation stiffness: firm (400) during the scripted setup, MODERATE (110)
+            # during the learned descent so the bottle stays UPRIGHT as it's pushed into the cell
+            # (the old 40 let it lean ~40 deg over the longer descent from the entrance hand-off).
             ori_k = torch.where(self._setup_ctr > 0,
                                 torch.full((self.num_envs,), 400.0, device=self.device),
-                                torch.full((self.num_envs,), 40.0, device=self.device))
+                                torch.full((self.num_envs,), 110.0, device=self.device))
+            # Once the policy has LEARNED-released, HOLD the arm still at its release pose. The
+            # policy (trained to insert) otherwise keeps driving the EE down and pushes on the
+            # just-freed bottle (~47 N); freezing the arm lets the bottle settle cleanly with the
+            # open gripper clear. The arm simply lets go and stops — no pull-away.
+            if self.cfg.forge_release_mode and not self.cfg.forge_hybrid_retract:
+                rel = self._released
+                target = torch.where(rel.unsqueeze(-1), ee_pos_w, target)
+                ori_k = torch.where(rel,
+                                    torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
+            # HYBRID retract: after the LEARNED release, pull the (now open, empty) hand to a
+            # MODERATE clear pose — up and slightly back so it's clearly off the bottle, but NOT
+            # all the way up to a ceiling/home pose — then hold there. Post-task clearing, not a
+            # manipulation skill; the bottle stays seated (the gripper genuinely opened).
+            if self.cfg.forge_release_mode and self.cfg.forge_hybrid_retract:
+                rel = self._released
+                age = self._rel_age
+                # Phase A (settle): hold briefly so the freed bottle separates from the open pads.
+                settling   = (rel & (age <= 5)).unsqueeze(-1)
+                # Phase B (retract): drive to a moderate clear pose and stop (the clamp eases in).
+                retracting = (rel & (age > 5)).unsqueeze(-1)
+                clear = ee_pos_w.clone()
+                clear[:, 0] = orig[:, 0] + 0.30                 # step back ~15 cm from the cell
+                clear[:, 1] = orig[:, 1] + c.rack_y
+                clear[:, 2] = orig[:, 2] + 0.62                 # lift to just above the bottle (~22 cm)
+                rstep = ee_pos_w + (clear - ee_pos_w).clamp(-0.035, 0.035)  # brisk pull-away
+                target = torch.where(settling, ee_pos_w, target)
+                target = torch.where(retracting, rstep, target)
+                ori_k = torch.where(rel,
+                                    torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
             self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
             return target, ori_k
 
@@ -1029,6 +1105,34 @@ if ISAAC_AVAILABLE:
             # terminal cliffs
             r = r + self._succeeded.float() * 50.0
             r = r - self._broke.float() * 6.0
+            # forge_release: shape a CLEAN drop + a hands-off retract.
+            if c.forge_release_mode:
+                rel = self._released.float()
+                # (1) SMALL upright-drop reward. Kept small on purpose: a large per-step reward for
+                #     merely keeping the bottle placed created a lazy optimum (the policy sat next to
+                #     the bottle collecting reward and never retracted). The retract + success terms
+                #     below must dominate so the policy is pulled toward letting go and backing away.
+                r = r + 0.2 * self._drop_quality
+                # (2) penalise the bottle LEANING after release (teaches a vertical placement)
+                r = r - 1.5 * rel * (1.0 - self._rel_upz).clamp(min=0.0)
+                # (3) penalise the open hand still PUSHING the bottle after release
+                r = r - 0.25 * rel * (cf - 3.0).clamp(min=0.0)
+                # (4) REWARD retracting the hand away from the bottle after release — the dominant
+                #     post-release signal, so a visible pull-away is the only way to earn reward.
+                r = r + 20.0 * self._retract_prog
+                # (5) losing the bottle entirely (tips out / falls)
+                r = r - self._bad_release.float() * c.bad_release_pen
+                # (6) RELEASE-LOW: penalise letting go while the bottle is still high above the
+                #     cell floor. Without this the policy "cheats" — releases at the hand-off and
+                #     lets the bottle drop, instead of DESCENDING + inserting it. This forces the
+                #     learned policy to do the actual gentle insertion before it lets go.
+                rel_height = (base[:, 2] - c.cell_floor_z).clamp(min=0.0)   # how high at release
+                r = r - 12.0 * self._newly_released.float() * rel_height
+                # (7) REWARD committing to release once the bottle is descended into the cell —
+                #     without this the policy learns to descend and HOLD, only letting go via
+                #     exploration noise (so the deterministic/eval policy never releases).
+                low = (base[:, 2] - c.cell_floor_z) < 0.06   # must descend to within 6 cm of the floor
+                r = r + 10.0 * self._newly_released.float() * low.float()
             # no learning signal during the (non-skill) setup window
             r = torch.where(self._setup_ctr > 0, torch.zeros_like(r), r)
             return r
@@ -1037,17 +1141,51 @@ if ISAAC_AVAILABLE:
             c = self.cfg
             cf = self._insertion_force()       # gate breakage on the TRUE bottle↔rack insertion force
             base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
-            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.04) & ((base[:, 1] - c.rack_y).abs() < 0.04)
-            seated = in_cell & ((base[:, 2] - c.cell_floor_z).abs() < c.insert_depth_tol)
+            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.05) & ((base[:, 1] - c.rack_y).abs() < 0.05)
             live = (self._setup_ctr == 0) & (self._warmup == 0)
             self._broke = (cf > self._f_break) & live
+            self._bad_release = torch.zeros_like(self._broke)
+            if c.forge_release_mode:
+                # SAFE DROP: success requires the policy to LET GO (released) with the bottle
+                # resting on the cell floor, upright, and settled (low velocity).
+                up_z   = matrix_from_quat(self._obj.data.root_pose_w[:, 3:7])[:, 2, 2].clamp(-1.0, 1.0)
+                at_floor = (base[:, 2] - c.cell_floor_z).abs() < c.release_floor_tol
+                upright  = up_z > c.release_upright_cos
+                bvel     = self._obj.data.root_vel_w[:, :3].norm(dim=-1)
+                settled  = bvel < c.release_vel_tol
+                # hand must RETRACT clear of the bottle — opening the fingers is not "letting go"
+                eo_dist  = (self._robot.data.body_pos_w[:, self._ee_idx]
+                            - self._obj.data.root_pose_w[:, :3]).norm(dim=-1)
+                hand_clear = eo_dist > c.release_clear_dist
+                # dense retract progress (reward moving the hand away after release)
+                self._retract_prog = self._released.float() * (eo_dist - self._prev_eod).clamp(-0.1, 0.1)
+                self._prev_eod = eo_dist
+                seated   = in_cell & at_floor & upright & settled & self._released
+                # Only require the hand to be RETRACTED clear when the hybrid retract is enabled.
+                # Without it, success = the policy let go and the bottle is left standing.
+                if c.forge_hybrid_retract:
+                    seated = seated & hand_clear
+                # age since release (grace before judging a lost bottle a failure)
+                self._rel_age = torch.where(self._released, self._rel_age + 1, self._rel_age)
+                # released but the bottle left the cell / fell / tipped after the grace = failure
+                lost = self._released & live & (self._rel_age > c.release_grace) & (
+                    (~in_cell) | (base[:, 2] < 0.25) | (up_z < 0.7))
+                self._bad_release = lost
+                # DENSE drop-quality shaping signal (reused in _forge_get_rewards): once let go
+                # in the cell near the floor, reward uprightness so the policy gets a gradient
+                # toward a clean vertical drop even before the strict success cliff fires.
+                good_drop = self._released & in_cell & at_floor & (~lost)
+                self._drop_quality = good_drop.float() * up_z.clamp(min=0.0)
+                self._rel_upz = up_z   # for diagnostics
+            else:
+                seated = in_cell & ((base[:, 2] - c.cell_floor_z).abs() < c.insert_depth_tol)
             self._settle_ctr = torch.where(seated & live, self._settle_ctr + 1,
                                            (self._settle_ctr - 1).clamp(min=0))
-            self._succeeded = self._settle_ctr >= 6           # hold the seat briefly
+            self._succeeded = self._settle_ctr >= (c.release_hold if c.forge_release_mode else 6)
             # Dropped the bottle (flung from the grip / fell): terminate so the
             # blown-up state is reset instead of polluting training with huge dist.
             dropped = base[:, 2] < 0.25
-            terminated = (self._broke | self._succeeded | (dropped & live)) & live
+            terminated = (self._broke | self._succeeded | self._bad_release | (dropped & live)) & live
             if c.forge_no_term:
                 terminated = torch.zeros_like(terminated)   # render: keep the seated bottle in place
             truncated = self.episode_length_buf >= self.max_episode_length - 1
@@ -1055,6 +1193,14 @@ if ISAAC_AVAILABLE:
             self.extras["brk_mask"] = self._broke.clone()
             self.extras["n_succ"] = float(self._succeeded.sum().item())
             self.extras["n_brk"] = float(self._broke.sum().item())
+            if c.forge_release_mode:
+                self.extras["n_rel"]    = float(self._released.sum().item())     # how many have let go
+                self.extras["n_badrel"] = float(self._bad_release.sum().item())  # let go and lost it
+                _rl = self._released & live
+                self.extras["relupz"] = float((self._rel_upz * _rl.float()).sum().item()
+                                              / _rl.float().sum().clamp(min=1.0).item())  # mean uprightness of released
+                self.extras["releod"] = float((self._prev_eod * _rl.float()).sum().item()
+                                              / _rl.float().sum().clamp(min=1.0).item())  # mean EE->bottle dist after release
             # diagnostics (live envs): how close is the base to the seated pose?
             lm = live.float()
             denom = lm.sum().clamp(min=1.0)
@@ -1260,6 +1406,9 @@ if ISAAC_AVAILABLE:
         # ── Physics step ──────────────────────────────────────────────────────
         def _pre_physics_step(self, actions: torch.Tensor) -> None:
             self._actions = actions.clamp(-1, 1)
+            # reset the per-env-step "released this step" accumulator (set across substeps)
+            if self.cfg.forge_release_mode:
+                self._newly_released[:] = False
 
         def _apply_action(self) -> None:
             """FORGE OSC controller: target = phase waypoint + policy delta."""
@@ -1468,6 +1617,17 @@ if ISAAC_AVAILABLE:
                 (self._phase == int(PickPlacePhase.TRANSPORT)) |
                 (self._phase == int(PickPlacePhase.PLACE_DESCEND))
             )
+            # forge_release_mode: the LEARNED policy commands the release via action[7]>0.
+            # Latch it (a one-way commit to the drop) and force the fingers open once set —
+            # this overrides the phase-based close so the policy decides WHEN to let go.
+            if self.cfg.forge_release_mode:
+                rel_cmd = (self._actions[:, 7] > 0.0) & (self._warmup == 0) & (self._setup_ctr == 0)
+                # newly_released = the step the policy first lets go (used to penalise releasing
+                # while the bottle is still high above the floor -> forces a real descent first).
+                # Accumulate across substeps; reset each env step in _pre_physics_step.
+                self._newly_released = self._newly_released | (rel_cmd & (~self._released))
+                self._released = self._released | rel_cmd
+                close_mask = close_mask & (~self._released)
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
             fvel = r.data.joint_vel[:, 7:9]
             fpos = r.data.joint_pos[:, 7:9]
@@ -1486,6 +1646,20 @@ if ISAAC_AVAILABLE:
             target = torch.where(warm, torch.full((self.num_envs,), self._grasp_seat_w, device=_d), target)
             gforce = self._grip_pos_ks * (target.unsqueeze(1) - fpos) - self._grip_pos_kd * fvel
             r.set_joint_effort_target(torch.cat([jt, gforce], dim=-1))
+            # The effort grip CANNOT overcome the near-rigid finger position drive to OPEN — so
+            # the "release" target above never actually opens the fingers and the closed gripper
+            # keeps carrying the bottle. When the policy has released, drive the fingers open by
+            # writing the joint state directly (ramped, gentle), so the gripper genuinely LETS GO.
+            # This actuates the LEARNED release decision (action[7]); it is not a scripted skill.
+            if self.cfg.forge_release_mode and bool(self._released.any()):
+                relm = self._released
+                open_w = (0.012 + 0.006 * self._rel_age.float()).clamp(max=0.040)  # ramp open ~5 steps
+                fp_w = r.data.joint_pos[:, 7:9].clone()
+                fv_w = r.data.joint_vel[:, 7:9].clone()
+                fp_w[relm, 0] = open_w[relm]
+                fp_w[relm, 1] = open_w[relm]
+                fv_w[relm] = 0.0
+                r.write_joint_state_to_sim(fp_w, fv_w, joint_ids=[7, 8])
 
         # ── Observations ──────────────────────────────────────────────────────
         def _get_observations(self) -> dict:
@@ -1720,6 +1894,11 @@ if ISAAC_AVAILABLE:
             self._vert_ctr[env_ids]    = 0
             self._best_tilt[env_ids]   = 3.1416
             self._broke[env_ids]       = False
+            self._bad_release[env_ids] = False
+            self._released[env_ids]    = False
+            self._rel_age[env_ids]     = 0
+            self._prev_eod[env_ids]    = 0.0
+            self._retract_prog[env_ids] = 0.0
             self._succeeded[env_ids]   = False
             self._set_reset[env_ids]   = True
             self._cf_filt[env_ids]     = 0.0

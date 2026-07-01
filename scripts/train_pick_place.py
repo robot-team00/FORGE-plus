@@ -86,6 +86,8 @@ def main() -> None:
                    help="FORGE-style LEARNED insertion: policy drives the EE, no scripted waypoints/base-aim (obs=34)")
     p.add_argument("--forge_obj", type=int, default=None,
                    help="fix the forge training object class (0=glass bottle/fragile, 2=metal/robust)")
+    p.add_argument("--forge_release", action="store_true",
+                   help="LEARNED safe release: 8th action dim lets the policy let go; success needs a settled drop (obs=34, act=8)")
     args = p.parse_args()
     dev  = torch.device(args.device)
 
@@ -121,7 +123,8 @@ def main() -> None:
     if args.no_upright:
         cfg.require_upright = False   # curriculum stage A
     obs_dim = 37
-    if args.forge:
+    act_dim = 7
+    if args.forge or args.forge_release:
         cfg.forge_mode = True         # LEARNED insertion: policy drives the EE (no waypoints)
         # Use the NATURAL (forward) grasp orientation — a top-down wrist cannot reach
         # out to the cell in y (the arm saturates ~12 cm short). The natural grip
@@ -131,13 +134,18 @@ def main() -> None:
         if args.forge_obj is not None:
             cfg.forge_obj_cls = args.forge_obj   # 0=fragile glass bottle, 2=robust
         obs_dim = 34
-    print(f"[train] forge_mode={cfg.forge_mode} place_strategy={cfg.place_strategy} obs={obs_dim}", flush=True)
+    if args.forge_release:
+        cfg.forge_release_mode = True    # LEARNED gripper release (8th action dim)
+        cfg.forge_hybrid_retract = True  # env retracts the hand after release (scripted clearing) so
+                                         # the hand_clear success can fire; policy learns insert + release
+        act_dim = 8
+    print(f"[train] forge_mode={cfg.forge_mode} release={cfg.forge_release_mode} place_strategy={cfg.place_strategy} obs={obs_dim} act={act_dim}", flush=True)
     env = FrankaPickPlaceEnv(cfg)
     N   = env.num_envs
-    print(f"[train] envs={N}  device={dev}  obs={obs_dim}  act=7", flush=True)
+    print(f"[train] envs={N}  device={dev}  obs={obs_dim}  act={act_dim}", flush=True)
 
     # ── Networks ──────────────────────────────────────────────────────────
-    pcfg   = PolicyConfig(obs_dim=obs_dim, act_dim=7)
+    pcfg   = PolicyConfig(obs_dim=obs_dim, act_dim=act_dim)
     policy = ForceConditionedPolicy(pcfg).to(dev)
     value  = ValueNetwork(pcfg).to(dev)
     aopt   = Adam(policy.parameters(), lr=args.lr)
@@ -146,8 +154,28 @@ def main() -> None:
     start_iter = 0
     if args.resume and os.path.isfile(args.resume):
         ckpt_data = torch.load(args.resume, map_location=dev, weights_only=False)
-        policy.load_state_dict(ckpt_data["policy_state_dict"])
-        print(f"[train] resumed from {args.resume}", flush=True)
+        ckpt_sd = ckpt_data["policy_state_dict"]
+        ckpt_adim = ckpt_sd["mean_head.bias"].shape[0]
+        if ckpt_adim == act_dim:
+            policy.load_state_dict(ckpt_sd)
+            print(f"[train] resumed from {args.resume} (act_dim={act_dim})", flush=True)
+        else:
+            # Warm-start an 8-dim release policy from a 7-dim insertion checkpoint:
+            # copy the arm dims exactly (preserve the learned insertion skill); init the new
+            # release dim mildly closed (bias<0) with extra exploration std so the policy
+            # discovers WHEN to let go without losing the arm behaviour.
+            sd = policy.state_dict()
+            for k, v in ckpt_sd.items():
+                if k in ("mean_head.weight", "mean_head.bias", "log_std"):
+                    t = sd[k].clone(); t[:v.shape[0]] = v
+                    if k == "mean_head.bias": t[v.shape[0]:] = -0.5   # start gripper closed-ish
+                    if k == "log_std":        t[v.shape[0]:] = -0.5   # std~0.6 -> explore release
+                    sd[k] = t
+                elif k in sd and sd[k].shape == v.shape:
+                    sd[k] = v
+            policy.load_state_dict(sd)
+            print(f"[train] warm-started act {ckpt_adim}->{act_dim} from {args.resume} "
+                  f"(arm dims preserved, release dim initialised)", flush=True)
         if args.reset_std is not None and hasattr(policy, "log_std"):
             policy.log_std.data.fill_(float(args.reset_std))
             print(f"[train] reset log_std -> {args.reset_std} (re-inflate exploration)", flush=True)
@@ -187,6 +215,10 @@ def main() -> None:
             diag_fins  = res[4].get("fins", -1.0)    # insertion-only force (gates break)
             diag_fsurf = res[4].get("fsurf", -1.0)   # whole-body surf force (artifact-prone)
             diag_farm  = res[4].get("farm", -1.0)    # arm EE reaction force (FORGE-style, artifact-free)
+            diag_nrel  = res[4].get("n_rel", -1.0)   # forge_release: # envs that have let go
+            diag_nbad  = res[4].get("n_badrel", -1.0)# forge_release: # that let go and lost the bottle
+            diag_relupz = res[4].get("relupz", -1.0) # forge_release: mean uprightness (cos) of released
+            diag_releod = res[4].get("releod", -1.0) # forge_release: mean EE->bottle dist after release (retract)
             obs = res[0]["policy"].to(dev)
 
         # ── Generalised Advantage Estimation (GAE) ────────────────────────
@@ -209,7 +241,7 @@ def main() -> None:
         # Flatten for mini-batch updates
         bO   = O.reshape(-1, pcfg.obs_dim)
         bFc  = Fc.reshape(-1, 1)
-        bA   = A.reshape(-1, 7)
+        bA   = A.reshape(-1, act_dim)
         bLP  = LP.reshape(-1)
         bAdv = adv.reshape(-1)
         bRet = ret.reshape(-1)
@@ -247,6 +279,7 @@ def main() -> None:
                 f"dist {diag_fdist:.3f} dxy {diag_fdxy:.3f} bz {diag_fbz:.3f} "
                 f"min {diag_fmin:.3f} seat {diag_fseat:.2f}  "
                 f"Fins {diag_fins:.1f} Fsurf {diag_fsurf:.1f} Farm {diag_farm:.1f}  "
+                f"rel {diag_nrel:.0f} badrel {diag_nbad:.0f} relupz {diag_relupz:.2f} releod {diag_releod:.2f}  "
                 f"fps {fps:.0f}",
                 flush=True,
             )
