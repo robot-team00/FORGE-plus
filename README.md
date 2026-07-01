@@ -51,6 +51,11 @@ during the carry.
 > `F_cmd` budget and `F_brk` break limit). Full write-up:
 > [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md).
 
+<div align="center">
+  <img src="docs/videos/task3/forge_release.png" width="600" alt="Learned FORGE insertion: the PPO policy descends the wine bottle into the rack cell under gentle force; the HUD shows the green LEARNED force-guided-insertion phase and a contact-force gauge well under the break limit">
+  <br><em>The learned PPO policy descending the bottle into the cell — HUD reads green “LEARNED — force-guided insertion + when-to-release”, gauge well under the break limit.</em>
+</div>
+
 ▶️ **[`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4)**
  — the learned insertion + safe release (RTX, learned-vs-scripted HUD + force gauge).
 

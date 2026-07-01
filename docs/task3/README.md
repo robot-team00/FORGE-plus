@@ -27,7 +27,8 @@ leaving it standing upright while the arm retracts.
 > Video: **[`docs/videos/task3/forge_release.mp4`](../videos/task3/forge_release.mp4)**.
 
 <div align="center">
-  <img src="../videos/task3/wine_cellar_insert_v3.png" width="520" alt="Wine-cellar insertion: Franka carrying the wine bottle aligned over the rack cell">
+  <img src="../videos/task3/forge_release.png" width="560" alt="Learned FORGE insertion: the PPO policy descends the wine bottle into the rack cell under gentle force; HUD shows the green LEARNED force-guided-insertion phase and the contact-force gauge">
+  <br><em>The learned PPO policy descending the bottle into the cell (HUD: green “LEARNED — force-guided insertion”; force gauge well under the break limit).</em>
 </div>
 
 
