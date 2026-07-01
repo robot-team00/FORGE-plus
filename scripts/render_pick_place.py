@@ -28,13 +28,18 @@ sys.path.insert(0, "/workspace/FORGE-plus_task3")  # forge_plus package
 
 _EXTRA = [
     "--/exts/isaacsim.core.throttling/enable_async=false",
-    # Photorealistic quality: enable the full RT global-illumination stack.
-    "--/rtx/reflections/enabled=true",
-    "--/rtx/translucency/enabled=true",
-    "--/rtx/indirectDiffuse/enabled=true",
-    "--/rtx/ambientOcclusion/enabled=true",
-    "--/rtx/directLighting/sampledLighting/enabled=true",
-    "--/rtx/post/dlss/execMode=2",
+    # IMPORTANT: keep the RT global-illumination stack OFF. On this pod NGX fails to
+    # initialize ("Failed to create NGX context"), and with the GI/denoiser path active the
+    # render product comes out 0x0 (rgb.get_data() -> shape=(0,), every frame EMPTY). This
+    # exactly matches the known-working render_task3.py config. We still get ray-traced direct
+    # lighting + shadows (real RTX), just without reflections/indirect GI/DLSS.
+    "--/rtx/raytracing/subsurface/enabled=false",
+    "--/rtx/reflections/enabled=false",
+    "--/rtx/translucency/enabled=false",
+    "--/rtx/directLighting/sampledLighting/enabled=false",
+    "--/rtx/indirectDiffuse/enabled=false",
+    "--/rtx/ambientOcclusion/enabled=false",
+    "--/rtx/raytracing/lightcache/spatialCache/enabled=false",
 ]
 
 from isaacsim import SimulationApp
@@ -66,28 +71,35 @@ def _font(sz):
 F_TITLE, F_BIG, F_MED, F_SM = _font(22), _font(20), _font(17), _font(14)
 
 S = carb.settings.get_settings()
-# Photorealistic RTX: path-traced global illumination with accumulation.
+# Keep the GI/denoiser stack OFF (NGX is broken on this pod — see _EXTRA note). This mirrors
+# the known-working render_task3.py, which renders ray-traced direct lighting + shadows.
 for _k in ["/rtx/reflections/enabled", "/rtx/translucency/enabled",
             "/rtx/indirectDiffuse/enabled", "/rtx/ambientOcclusion/enabled",
             "/rtx/directLighting/sampledLighting/enabled"]:
-    S.set(_k, True)
+    S.set(_k, False)
 try:
-    # High-quality real-time RTX (reliable on a moving scene). Soft shadows,
-    # multi-bounce indirect, denoised. (Path tracing is too slow per-frame for a
-    # 360-frame physics sequence on this pod.)
-    S.set("/rtx/directLighting/sampledLighting/samplesPerPixel", 4)
-    S.set("/rtx/ambientOcclusion/enabled", True)
-    S.set("/rtx/reflections/maxRoughness", 0.9)
-    S.set("/rtx/indirectDiffuse/enabled", True)
-    S.set("/rtx/indirectDiffuse/numBounces", 3)
     S.set("/rtx/sceneDb/ambientLightIntensity", 0.45)
-    S.set("/rtx/post/aa/op", 3)                  # DLAA/TAA antialiasing
+    S.set("/rtx/post/aa/op", 1)                  # TAA antialiasing (op=3 DLAA needs NGX, which fails here)
     S.set("/rtx/post/tonemap/op", 1)             # filmic tonemap
-    print("high-quality RTX configured", flush=True)
+    print("RTX configured (GI off, NGX-safe)", flush=True)
 except Exception as ex:
     print("rtx quality settings skipped: " + str(ex), flush=True)
 
+# Disable replicator capture-on-play. Otherwise, when the env plays the timeline (physics),
+# the orchestrator enters RUNNING state and registers an on_update callback that fires every
+# app.update() and crashes with "Unable to write from unknown dtype ... size=0"
+# (orchestrator.py on_update -> inputs:simTimesToWrite is empty because we never scheduled a
+# writer). That same broken path makes rgb.attach fail. We read the annotator directly via
+# get_data(), so capture-on-play must be OFF.
+S.set("/omni/replicator/captureOnPlay", False)
+try:
+    rep.orchestrator.set_capture_on_play(False)
+    print("capture_on_play disabled", flush=True)
+except Exception as _e:
+    print("set_capture_on_play skip (carb setting still applied): " + str(_e), flush=True)
+
 # ── Environment (single env) ─────────────────────────────────────────────────
+FORGE = bool(os.environ.get("FORGE"))   # render the LEARNED forge insertion policy
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs = 1
 cfg.gripper = "franka_panda"
@@ -95,14 +107,30 @@ cfg.gripper = "franka_panda"
 # steps after RELEASE) — we want to CAPTURE the hand retracting and leaving the bottle
 # standing. A large settle_steps pushes the success/reset past the captured retract.
 cfg.settle_steps = 400
+if FORGE:
+    cfg.forge_mode = True          # LEARNED policy drives the EE (no scripted insertion)
+    cfg.grasp_topdown = False      # natural grasp (reaches the cell)
+    cfg.forge_no_term = True       # keep the seated bottle in place for the camera
+    cfg.render_minimal = bool(int(os.environ.get("RENDER_MINIMAL", "1")))  # skip extra SDG sensors/material
+    # render on the object the policy reliably seats (succ ~1.0); the rendered mesh is
+    # the wine bottle regardless of class (class only sets the hidden force budget).
+    cfg.forge_obj_cls = 2
 # Keep the TRAINING decimation so _get_dones / phase timing matches training
 # (decimation=1 ran the phase logic every substep -> phases rushed). One captured
 # frame per env.step (policy step). Buzz is fixed by joint damping, so smooth.
+# FrankaPickPlaceEnv no-ops render()/close() for training speed. That leaves the RTX render
+# context uninitialized, so the SDG render product comes out 0x0 (rgb.get_data() -> shape=(0,),
+# every frame EMPTY) — unlike the working render_task3 env (FrankaPlaceEnv never overrides
+# render). Restore the real DirectRLEnv.render BEFORE constructing the env so the render
+# pipeline initializes during __init__/reset.
+from isaaclab.envs import DirectRLEnv as _DRL
+FrankaPickPlaceEnv.render = _DRL.render
 env = FrankaPickPlaceEnv(cfg)
-print("env built", flush=True)
+print("env built (render restored)", flush=True)
 
 # ── Policy (ckpt policy_cfg may be a plain dict after the weights_only re-save) ─
-CKPT = "/workspace/FORGE-plus_task3/checkpoints/task3_wine_bottle.pt"
+CKPT = ("/workspace/FORGE-plus_task3/checkpoints/task3_forge_insert.pt" if FORGE
+        else "/workspace/FORGE-plus_task3/checkpoints/task3_wine_bottle.pt")
 ckpt = torch.load(CKPT, map_location=env.device, weights_only=False)
 pc = ckpt["policy_cfg"]
 pcfg = pc if isinstance(pc, PolicyConfig) else PolicyConfig(**pc)
@@ -258,14 +286,22 @@ KSCALE = float(os.environ.get("KSCALE", "0.01"))
 KTX = float(os.environ.get("KTX", "-0.70"))   # kitchen x offset from robot origin (behind)
 KTY = float(os.environ.get("KTY", "0.0"))
 KROTZ = float(os.environ.get("KROTZ", "180.0"))  # face the robot
-# transform goes on a CLEAN parent Xform; the kitchen (whose root already has xformOps) is a child
-_kp = stage.DefinePrim("/World/KitchenXform", "Xform")
-_kx = UsdGeom.Xformable(_kp)
-_kx.AddTranslateOp().Set(Gf.Vec3d(float(orig[0]) + KTX, float(orig[1]) + KTY, float(orig[2])))
-_kx.AddRotateZOp().Set(KROTZ)
-_kx.AddScaleOp().Set(Gf.Vec3f(KSCALE, KSCALE, KSCALE))
-stage.DefinePrim("/World/KitchenXform/Geo", "Xform").GetReferences().AddReference(KITCHEN_USD)
-print("kitchen added at x+%.2f y+%.2f rotz=%.0f scale=%.3f" % (KTX, KTY, KROTZ, KSCALE), flush=True)
+# SKIP_KITCHEN=1: the kitchen_background.usd breaks the RTX render product on this pod (NGX is
+# broken -> the heavy kitchen material set leaves the render product 0x0, every frame EMPTY).
+# Skipping it renders the robot + rack + bottle on a clean studio backdrop. Verified: with the
+# kitchen the render is empty; without it, frames capture fine.
+SKIP_KITCHEN = bool(int(os.environ.get("SKIP_KITCHEN", "0")))
+if not SKIP_KITCHEN:
+    # transform goes on a CLEAN parent Xform; the kitchen (whose root already has xformOps) is a child
+    _kp = stage.DefinePrim("/World/KitchenXform", "Xform")
+    _kx = UsdGeom.Xformable(_kp)
+    _kx.AddTranslateOp().Set(Gf.Vec3d(float(orig[0]) + KTX, float(orig[1]) + KTY, float(orig[2])))
+    _kx.AddRotateZOp().Set(KROTZ)
+    _kx.AddScaleOp().Set(Gf.Vec3f(KSCALE, KSCALE, KSCALE))
+    stage.DefinePrim("/World/KitchenXform/Geo", "Xform").GetReferences().AddReference(KITCHEN_USD)
+    print("kitchen added at x+%.2f y+%.2f rotz=%.0f scale=%.3f" % (KTX, KTY, KROTZ, KSCALE), flush=True)
+else:
+    print("kitchen SKIPPED (SKIP_KITCHEN=1) — clean backdrop for the RTX render", flush=True)
 
 # ── Table + rack PBR materials (existing env prims) — LIBERO wood + marble ───
 _replace_box("/World/envs/env_0/Table", "/World/TableVis",
@@ -307,13 +343,11 @@ print("camera defined", flush=True)
 
 # Warmup 1: initialize RTX pipeline (render only — app.update() would step physics
 # and drop the freshly-seated object before the rollout starts).
-for _ in range(110): app.update()
+for _ in range(260): app.update()   # longer RTX warmup (cold-cache pipeline -> attach race)
 
-rp  = rep.create.render_product("/World/EvalCam", (960, 540))
-rgb = rep.AnnotatorRegistry.get_annotator("rgb")
-rgb.attach([rp])
-
-# Overscan patch (critical -- without this rgb.get_data() returns gray sky)
+# Overscan patch (critical -- without this rgb.get_data() returns gray sky / empty).
+# Must be applied BEFORE we poll get_data() in the attach loop below, else the unpatched
+# _resize_data_for_overscan errors and get_data returns empty regardless of runtime health.
 try:
     from omni.replicator.core.scripts.utils import annotator_utils as _au
     _orig_fn = _au._resize_data_for_overscan
@@ -325,9 +359,19 @@ try:
 except Exception as ex:
     print("overscan skip: " + str(ex), flush=True)
 
+# Create the render product and attach the rgb annotator (single immediate attach, exactly
+# like the known-working render_task3.py). The annotator is populated by the app.update()
+# warmups below and by env.step()'s internal app.update() during the rollout.
+rp  = rep.create.render_product("/World/EvalCam", (960, 540))
+rgb = rep.AnnotatorRegistry.get_annotator("rgb")
+rgb.attach([rp])
+print("rgb attached", flush=True)
+
 # Warmup 2: settle annotator (render only — see above)
 for _ in range(110): app.update()
-print("render product ready", flush=True)
+# Confirm the annotator is producing non-empty frames before the rollout.
+_d = np.asarray(rgb.get_data())
+print("render product ready (shape=%s)" % str(_d.shape), flush=True)
 
 # The RTX warmup app.update()s above advanced physics and dropped the grasped object.
 # Re-seat with a fresh reset right before the rollout (no app.update() runs between
@@ -412,7 +456,9 @@ def _hud(img, k, phase_idx, cf, broke, succ):
     dr = ImageDraw.Draw(img, "RGBA")
     # top banner
     dr.rectangle([0, 0, W, 86], fill=(0, 0, 0, 130))
-    dr.text((20, 8),  "FORGE+ Task 3  -  Wine-Cellar Bottle Insertion", font=F_TITLE, fill=(255,255,255))
+    _title = ("FORGE+ Task 3  -  LEARNED Wine-Cellar Insertion (PPO policy)" if FORGE
+              else "FORGE+ Task 3  -  Wine-Cellar Bottle Insertion")
+    dr.text((20, 8),  _title, font=F_TITLE, fill=(255,255,255))
     dr.text((20, 38), "object: %-13s  F_break=%5.1f N   F_cmd(LLM)=%5.1f N"
             % (OBJ_KEY, F_BREAK, F_CMD), font=F_MED, fill=(200,220,255))
     dr.text((20, 60), "frame %3d   phase[%d/7]: %s" % (k+1, phase_idx+1, PHASE_NAMES[phase_idx]),
@@ -480,7 +526,16 @@ for k in range(N_MAX):
     # the cell (env aims the base) and inserts it. After it's inserted (RELEASE / term_at), hold
     # briefly while the gripper opens, then RETRACT the hand up/back, leaving the bottle in the cell.
     RAMP = 28
-    if term_at is None or (k - term_at) < RAMP:
+    if FORGE:
+        # The LEARNED policy drives the EE (setup positions the arm, then the policy
+        # corrects the lean + descends + inserts). After it seats, RETRACT to release.
+        if term_at is None:
+            with torch.no_grad():
+                _mean, _ = policy(obs, fcmd)
+                act = _mean.clamp(-1.0, 1.0)
+        else:
+            act = RETRACT
+    elif term_at is None or (k - term_at) < RAMP:
         act = torch.zeros(env.num_envs, 7, device=env.device)   # nominal OSC insertion
     else:
         act = RETRACT
@@ -508,7 +563,7 @@ for k in range(N_MAX):
 
     # If the env has auto-reset after the place (phase dropped back below RELEASE), end
     # NOW — before grabbing/saving — so the video ends on the placed bottle, not a 2nd run.
-    if term_at is not None and k > term_at and phase_idx < int(PickPlacePhase.RELEASE):
+    if (not FORGE) and term_at is not None and k > term_at and phase_idx < int(PickPlacePhase.RELEASE):
         print("episode reset detected at step %d -> ending" % k, flush=True)
         break
 
