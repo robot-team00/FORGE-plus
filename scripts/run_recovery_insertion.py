@@ -74,6 +74,12 @@ def main() -> None:
         cfg.forge_release_mode  = True    # the trained policy is 8-dim (arm + release)
         cfg.grasp_topdown       = False
         cfg.forge_obj_cls       = args.obj    # 0=fragile glass (recovery story), 2=robust
+        # The forge recovery maneuver re-drives to the training hand-off at a gentle
+        # 0.012/step — needs ~40 control steps (counter decrements per physics substep).
+        cfg.rec_dur_steps       = 80
+        cfg.forge_hybrid_retract = True   # post-release retract (matches the rendered demo)
+        cfg.forge_no_term       = True    # demo owns the timeline: a drop is an honest FAIL,
+                                          # never an auto-reset that fakes a later "success"
 
     env = FrankaPickPlaceEnv(cfg)
     print(f"\n{'='*64}\n  Force-Budgeted Recovery — Isaac wine-cellar insertion"
@@ -107,14 +113,47 @@ def main() -> None:
           f"(object budget, LLM)   backend = {client.name()}", flush=True)
 
     def _on_step(e, attempt, step):
-        if step % 30 == 0:
+        if step % 10 == 0:
             bx, by, bz = e._base_xyz0()
-            cf = float(e._cf_filt[0].item())
-            print(f"    [a{attempt} s{step:3d}] bz={bz:.3f} cf={cf:5.2f} "
-                  f"rec={int(e._rec_steps[0])} jam_on={int(e._jam_on[0])} "
+            cf  = float(e._cf_insert[0].item())
+            eez = float(e._robot.data.body_pos_w[0, e._ee_idx, 2].item()
+                        - e.scene.env_origins[0, 2].item())
+            gap = float((e._robot.data.joint_pos[0, 7] + e._robot.data.joint_pos[0, 8]).item())
+            print(f"    [a{attempt} s{step:3d}] base=({bx:.3f},{by:.3f},{bz:.3f}) eez={eez:.3f} "
+                  f"gap={gap:.4f} cf={cf:5.2f} rec={int(e._rec_steps[0])} "
+                  f"setup={int(e._setup_ctr[0])} rel={int(e._released[0])} "
                   f"fail={e.is_failure()}", flush=True)
 
     result = loop.run(env, on_step=_on_step)
+
+    # Optional finale probe (RECOVERY_FINALE_PROBE=1): after the recovery seats the bottle,
+    # keep stepping the LEARNED policy (arm mean + SAMPLED release, the render scheme) to see
+    # whether the release head fires on this object's observation and the retract clears.
+    if os.environ.get("RECOVERY_FINALE_PROBE") == "1" and not args.scripted \
+            and result.outcome.value == "SUCCESS":
+        pol = env._skill_policy
+        env._jam_on[:] = False
+        obs = env._get_observations()["policy"]
+        for k in range(240):
+            with torch.no_grad():
+                m, s = pol(obs, env.f_cmd_norm())
+            act = m.clone()
+            act[:, 7] = m[:, 7] + s[:, 7] * torch.randn_like(s[:, 7])
+            res = env.step(torch.clamp(act, -1, 1))
+            obs = res[0]["policy"]
+            if k % 10 == 0:
+                bx, by, bz = env._base_xyz0()
+                import isaaclab.utils.math as _lm
+                upz = float(_lm.matrix_from_quat(env._obj.data.root_pose_w[:1, 3:7])[0, 2, 2])
+                vel = float(env._obj.data.root_vel_w[0, :3].norm())
+                eod = float((env._robot.data.body_pos_w[0, env._ee_idx]
+                             - env._obj.data.root_pose_w[0, :3]).norm())
+                print(f"    [finale s{k:3d}] m7={float(m[0,7]):+.3f} rel={int(env._released[0])} "
+                      f"succ={int(env._succeeded[0])} base=({bx:.3f},{by:.3f},{bz:.3f}) "
+                      f"upz={upz:.3f} vel={vel:.3f} eod={eod:.3f}", flush=True)
+            if bool(env._succeeded[0]):
+                print(f"    [finale] PLACED at step {k}", flush=True)
+                break
 
     print(f"\n{'-'*64}")
     print(f"  OUTCOME: {result.outcome.value}  in {result.attempts} attempt(s)")

@@ -1029,10 +1029,18 @@ if ISAAC_AVAILABLE:
             if c.jam_dx != 0.0 or c.jam_dy != 0.0 or bool(rec_active.any()):
                 orig   = self.scene.env_origins
                 base_w = self._obj.data.root_pose_w[:, :3]
-                # (a) RECOVERY maneuver: while a recovery is running, drive the hand to a CLEAR
-                # pose above the cell (entrance height) + the recovery offset (lift / lateral /
-                # wiggle), then hold. Fixed absolute target (no drift). When it expires the
-                # LEARNED policy re-descends — now aligned, because the jam was cleared.
+                # (a) RECOVERY maneuver: while a recovery is running, drive the hand back to the
+                # TRAINING HAND-OFF pose (the cell-entrance approach the setup delivers to, incl.
+                # the same start offset) + the recovery's lateral offset (wiggle / rotate_align).
+                # Two rules learned the hard way:
+                #   * the pose must be the hand-off (incl. _start_off), NOT hand-off + rec_lift —
+                #     an extra lift puts the policy OUT of its training distribution and it never
+                #     re-descends (it only knows descents from the entrance);
+                #   * the drive rate must be the setup's c.lam — the proven bottle-carrying rate.
+                #     A gentler clamp (0.012 ~ 4.8 N of impedance pull at kpos 400) is eaten by
+                #     the unmodeled bottle payload and the lift never rises.
+                # When the maneuver expires the LEARNED policy re-descends exactly as it does
+                # after setup — now aligned, because the jam was cleared.
                 if bool(rec_active.any()):
                     rec = self._rec_off.clone()
                     if bool(self._rec_wiggle.any()):
@@ -1040,10 +1048,10 @@ if ISAAC_AVAILABLE:
                         wig[:, 0] = torch.sin(self._rec_phase.float() * 0.5) * c.rec_lat
                         rec = torch.where(self._rec_wiggle.unsqueeze(-1), rec + wig, rec)
                     clear = ee_pos_w.clone()
-                    clear[:, 0] = orig[:, 0] + c.rack_x + rec[:, 0]
-                    clear[:, 1] = orig[:, 1] + c.rack_y + rec[:, 1]
-                    clear[:, 2] = orig[:, 2] + c.forge_approach_z + rec[:, 2]
-                    step = (clear - ee_pos_w).clamp(-c.lam, c.lam)   # brisk recovery motion
+                    clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0]
+                    clear[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1] + rec[:, 1]
+                    clear[:, 2] = orig[:, 2] + c.forge_approach_z
+                    step = (clear - ee_pos_w).clamp(-c.lam, c.lam)
                     target = torch.where(rec_active.unsqueeze(-1), ee_pos_w + step, target)
                 # (b) INDUCED JAM (only when not recovering): base-aim the bottle at an OFF-CENTER
                 # wedge point so it wedges on the cell rim (high contact, no descent -> is_failure).
@@ -1312,11 +1320,20 @@ if ISAAC_AVAILABLE:
                 with torch.no_grad():
                     obs = self._get_observations()["policy"]
                     mean, std = pol(obs, self.f_cmd_norm())
-                    # Run the policy STOCHASTICALLY (sample its action distribution, as the
+                    # Run the ARM STOCHASTICALLY (sample its action distribution, as the
                     # renderer does). The deterministic mean is shy and stalls against contact
                     # mid-insertion; the on-policy sample pushes through — this is still the
                     # learned policy, just its true (stochastic) form.
                     act = (mean + std * torch.randn_like(std)).clamp(-1.0, 1.0)
+                    # ...but GATE the release dim OFF while the loop runs: release is a ONE-WAY
+                    # latch on act[7] > 0, and on an object class the policy wasn't trained on
+                    # its release head misfires in out-of-distribution states (e.g. mid-air
+                    # during the post-recovery re-descent -> the gripper DROPS the bottle). The
+                    # loop's success is the geometric seat; release authority belongs to the
+                    # caller's finale (which samples the policy's own release distribution once
+                    # the bottle is seated). Harness gating, not a scripted release.
+                    if self.cfg.forge_release_mode and act.shape[-1] >= 8:
+                        act[:, 7] = -1.0
                 self.step(act)
             else:
                 self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))

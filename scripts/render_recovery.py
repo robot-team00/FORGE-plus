@@ -70,6 +70,8 @@ JAM   = float(os.environ.get("JAM", "0.05"))
 OBJ   = int(os.environ.get("OBJ", "0"))       # 0 = glass (fragile, break ~22 N)
 K_MAX = int(os.environ.get("K_MAX", "5"))
 CAP_EVERY = int(os.environ.get("CAP_EVERY", "1"))   # capture every Nth control step
+TAKE  = int(os.environ.get("TAKE", "1"))      # take index — encodes to a VERSIONED take file
+                                              # (never clobbers the approved docs/ video)
 
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs   = 1
@@ -80,6 +82,10 @@ cfg.episode_length_s = 120.0   # the loop owns the timeline — no auto-reset mi
 cfg.jam_dx           = JAM
 cfg.forge_mode          = True
 cfg.forge_release_mode  = True    # the trained policy is 8-dim (arm + release)
+cfg.forge_hybrid_retract = True   # after the LEARNED release, the scripted retract clears the hand
+cfg.forge_no_term       = True    # render-only: never auto-reset (keeps the placed bottle in shot)
+cfg.rec_dur_steps       = 80      # recovery maneuver: ~40 control steps to re-reach the hand-off
+                                  # at the gentle 0.012/step drive (counter decrements per substep)
 cfg.grasp_topdown       = False
 cfg.forge_obj_cls       = OBJ
 cfg.render_minimal      = bool(int(os.environ.get("RENDER_MINIMAL", "0")))
@@ -164,7 +170,9 @@ print("render product ready (shape=%s)" % str(_d.shape), flush=True)
 FRAMEDIR = "/workspace/frames_recovery"
 os.makedirs(FRAMEDIR, exist_ok=True)
 for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
-OUTPUT = os.environ.get("OUT", "/workspace/FORGE-plus_task3/docs/videos/task3/forge_recovery.mp4")
+# Takes encode to VERSIONED scratch files (render_takes/forge_recovery_take_NNN.mp4); only an
+# approved take is copied to the stable, README-linked docs/videos/task3/forge_recovery.mp4.
+OUTPUT = os.environ.get("OUT", "/workspace/render_takes/forge_recovery_take_%03d.mp4" % TAKE)
 Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 
 W, H = 960, 540
@@ -235,11 +243,19 @@ def _draw_frame(attempt, step):
     rec_active   = int(env._rec_steps[0].item()) > 0
     seated       = env.is_success()
     broke        = bool(env._broke[0].item())
+    rel          = bool(env._released[0].item())
+    placed       = bool(env._succeeded[0].item())
     flashing     = hud["saved"] < hud["flash_until"]
 
     # What drives the robot RIGHT NOW (honest learned-vs-scripted label):
-    if seated:
-        st, ctrl, cdesc, ccol = "SEATED", "—", "recovery complete — bottle seated in the cell", GREEN
+    if placed:
+        st, ctrl, cdesc, ccol = "PLACED", "—", "bottle placed upright — recovery episode complete", GREEN
+    elif rel:
+        st = "RELEASED"
+        ctrl, ccol = "SCRIPTED", ORANGE
+        cdesc = "gripper-open + retract-to-clear  (release was LEARNED)"
+    elif seated:
+        st, ctrl, cdesc, ccol = "SEATED", "LEARNED", "seated — deciding when to release (PPO policy)", GREEN
     elif rec_active and hud["decision"] is not None:
         st = "recovering"
         ctrl, ccol = "SCRIPTED", ORANGE
@@ -327,16 +343,59 @@ print("loop done: %s in %d attempt(s)" % (result.outcome.value, result.attempts)
 for a in result.log:
     print("  attempt %d: %s -> %s" % (a.attempt, a.result, a.recovery_action or "-"), flush=True)
 
-# Tail: hold on the seated bottle for ~1 s of video (render-only updates; physics settles).
+# ── Seat validation: the loop's SUCCESS must be a CONTROLLED seat — bottle in the cell at
+# the floor while STILL HELD (finger gap ~ the bottle neck, no release latched). A bottle
+# that slipped/fell into the cell is a lucky drop, not a place: the take is rejected.
+seat_valid = False
 if result.outcome == RecoveryOutcome.SUCCESS:
-    for _ in range(24 // max(1, CAP_EVERY) * CAP_EVERY):
-        _draw_frame(hud["attempt"], 0)
+    gap  = float((env._robot.data.joint_pos[0, 7] + env._robot.data.joint_pos[0, 8]).item())
+    rel0 = bool(env._released[0].item())
+    seat_valid = env.is_success() and (0.008 < gap < 0.030) and not rel0
+    print("seat validation: in_cell=%s gap=%.4f rel=%d -> %s"
+          % (env.is_success(), gap, int(rel0), "VALID" if seat_valid else "REJECT"), flush=True)
+
+# ── Finale: the seated bottle is still held — keep running the LEARNED policy with the
+# release dim SAMPLED from its own distribution (the approved render_forge_min scheme; on
+# the fragile object the head is shy, so the sample may not fire — the wrapper retries).
+# Once it releases, the scripted hybrid retract clears the hand; ends TAIL after PLACED.
+placed_at = None
+TAIL = max(16, 24 // CAP_EVERY)
+REL_WINDOW = 140          # steps the policy gets to decide to release at the seat
+if seat_valid:
+    env._jam_on[:] = False   # the seeded fault is over (recovery cleared it); belt-and-braces
+    obs = env._get_observations()["policy"]
+    for k in range(300):
+        with torch.no_grad():
+            m, s = policy(obs, env.f_cmd_norm().to(env.device))
+        act = m.clone()
+        act[:, 7] = m[:, 7] + s[:, 7] * torch.randn_like(s[:, 7])
+        act = torch.clamp(act, -1, 1)
+        res = env.step(act)
+        obs = res[0]["policy"]
+        if k % CAP_EVERY == 0:
+            _draw_frame(hud["attempt"], k)
+        rel = bool(env._released[0].item())
+        if k >= REL_WINDOW and not rel:
+            print("finale: release did not fire within %d steps — take rejected" % REL_WINDOW,
+                  flush=True)
+            break
+        if bool(env._succeeded[0].item()) and placed_at is None:
+            placed_at = hud["saved"]
+            print("PLACED at frame %d (finale step %d)" % (placed_at, k), flush=True)
+        if placed_at is not None and (hud["saved"] - placed_at) >= TAIL:
+            break
+        if k % 40 == 0:
+            print("finale s%3d saved=%d rel=%d succ=%d m7=%+.2f" % (k, hud["saved"],
+                  int(rel), int(env._succeeded[0]), float(m[0, 7])), flush=True)
 
 broke = bool(env._broke[0].item())
 peak  = hud["peak_n"]
-ok = (result.outcome == RecoveryOutcome.SUCCESS) and not broke
-print("RESULT %s saved=%d peak=%.1fN break=%s attempts=%d"
-      % ("SUCCESS" if ok else "FAIL", hud["saved"], peak, broke, result.attempts), flush=True)
+# A good take = recovery seated it (validated, still held) AND the finale placed it
+# (learned release fired + retract cleared).
+ok = seat_valid and (placed_at is not None) and not broke
+print("RESULT %s saved=%d peak=%.1fN break=%s attempts=%d seat_valid=%s placed=%s"
+      % ("SUCCESS" if ok else "FAIL", hud["saved"], peak, broke, result.attempts,
+         seat_valid, placed_at is not None), flush=True)
 
 # Encode BEFORE app.close() — SimulationApp.close() hard-exits the process.
 if ok and hud["saved"] >= 60:
