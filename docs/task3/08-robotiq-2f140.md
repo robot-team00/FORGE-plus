@@ -11,8 +11,14 @@
 - ✅ **Asset built and mechanically verified**: a Franka Panda + Robotiq 2F-140 combined
   robot USD (NVIDIA ships that combo only for the 2F-**85**). Recipe + all findings in
   `scripts/build_franka_robotiq_2f140.py`.
-- ⬜ Env port (`cfg.gripper == "robotiq_2f140"` branches), zero-shot policy check,
-  render with distinct names.
+- ✅ **Env port implemented** (`cfg.gripper == "robotiq_2f140"` branches in
+  `isaac_pick_place_env.py`): combo-asset spawn + parse ghost, target-only gripper
+  control, no-teleport resets, runtime arm-gain hand-off, pad contact sensor, TCP-shifted
+  FORGE heights. Runner: `run_recovery_insertion.py --gripper robotiq_2f140`.
+- ⚠️ **Blocked on grasp reliability** (see §5): the stock four-bar is too fragile for the
+  warmup teleport-seat + contact cycles — pivoting to a mimic-tree v2 with gearings
+  MEASURED from the healthy four-bar (`probe_rq_scene.py RELATIONS=1`).
+- ⬜ Mimic-tree v2, seat calibration, zero-shot policy check, render with distinct names.
 
 ## 1. The asset
 
@@ -70,16 +76,52 @@ the ROS URDF).
 `inner_knuckle` loop joints are not articulation DOFs (runtime joint count: 7 arm + 8
 gripper = 15; arm joints keep ids 0–6, `finger_joint` id 7).
 
-## 4. Remaining plan (next session)
+## 4. Env-side findings (second debugging round)
 
-1. Env branches for `cfg.gripper == "robotiq_2f140"`: spawn the new USD + ghost;
-   default-pose init (no arm overrides); `_reset_idx` skips all joint-state writes;
-   grip close/seat/open via `finger_joint` targets (close ≈ 0.05, seat ≈ 0.10,
-   open ≈ 0.5 — calibrate against the bottle); release = open target (no state write);
-   contact sensor on `panda_hand|.*_inner_finger`; `_grasp_tcp_d` from a fingertip-prim
-   measurement; `forge_approach_z`/retract heights shifted by the TCP delta.
-2. Zero-shot `task3_forge_entrance.pt` (obs is arm+EE+force only — no finger joints);
+- **Free-fall tears the loops too**: the env zeroes the arm actuator stiffness for the
+  OSC; a limp arm sags at initialization and the fall tears the four-bar
+  (`probe_rq_scene.py ZEROARM=1` reproduces it; healthy with holding gains). Fix in the
+  env: the robotiq branch spawns with holding gains and hands the arm to the OSC at
+  first reset via `write_joint_stiffness_to_sim` — a parameter write, no body motion.
+- **The parse ghost works inside a full InteractiveScene** (mini-scene probe with cloner
+  + table + bottle + rack + ACS: healthy) — ghost placement/registration/order,
+  `replicate_physics`, sensors, and rack compliance were all exonerated one by one
+  (`RQ_BISECT` switch in `_setup_scene`).
+- **Grip-cycle wear (the open blocker)**: repeated seat-teleport + close cycles degrade
+  the four-bar monotonically (pad-body separation 0.045 → 0.009 over four hold-test
+  cycles) even in an otherwise healthy scene — and the bottle slips out (the pads catch
+  the fat body, stall at ~35 mm, and squeeze it out). The stock loop-joint mechanism is
+  not robust enough for the env's warmup seat + contact-rich episode on this PhysX
+  build.
+- **Contact-sensor regex**: prim-path expressions cannot span `/` — the robotiq sensor
+  watches the four finger bodies (one path depth) instead of hand+fingers.
+
+## 5. Remaining plan (next session)
+
+1. **Mimic-tree v2**: re-author the surgery in `build_franka_robotiq_2f140.py` with
+   the MEASURED joint relations below (`probe_rq_scene.py RELATIONS=1`, healthy
+   four-bar; the first attempt guessed ±1 gearings and got it wrong — the linkage is
+   asymmetric and mildly nonlinear in these joint frames). Linear mimics with
+   gearing+offset fit the grip working range θ ∈ [0.05, 0.45]:
+
+   | joint (vs `finger_joint` θ) | fit over working range |
+   |---|---|
+   | `right_outer_knuckle_joint` | ≈ +1.00·θ (stock mimic, keep) |
+   | `left_outer_finger_joint` | ≈ 0.87·θ + 0.085 |
+   | `right_outer_finger_joint` | ≈ 0.42·θ − 0.03 (nonlinear near closed) |
+   | `left_inner_finger_joint` | ≈ 1.25·θ + 0.22 (saturates ~0.72 past θ≈0.45) |
+   | `right_inner_finger_joint` | ≈ const −0.07 → stiff drive-lock at −0.07 |
+   | `left_inner_finger_pad_joint` | ≈ −1.24·θ − 0.21 |
+   | `right_inner_finger_pad_joint` | ≈ const +0.08 → stiff drive-lock at +0.08 |
+
+   Raw sweep data: `/workspace/logs/probe_relations.log`. A pure mimic tree is
+   teleport-, sag-, and contact-proof by construction — and removes the parse-ghost
+   and holding-gains workarounds.
+2. Seat calibration on the robust mechanism: hold-test grid (`probe_rq_scene.py`
+   HOLD section — the bottle's neck sits around d ≈ 0.26–0.30 below the hand judging
+   by the stall-angle trend), then set `_grasp_tcp_d` + `_rq_seat/_rq_close`.
+3. Zero-shot `task3_forge_entrance.pt` (obs is arm+EE+force only — no finger joints);
    fine-tune only if the grasp-geometry shift breaks the descent.
-3. Recovery runner + render with `--gripper robotiq_2f140`, videos to
+4. Recovery runner + render with `--gripper robotiq_2f140`, videos to
    `forge_recovery_robotiq.mp4` (and the existing video renamed to
    `forge_recovery_franka.mp4`).

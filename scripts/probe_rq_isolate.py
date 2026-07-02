@@ -55,6 +55,9 @@ solo = Articulation(solo_cfg)
 # B) composed Franka+140 at the DEFAULT arm pose (matches the authored flange placement)
 fr_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/Franka")
 fr_cfg.spawn.usd_path = "/workspace/assets/isaac51/Robots/FrankaRobotics/FrankaPanda/franka_robotiq_2f140.usd"
+import os as _os
+fr_cfg.spawn.activate_contact_sensors = bool(int(_os.environ.get("ACS", "0")))
+print("fr ACS =", fr_cfg.spawn.activate_contact_sensors, flush=True)
 jp = {k: v for k, v in fr_cfg.init_state.joint_pos.items() if not k.startswith("panda_finger")}
 jp.update({"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
            ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0})

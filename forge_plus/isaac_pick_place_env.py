@@ -583,8 +583,9 @@ if ISAAC_AVAILABLE:
             # Indices (resolved after scene build)
             self._arm_ids:  list[int] = list(range(7))  # arm joint indices 0-6
             self._ee_idx:   int = -1  # resolved lazily in _reset_idx
-            self._lf_idx:   int = -1  # panda_leftfinger  (held-object grasp centre)
-            self._rf_idx:   int = -1  # panda_rightfinger
+            self._lf_idx:   int = -1  # left finger body (held-object grasp centre)
+            self._rf_idx:   int = -1  # right finger body
+            self._grip_ids  = [7, 8]  # actuated gripper joint ids (resolved lazily per gripper)
             self._osc_init: bool = False
 
             # Actions / EE state. In forge_release_mode the policy gets an 8th action dim
@@ -627,12 +628,25 @@ if ISAAC_AVAILABLE:
             self._warmup     = torch.zeros(N, dtype=torch.long, device=d)
             # Distance from the hand origin to the grasp point (between the fingertip
             # pads) along the hand's local +z. Per-env so it can be swept/calibrated;
-            # 0.067 seats the block centrally between the pads (calibrated).
-            self._grasp_tcp_d = torch.full((N,), 0.067, device=d)
+            # 0.067 seats the block centrally between the panda pads (calibrated).
+            # The Robotiq 2F-140's pads sit much lower below the flange (calibrated
+            # empirically via the headless recovery probe).
+            _tcp = 0.19 if self.cfg.gripper == "robotiq_2f140" else 0.067
+            self._grasp_tcp_d = torch.full((N,), _tcp, device=d)
+            # Gripper-length delta vs the franka hand: shifts the FORGE hand-off /
+            # transport / retract HEIGHTS so the BOTTLE traverses the same altitudes.
+            self._tcp_dz = _tcp - 0.067
             # Finger half-opening to rest the pads at during warmup: block half-width
             # (0.020) minus 1 mm so the pads sit just at the surface (clean seat, no
             # deep penetration), then the PD grip takes over and holds by friction.
             self._grasp_seat_w = 0.006
+            # Robotiq finger_joint targets (rad; 0 = CLOSED, 0.785 = fully open —
+            # inverted vs the ROS URDF). Calibration curve (probe_robotiq_env):
+            # pad-body separation 0.040 m at 0 -> 0.127 m at 0.7; the ~1.6 cm bottle
+            # neck maps to ~0.09; squeeze a little under, seat a little over.
+            self._rq_close = 0.05
+            self._rq_seat  = 0.10
+            self._rq_open  = 0.45
             # PD gains for the position-controlled grip (effort = k·(target-pos) - kd·vel).
             # k·overlap sets the squeeze: 1500 N/m · 0.010 m = 15 N grip (friction
             # 1.6·15 = 24 N >> the 0.5 N block weight), penetration sub-mm under rigid contact.
@@ -699,10 +713,72 @@ if ISAAC_AVAILABLE:
             # 2-72 N range the task needs.
             self._surf_ks, self._surf_kd = 1200.0, 120.0
 
+            # PARSE GHOST (robotiq only, spawned BEFORE the robot — parse order matters,
+            # matching the healthy probes): a standalone 2F-140 articulation parked far
+            # below the workspace, gravity-free, never driven or rendered in-frame.
+            # Its presence makes PhysX materialize the merged gripper's loop joints.
+            if self.cfg.gripper == "robotiq_2f140":
+                from isaaclab.actuators import ImplicitActuatorCfg
+                self._ghost = Articulation(ArticulationCfg(
+                    prim_path="/World/GhostGripper",   # OUTSIDE the cloned env namespace (matches the healthy probes)
+                    spawn=sim_utils.UsdFileCfg(
+                        usd_path=("/workspace/assets/isaac51/Robots/Robotiq/2F-140/"
+                                  "Robotiq_2F_140_physics_edit.usd"),
+                        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+                    ),
+                    init_state=ArticulationCfg.InitialStateCfg(
+                        pos=(0.0, 0.0, -5.0),
+                        joint_pos={"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
+                                   ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0}),
+                    actuators={"all_passive": ImplicitActuatorCfg(
+                        joint_names_expr=[".*"], effort_limit_sim=1.0,
+                        velocity_limit_sim=2.0, stiffness=0.0, damping=0.01,
+                        friction=0.0, armature=0.0)},
+                ))
+
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-            robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
             robot_cfg.spawn.activate_contact_sensors = True
+            if self.cfg.gripper == "robotiq_2f140":
+                # Franka + Robotiq 2F-140 (scripts/build_franka_robotiq_2f140.py). Two
+                # PhysX constraints shape everything here — see NOTE 2/3 in that script:
+                #  * TELEPORT CONTRACT: the gripper's four-bar loop joints do not survive
+                #    write_joint_state_to_sim. Spawn at the authored DEFAULT arm pose (no
+                #    env-pose overrides) and drive by targets only; the FORGE setup (OSC)
+                #    takes the arm from the default pose to the hand-off.
+                #  * PARSE GHOST: the merged gripper's loop joints only materialize when a
+                #    standalone 2F-140 articulation is also in the scene (spawned below).
+                robot_cfg.spawn.usd_path = ("/workspace/assets/isaac51/Robots/"
+                                            "FrankaRobotics/FrankaPanda/franka_robotiq_2f140.usd")
+                _jp = {k: v for k, v in robot_cfg.init_state.joint_pos.items()
+                       if not k.startswith("panda_finger")}
+                _jp.update({"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
+                            ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0})
+                robot_cfg.init_state.joint_pos = _jp
+                # Actuators: isaaclab's UR10e+2F-140 template. Drive the finger_joint;
+                # the pad springs adapt; the rest is loop-/mimic-owned (passive).
+                from isaaclab.actuators import ImplicitActuatorCfg
+                robot_cfg.actuators.pop("panda_hand", None)
+                robot_cfg.actuators["gripper_drive"] = ImplicitActuatorCfg(
+                    joint_names_expr=["finger_joint"], effort_limit_sim=10.0,
+                    velocity_limit_sim=1.0, stiffness=11.25, damping=0.1,
+                    friction=0.0, armature=0.0)
+                robot_cfg.actuators["gripper_finger"] = ImplicitActuatorCfg(
+                    joint_names_expr=[".*_inner_finger_joint"], effort_limit_sim=1.0,
+                    velocity_limit_sim=1.0, stiffness=0.2, damping=0.001,
+                    friction=0.0, armature=0.0)
+                robot_cfg.actuators["gripper_passive"] = ImplicitActuatorCfg(
+                    joint_names_expr=[".*_inner_finger_pad_joint", ".*_outer_finger_joint",
+                                      "right_outer_knuckle_joint"],
+                    effort_limit_sim=1.0, velocity_limit_sim=2.0, stiffness=0.0,
+                    damping=0.0, friction=0.0, armature=0.0)
+            else:
+                robot_cfg.spawn.usd_path = "/workspace/assets/franka/panda_instanceable.usd"
+                _jp = dict(robot_cfg.init_state.joint_pos)
+                _jp["panda_joint2"] = -0.73
+                _jp["panda_joint4"] = -2.46
+                _jp["panda_joint6"] = 2.85
+                robot_cfg.init_state.joint_pos = _jp
             # Disable the joint PD controllers on the proximal joints so the OSC
             # (Jacobian-transpose effort targets) actually moves the arm instead of
             # being overpowered back to the default pose. Mirrors FrankaPlaceEnv.
@@ -710,15 +786,16 @@ if ISAAC_AVAILABLE:
             # actuator PD doesn't fight the OSC, but KEEP joint-velocity damping --
             # without it the torque-controlled joints buzz at high frequency (the
             # vibration). The damping opposes joint velocity and kills the buzz.
-            for _an in ("panda_shoulder", "panda_forearm"):
-                robot_cfg.actuators[_an].stiffness = 0.0
-                robot_cfg.actuators[_an].damping = 80.0
-            _jp = dict(robot_cfg.init_state.joint_pos)
-            _jp["panda_joint2"] = -0.73
-            _jp["panda_joint4"] = -2.46
-            _jp["panda_joint6"] = 2.85
-            robot_cfg.init_state.joint_pos = _jp
+            # ROBOTIQ EXCEPTION: spawn with the DEFAULT holding gains — a limp arm
+            # free-falls during initialization and the sag TEARS the gripper's four-bar
+            # loop joints (verified: probe_rq_scene ZEROARM=1). The gains are zeroed at
+            # runtime in _reset_idx via a joint-PARAMETER write (moves no bodies).
+            if self.cfg.gripper != "robotiq_2f140":
+                for _an in ("panda_shoulder", "panda_forearm"):
+                    robot_cfg.actuators[_an].stiffness = 0.0
+                    robot_cfg.actuators[_an].damping = 80.0
             self._robot = Articulation(robot_cfg)
+
 
             # Table (low flat surface)
             table_h = self.cfg.table_top_z
@@ -788,10 +865,17 @@ if ISAAC_AVAILABLE:
 
             # Contact sensor on hand + fingers, filtered to the object and rack so
             # net_forces_w reports the grasp/place contact force (panda_hand alone
-            # never touches either surface → was reading ~0 N).
-            self._contact_sensor = ContactSensor(
+            # never touches either surface → was reading ~0 N). For the Robotiq the
+            # touching bodies are the finger pads/links (regex segments cannot span
+            # '/', and the bare hand reads ~0 N, so sense the four finger bodies).
+            _sensor_expr = ("/World/envs/env_.*/Robot/Robotiq_2F_140_edit/(left|right)_(inner|outer)_finger"
+                            if self.cfg.gripper == "robotiq_2f140" else
+                            "/World/envs/env_.*/Robot/panda_(hand|leftfinger|rightfinger)")
+            import os as _os
+            _bisect = int(_os.environ.get("RQ_BISECT", "0"))   # TEMP four-bar bisect
+            self._contact_sensor = None if _bisect >= 3 else ContactSensor(
                 ContactSensorCfg(
-                    prim_path="/World/envs/env_.*/Robot/panda_(hand|leftfinger|rightfinger)",
+                    prim_path=_sensor_expr,
                     update_period=0.0,
                     history_length=1,
                     track_air_time=False,
@@ -807,7 +891,7 @@ if ISAAC_AVAILABLE:
             # gripper. This is the physically meaningful fragile-contact force and is
             # immune to the gripper's finger-on-finger self-contact (which pollutes
             # the robot sensor's net_forces_w when the gripper closes on air).
-            self._surf_sensor = ContactSensor(
+            self._surf_sensor = None if _bisect >= 2 else ContactSensor(
                 ContactSensorCfg(
                     prim_path="/World/envs/env_.*/(Object|Rack)",
                     update_period=0.0,
@@ -824,7 +908,7 @@ if ISAAC_AVAILABLE:
             # Sensor on the RACK (which has the contact-reporter API; the bottle USD
             # does not), filtered to the Object -> force on the rack from the bottle =
             # the insertion contact (Newton's 3rd law, same magnitude).
-            if self.cfg.render_minimal:
+            if self.cfg.render_minimal or _bisect >= 2:
                 self._insert_sensor = None   # render: skip the extra filtered sensor
             else:
                 self._insert_sensor = ContactSensor(
@@ -839,15 +923,21 @@ if ISAAC_AVAILABLE:
 
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
+            if getattr(self, "_ghost", None) is not None:
+                # register the parse ghost so it initializes through the same
+                # InteractiveScene pipeline as the robot (view-creation ordering)
+                self.scene.articulations["ghost"] = self._ghost
             self.scene.rigid_objects["table"]  = self._table
             self.scene.rigid_objects["object"] = self._obj
             self.scene.rigid_objects["rack"]   = self._rack
-            self.scene.sensors["contact"]      = self._contact_sensor
-            self.scene.sensors["surf"]         = self._surf_sensor
+            if self._contact_sensor is not None:
+                self.scene.sensors["contact"]  = self._contact_sensor
+            if self._surf_sensor is not None:
+                self.scene.sensors["surf"]     = self._surf_sensor
             if self._insert_sensor is not None:
                 self.scene.sensors["insert"]   = self._insert_sensor
             # ── Compliant contact on the rack (soft spring, not rigid impulse) ──
-            if self.cfg.contact_stiffness > 0 and not self.cfg.render_minimal:
+            if self.cfg.contact_stiffness > 0 and not self.cfg.render_minimal and _bisect < 1:
                 self._apply_rack_compliance()
             self.scene.clone_environments(copy_from_source=False)
 
@@ -993,7 +1083,9 @@ if ISAAC_AVAILABLE:
             appr = ee_pos_w.clone()
             appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0]
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
-            appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z)
+            # _tcp_dz shifts the HAND heights for longer grippers (robotiq) so the
+            # BOTTLE traverses/hands-off at the same altitudes as with the panda hand.
+            appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z) + self._tcp_dz
             pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
             raw = torch.where(in_setup, appr, pol)
             # Fast traverse during setup, SLOW (low-impulse) approach during the learned
@@ -1050,7 +1142,7 @@ if ISAAC_AVAILABLE:
                     clear = ee_pos_w.clone()
                     clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0]
                     clear[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1] + rec[:, 1]
-                    clear[:, 2] = orig[:, 2] + c.forge_approach_z
+                    clear[:, 2] = orig[:, 2] + c.forge_approach_z + self._tcp_dz
                     step = (clear - ee_pos_w).clamp(-c.lam, c.lam)
                     target = torch.where(rec_active.unsqueeze(-1), ee_pos_w + step, target)
                 # (b) INDUCED JAM (only when not recovering): base-aim the bottle at an OFF-CENTER
@@ -1102,7 +1194,7 @@ if ISAAC_AVAILABLE:
                 clear = ee_pos_w.clone()
                 clear[:, 0] = orig[:, 0] + 0.30                 # step back ~15 cm from the cell
                 clear[:, 1] = orig[:, 1] + c.rack_y
-                clear[:, 2] = orig[:, 2] + 0.62                 # lift to just above the bottle (~22 cm)
+                clear[:, 2] = orig[:, 2] + 0.62 + self._tcp_dz  # lift to just above the bottle (~22 cm)
                 rstep = ee_pos_w + (clear - ee_pos_w).clamp(-0.035, 0.035)  # brisk pull-away
                 target = torch.where(settling, ee_pos_w, target)
                 target = torch.where(retracting, rstep, target)
@@ -1707,6 +1799,25 @@ if ISAAC_AVAILABLE:
                 self._released = self._released | rel_cmd
                 close_mask = close_mask & (~self._released)
             self._gripper_cmd = torch.where(close_mask.float().bool(), -torch.ones_like(self._gripper_cmd), torch.ones_like(self._gripper_cmd))
+            if self.cfg.gripper == "robotiq_2f140":
+                # TELEPORT CONTRACT: the 2F-140 is driven by finger_joint position
+                # TARGETS only (never write_joint_state — the four-bar loop joints
+                # do not survive it). The drive's effort limit (10) bounds the grip
+                # force; the release (learned action[7]) is actuated by targeting
+                # the open angle — the drive genuinely opens the pads.
+                _d = self.device
+                ang_t = torch.where(close_mask,
+                                    torch.full((self.num_envs,), self._rq_close, device=_d),
+                                    torch.full((self.num_envs,), self._rq_open, device=_d))
+                ang_t = torch.where(warm, torch.full((self.num_envs,), self._rq_seat, device=_d), ang_t)
+                if self.cfg.forge_release_mode:
+                    ang_t = torch.where(self._released,
+                                        torch.full((self.num_envs,), self._rq_open, device=_d), ang_t)
+                r.set_joint_position_target(ang_t.unsqueeze(-1), joint_ids=self._grip_ids)
+                eff = torch.zeros(self.num_envs, r.num_joints, device=_d)
+                eff[:, :7] = jt
+                r.set_joint_effort_target(eff)
+                return
             fvel = r.data.joint_vel[:, 7:9]
             fpos = r.data.joint_pos[:, 7:9]
             # Position-controlled grip (PD effort). The closed target sits INSIDE the
@@ -1951,17 +2062,36 @@ if ISAAC_AVAILABLE:
         def _reset_idx(self, env_ids) -> None:
             # Lazy-init ee body index (data unavailable during _setup_scene)
             if self._ee_idx < 0:
-                self._ee_idx = list(self._robot.data.body_names).index("panda_hand")
                 bn = list(self._robot.data.body_names)
-                self._lf_idx = bn.index("panda_leftfinger")
-                self._rf_idx = bn.index("panda_rightfinger")
+                self._ee_idx = bn.index("panda_hand")
+                if self.cfg.gripper == "robotiq_2f140":
+                    self._lf_idx = bn.index("left_inner_finger")
+                    self._rf_idx = bn.index("right_inner_finger")
+                    jn = list(self._robot.data.joint_names)
+                    self._grip_ids = [jn.index("finger_joint")]
+                    # Hand the arm to the OSC NOW (parameter write, no body motion):
+                    # spawn kept the holding gains so the init sag couldn't tear the
+                    # gripper four-bar; from here the OSC owns the arm every step.
+                    _z = torch.zeros(self.num_envs, 7, device=self.device)
+                    self._robot.write_joint_stiffness_to_sim(_z, joint_ids=self._arm_ids)
+                    self._robot.write_joint_damping_to_sim(_z + 80.0, joint_ids=self._arm_ids)
+                else:
+                    self._lf_idx = bn.index("panda_leftfinger")
+                    self._rf_idx = bn.index("panda_rightfinger")
+                    self._grip_ids = [7, 8]
             super()._reset_idx(env_ids)
-            jp = self._robot.data.default_joint_pos[env_ids].clone()
-            # Pre-close the gripper fingers onto the object's half-width so it starts
-            # gripped (then the grip force + friction hold it).
-            jp[:, 7:9] = 0.022
-            jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
-            self._robot.write_joint_state_to_sim(jp, jv, env_ids=env_ids)
+            if self.cfg.gripper == "robotiq_2f140":
+                # TELEPORT CONTRACT: no joint-state writes — the four-bar loop joints
+                # do not survive them. The demo flow only resets while the arm is still
+                # at the (default) spawn pose, and the FORGE setup drive re-poses it.
+                jp = self._robot.data.joint_pos[env_ids].clone()
+            else:
+                jp = self._robot.data.default_joint_pos[env_ids].clone()
+                # Pre-close the gripper fingers onto the object's half-width so it starts
+                # gripped (then the grip force + friction hold it).
+                jp[:, 7:9] = 0.022
+                jv = torch.zeros_like(self._robot.data.default_joint_vel[env_ids])
+                self._robot.write_joint_state_to_sim(jp, jv, env_ids=env_ids)
 
             # Place-only: begin already holding the object at transport altitude;
             # the episode does TRANSPORT -> PLACE_DESCEND -> RELEASE only.
