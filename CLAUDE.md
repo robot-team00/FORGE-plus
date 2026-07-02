@@ -89,11 +89,16 @@ Existing render: `docs/videos/task3/eval_run_001.mp4`.
 
 ## Rendering the learned FORGE insertion policy
 
-Use **scripts/render_forge_min.py** (built on the proven render_task3 harness). The full
-scripts/render_pick_place.py does NOT render on this pod — its kitchen USD + textured PBR
-materials leave the render product 0x0. Also note: FrankaPickPlaceEnv no-ops `render()` for
-training speed, so the render script restores `DirectRLEnv.render` before constructing the env
-(else the RTX context never initializes). Output: docs/videos/task3/forge_insert.mp4.
+Use **scripts/render_forge_min.py** (built on the proven render_task3 harness); `RELEASE=1`
+renders the learned insertion + release -> docs/videos/task3/forge_release.mp4 (loop:
+scripts/render_until_success.sh). The **recovery episode** renders with
+**scripts/render_recovery.py** (loop: render_recovery_until_success.sh) -> takes in
+/workspace/render_takes/forge_recovery_take_NNN.mp4, approved take copied to
+docs/videos/task3/forge_recovery.mp4. The full scripts/render_pick_place.py does NOT render
+on this pod — its kitchen USD + textured PBR materials leave the render product 0x0. Also
+note: FrankaPickPlaceEnv no-ops `render()` for training speed, so the render scripts restore
+`DirectRLEnv.render` before constructing the env (else the RTX context never initializes).
+Encode ffmpeg BEFORE app.close() — SimulationApp.close() hard-exits the process.
 
 ## PyBullet fallback (no GPU, always works)
 If Isaac/RTX is ever broken, scripts/eval_render_pybullet.py renders the same rollout with

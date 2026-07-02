@@ -253,9 +253,15 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
     rec_lift:      float = 0.11    # retract_and_reapproach: how far to lift the EE (m) — clear the rim
     rec_lat:       float = 0.02    # wiggle_search lateral amplitude (m)
     rec_dur_steps: int   = 25      # control steps a recovery maneuver runs before clearing
-    jam_force_n:   float = 6.0     # contact >= this with no descent => jam
-    jam_progress_mm: float = 1.5   # net base descent (mm) over the window below which it's "stuck"
-    jam_window:    int   = 15      # steps of no-progress at the ceiling to declare a jam
+    jam_force_n:   float = 6.0     # contact >= this with no descent => jam (absolute floor)
+    jam_force_frac: float = 0.18   # ...or >= this fraction of F_max (whichever is larger). Low
+                                   # enough to catch a wedge WELL below break (robust F_max 72 ->
+                                   # ~13 N, above clean seating transients, below the ~17 N wedge).
+    jam_progress_mm: float = 2.0   # net base descent (mm) over the window below which it's "stuck"
+    jam_window:    int   = 40      # steps of SUSTAINED no-progress to declare a jam. Long enough
+                                   # that a clean insertion's brief mid-descent stalls (the policy
+                                   # pausing against contact, ~15-25 steps) don't false-trip; a real
+                                   # wedge never descends, so it still trips.
 
     # ── FORGE-style LEARNED insertion (no scripted waypoints, no base-aim) ─────
     # When True: the PPO policy outputs the EE motion (xyz delta) through the OSC
@@ -1014,6 +1020,53 @@ if ISAAC_AVAILABLE:
                 over = over & (~self._released)   # after release, never freeze z — let the hand lift away
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
+
+            # ══ Force-signature recovery hooks on the LEARNED insertion ═══════════
+            # Active only in the recovery demo: either a jam is configured OR a recovery maneuver
+            # is currently running. Zero overhead / no effect on the normal trained policy, which
+            # runs with jam_dx = jam_dy = 0 and never triggers a recovery (_rec_steps stays 0).
+            rec_active = self._rec_steps > 0
+            if c.jam_dx != 0.0 or c.jam_dy != 0.0 or bool(rec_active.any()):
+                orig   = self.scene.env_origins
+                base_w = self._obj.data.root_pose_w[:, :3]
+                # (a) RECOVERY maneuver: while a recovery is running, drive the hand back to the
+                # TRAINING HAND-OFF pose (the cell-entrance approach the setup delivers to, incl.
+                # the same start offset) + the recovery's lateral offset (wiggle / rotate_align).
+                # Two rules learned the hard way:
+                #   * the pose must be the hand-off (incl. _start_off), NOT hand-off + rec_lift —
+                #     an extra lift puts the policy OUT of its training distribution and it never
+                #     re-descends (it only knows descents from the entrance);
+                #   * the drive rate must be the setup's c.lam — the proven bottle-carrying rate.
+                #     A gentler clamp (0.012 ~ 4.8 N of impedance pull at kpos 400) is eaten by
+                #     the unmodeled bottle payload and the lift never rises.
+                # When the maneuver expires the LEARNED policy re-descends exactly as it does
+                # after setup — now aligned, because the jam was cleared.
+                if bool(rec_active.any()):
+                    rec = self._rec_off.clone()
+                    if bool(self._rec_wiggle.any()):
+                        wig = torch.zeros_like(rec)
+                        wig[:, 0] = torch.sin(self._rec_phase.float() * 0.5) * c.rec_lat
+                        rec = torch.where(self._rec_wiggle.unsqueeze(-1), rec + wig, rec)
+                    clear = ee_pos_w.clone()
+                    clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0]
+                    clear[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1] + rec[:, 1]
+                    clear[:, 2] = orig[:, 2] + c.forge_approach_z
+                    step = (clear - ee_pos_w).clamp(-c.lam, c.lam)
+                    target = torch.where(rec_active.unsqueeze(-1), ee_pos_w + step, target)
+                # (b) INDUCED JAM (only when not recovering): base-aim the bottle at an OFF-CENTER
+                # wedge point so it wedges on the cell rim (high contact, no descent -> is_failure).
+                jam_active = self._jam_on & (self._setup_ctr == 0) & (~rec_active)
+                if bool(jam_active.any()):
+                    wedge_x = orig[:, 0] + c.rack_x + c.jam_dx
+                    wedge_y = orig[:, 1] + c.rack_y + c.jam_dy
+                    aim_x = wedge_x - (base_w[:, 0] - ee_pos_w[:, 0])   # EE so the BASE lands off-center
+                    aim_y = wedge_y - (base_w[:, 1] - ee_pos_w[:, 1])
+                    tx = ee_pos_w[:, 0] + (aim_x - ee_pos_w[:, 0]).clamp(-c.forge_lam, c.forge_lam)
+                    ty = ee_pos_w[:, 1] + (aim_y - ee_pos_w[:, 1]).clamp(-c.forge_lam, c.forge_lam)
+                    m = jam_active
+                    target[m, 0] = tx[m]
+                    target[m, 1] = ty[m]
+
             # Wrist: STIFF during setup (hold upright while traversing), COMPLIANT during
             # the learned insertion. Best config found: a firm wrist levers a large force
             # against the constrained bottle (the soft contact only lets it penetrate
@@ -1266,8 +1319,21 @@ if ISAAC_AVAILABLE:
             if pol is not None:
                 with torch.no_grad():
                     obs = self._get_observations()["policy"]
-                    mean, _ = pol(obs, self.f_cmd_norm())
-                    act = mean.clamp(-1.0, 1.0)
+                    mean, std = pol(obs, self.f_cmd_norm())
+                    # Run the ARM STOCHASTICALLY (sample its action distribution, as the
+                    # renderer does). The deterministic mean is shy and stalls against contact
+                    # mid-insertion; the on-policy sample pushes through — this is still the
+                    # learned policy, just its true (stochastic) form.
+                    act = (mean + std * torch.randn_like(std)).clamp(-1.0, 1.0)
+                    # ...but GATE the release dim OFF while the loop runs: release is a ONE-WAY
+                    # latch on act[7] > 0, and on an object class the policy wasn't trained on
+                    # its release head misfires in out-of-distribution states (e.g. mid-air
+                    # during the post-recovery re-descent -> the gripper DROPS the bottle). The
+                    # loop's success is the geometric seat; release authority belongs to the
+                    # caller's finale (which samples the policy's own release distribution once
+                    # the bottle is seated). Harness gating, not a scripted release.
+                    if self.cfg.forge_release_mode and act.shape[-1] >= 8:
+                        act[:, 7] = -1.0
                 self.step(act)
             else:
                 self.step(torch.zeros(self.num_envs, self.cfg.action_space, device=self.device))
@@ -1288,7 +1354,18 @@ if ISAAC_AVAILABLE:
             c = self.cfg
             if self._jam_cooldown[0] > 0 or self._rec_steps[0] > 0:
                 return False
-            if int(self._phase[0]) < int(PickPlacePhase.PLACE_DESCEND):
+            if c.forge_mode:
+                # forge doesn't advance the phase machine; the "insertion" is active once the
+                # scripted setup is done and the bottle is at/near the cell (not still descending
+                # from the entrance in free space).
+                bx, by, bz = self._base_xyz0()
+                # at/around the cell mouth (the wedge sits a little above the floor, and the jam
+                # offsets it laterally, so use a generous window) and the scripted setup is done.
+                near_cell = (abs(bx - c.rack_x) < 0.09 and abs(by - c.rack_y) < 0.09
+                             and bz < c.cell_floor_z + 0.18)
+                if int(self._setup_ctr[0]) > 0 or not near_cell:
+                    return False
+            elif int(self._phase[0]) < int(PickPlacePhase.PLACE_DESCEND):
                 return False
             cf_w = self._sig_window(self._cf_hist, c.jam_window)
             bz_w = self._sig_window(self._basez_hist, c.jam_window)
@@ -1296,8 +1373,9 @@ if ISAAC_AVAILABLE:
                 return False
             peak = float(cf_w.max().item())
             descent_mm = float((bz_w[0] - bz_w[-1]).item()) * 1000.0   # +ve = went down
-            # at/near the budget (soft ceiling) with no descent over the window => jam
-            thresh = max(c.jam_force_n, 0.6 * self.f_max_n)
+            # a wedge = meaningful contact with no descent over the window (caught WELL below
+            # break: jam_force_frac keeps the threshold a small fraction of F_max).
+            thresh = max(c.jam_force_n, c.jam_force_frac * self.f_max_n)
             return bool(peak >= thresh and descent_mm < c.jam_progress_mm)
 
         def failure_signature(self):
