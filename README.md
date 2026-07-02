@@ -45,19 +45,25 @@ throughout — the bottle is a dynamic rigid body held by a genuine friction gri
 during the carry.
 
 > ✅ **This is a learned policy** (FORGE PPO), not a scripted scaffold. The **force-guided
-> insertion and the release timing are learned**; only the pre-approach positioning and the
-> post-task gripper-open + retract are scripted. The demo HUD labels every phase **LEARNED
-> (green)** vs **SCRIPTED (orange)** in real time, with a live contact-force gauge (vs the
-> `F_cmd` budget and `F_brk` break limit). Full write-up:
-> [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md).
+> insertion and the release timing are learned**; only the pre-approach positioning, the
+> recovery primitives, and the post-task gripper-open + retract are scripted (and labeled so).
+> The demo HUD labels every phase **LEARNED (green)** vs **SCRIPTED (orange)** in real time,
+> with a live contact-force gauge (vs the `F_max` budget and `F_brk` break limit). Full
+> write-ups: [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md)
+> and [`docs/task3/06-recovery.md`](docs/task3/06-recovery.md).
 
 <div align="center">
-  <img src="docs/videos/task3/forge_release.png" width="600" alt="Learned FORGE insertion: the PPO policy descends the wine bottle into the rack cell under gentle force; the HUD shows the green LEARNED force-guided-insertion phase and a contact-force gauge well under the break limit">
-  <br><em>The learned PPO policy descending the bottle into the cell — HUD reads green “LEARNED — force-guided insertion + when-to-release”, gauge well under the break limit.</em>
+  <img src="docs/videos/task3/forge_recovery.png" width="600" alt="Fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
+  <br><em>The headline moment: the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the system reads the
+  <b>text force signature</b> (no vision), the LLM picks <code>rotate_align</code>, and the learned
+  policy re-inserts, seats the bottle, releases, and retracts.</em>
 </div>
 
-▶️ **[`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4)**
- — the learned insertion + safe release (RTX, learned-vs-scripted HUD + force gauge).
+▶️ **[`docs/videos/task3/forge_recovery.mp4`](docs/videos/task3/forge_recovery.mp4)**
+ — the full **fragile recovery episode**: learned insertion → induced jam caught from the force
+ signature far below break → LLM recovery → learned re-insertion → seat → **learned release** →
+ retract. (The clean insertion + release demo without a jam:
+ [`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4).)
 
 Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) is in
 **[`docs/task3/`](docs/task3/README.md)** — start with
