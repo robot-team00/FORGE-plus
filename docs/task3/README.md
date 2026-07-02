@@ -69,7 +69,7 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`03-rendering.md`](03-rendering.md) | Headless RTX live-physics rendering, the "app.update() steps physics" gotcha, the render↔physics **sync bug** that froze the object, the proven render loop, camera, and HUD. |
 | [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
 | [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | Wine-cellar peg-in-hole scene, asset pipeline, photorealism. **⚠️ The insertion shown there was a SCRIPTED scaffold (zero policy action + base-aim), not a learned policy — being replaced by a learned FORGE PPO policy.** |
-| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop in Isaac.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), the soft force ceiling (stay under budget), the induced-jam scenario, and the verified jam→recover→seat result. |
+| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop, driving the LEARNED policy.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), force authority (caught well below break), the induced-jam scenario, the verified jam→recover→seat results, and the **rendered fragile-object episode** (`forge_recovery.mp4`) with its honesty take-gate. |
 | [`07-learned-place-release.md`](07-learned-place-release.md) | **✅ The current, LEARNED policy — start here.** FORGE PPO that descends the bottle into the cell (force-guided insertion), learns *when to release* (8-dim action), and safely places it upright before the arm retracts. The algorithm, reward shaping, the finger-open bug, the numpy-1.26 render-killer, the render harness, and the learned-vs-scripted HUD + force gauge. |
 
 ## Key files
@@ -79,12 +79,15 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | `forge_plus/isaac_pick_place_env.py` | The env: `PickPlaceEnvCfg`, `FrankaPickPlaceEnv`, `PickPlacePhase`. Spawn, OSC, phases, grip, reward, dones, reset. |
 | `forge_plus/skills/policy_network.py` | `ForceConditionedPolicy`, `PolicyConfig`, `ValueNetwork`. |
 | `scripts/train_pick_place.py` | PPO training entry point. |
-| `scripts/render_pick_place.py` | Headless RTX renderer → demo mp4 with HUD. |
+| `scripts/render_forge_min.py` | Headless RTX renderer for the learned insertion + release (doc 07; `RELEASE=1`). |
+| `scripts/render_recovery.py` | Headless RTX renderer for the fragile recovery episode (doc 06 §7; wrapper `render_recovery_until_success.sh`). |
+| `scripts/run_recovery_insertion.py` | Headless closed-loop recovery demo (learned policy; `--scripted` for the old scaffold). |
 | `llm/budget_cache.json` | Cached per-object force budgets (avoids re-querying the LLM each run). |
 | `checkpoints/task3_wine_bottle.pt` | Trained policy (gitignored — not in the repo; regenerate via training). |
 | `/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd` | The graspable object (outside the repo; `assets/` is gitignored). |
 | `/workspace/assets/libero/wine_rack/wine_rack.usd` | The procedural 3×3 wine-cellar rack (outside the repo; `assets/` is gitignored). See doc 04 §7. |
-| `docs/videos/task3/pick_place_eval_001.mp4` | Latest demo render (wine-cellar insertion). |
+| `docs/videos/task3/forge_recovery.mp4` | **Latest demo render** — the fragile recovery episode (doc 06 §7). |
+| `docs/videos/task3/forge_release.mp4` | The clean (no-jam) learned insertion + release demo (doc 07). |
 
 ## Quickstart
 
@@ -95,22 +98,26 @@ gcc -shared -fPIC -o /usr/local/lib/libGLU.so.1 scripts/libglu_stub.c && ldconfi
 bash scripts/setup_runtime.sh
 export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/workspace/FORGE-plus_task3
 
-# Train (warm-start optional). ~256 envs fits the bottle's heavier collision mesh.
+# Train the LEARNED insertion + release policy (see doc 07 for the full recipe):
 /workspace/.venv/bin/python scripts/train_pick_place.py \
-    --num_envs 256 --iterations 600 --gripper franka_panda \
-    --ckpt checkpoints/task3_wine_bottle.pt
+    --num_envs 256 --iterations 600 --gripper franka_panda --forge_release \
+    --ckpt checkpoints/task3_forge_entrance.pt
 
-# Render the wine-cellar insertion SCAFFOLD (scripted; being replaced by a learned policy):
-/workspace/.venv/bin/python scripts/render_pick_place.py
-# -> docs/videos/task3/pick_place_eval_001.mp4
+# Render the learned insertion + release (doc 07):
+RELEASE=1 bash scripts/render_until_success.sh          # -> docs/videos/task3/forge_release.mp4
+
+# Render the fragile RECOVERY episode (doc 06 §7):
+bash scripts/render_recovery_until_success.sh 8         # -> docs/videos/task3/forge_recovery.mp4
+
+# Headless recovery demo (no rendering):
+/workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.05 --obj 0
 ```
 
-> ⚠️ The current insertion render is a **scripted scaffold**: it drives **zero policy action** and
-> the env's hand-coded **base-aim** + phase waypoints do the work — **no learned policy**. This is
-> being replaced by a **learned FORGE-style PPO policy** (`cfg.forge_mode`, in progress) that
-> outputs the EE motion and learns the alignment/insertion from force, with no scripted waypoints.
+> Note: `scripts/render_pick_place.py` (the old scripted-scaffold render) does not render on this
+> pod (kitchen USD + textured PBR → 0×0 render product) and is superseded by the learned-policy
+> renders above.
 
-## Current status (2026-07-01)
+## Current status (2026-07-02)
 
 - ✅ **Learned FORGE insertion + safe release** (`cfg.forge_mode` + `cfg.forge_release_mode`) —
   **the real goal, done.** A PPO policy descends the bottle **into the cell** under force control

@@ -51,7 +51,7 @@ with **no vision** and **poses assumed known**; see [`05-wine-cellar-insertion.m
 
 | Hook | What it does |
 |---|---|
-| `step_skill()` | One control step under the **learned FORGE policy** (`env._skill_policy`), sampled from its action distribution (as the renderer runs it — the deterministic mean is shy and stalls). Falls back to zero-action OSC if no policy is loaded. |
+| `step_skill()` | One control step under the **learned FORGE policy** (`env._skill_policy`). The **arm** is sampled from the policy's action distribution (the deterministic mean is shy and stalls against contact); the **release dim is gated off** (`act[7]=-1`) — the one-way release latch misfires in out-of-distribution states on an untrained object class, so release authority belongs to the caller's finale at the seat (§7). Falls back to zero-action OSC if no policy is loaded. |
 | `is_success()` | Geometric seat: base centered in the cell **and** at the cell floor. |
 | `is_failure()` | **Jam**: contact ≥ `max(jam_force_n, jam_force_frac·F_max)` with **no net descent** (`< jam_progress_mm`) over a **sustained** window (`jam_window` = 40 steps). In `forge_mode` the gate is "setup done **and** near the cell mouth" (forge doesn't advance the phase machine). |
 | `failure_signature()` | A `ForceSignature` from a contact+pose **ring buffer**: peak/mean axial force, net insertion (mm), rising trend, lateral bias, slip events, contact persistence. **No images, no `F_break`.** |
@@ -121,11 +121,10 @@ policy** driving the insertion (no API key, no GPU vision):
 ```
 skill = LEARNED FORGE policy (checkpoints/task3_forge_entrance.pt)
 jam_dx = 0.050 m   F_max (robust) — F_break 180 N     backend = heuristic
-attempt 0: failure  [peak_axial=16.6N  net_insert=1.6mm  rising=True]  -> retract_and_reapproach
-attempt 1: failure  [peak_axial=13.9N  net_insert=2.0mm  rising=True]  -> retract_and_reapproach
-attempt 2: success
-final bottle base (env frame): (0.447, 0.105, 0.429)   cell=(0.45, 0.12, 0.40)
-OUTCOME: SUCCESS in 3 attempts
+attempt 0: failure  [peak_axial=16.6N  net_insert=1.9mm  rising=True]  -> retract_and_reapproach
+attempt 1: success
+final bottle base (env frame): (0.439, 0.128, 0.429)   cell=(0.45, 0.12, 0.40)
+OUTCOME: SUCCESS in 2 attempts
 ```
 
 - The wedge is caught **from the force signature alone** (no vision), at **peak ~17 N — far below
