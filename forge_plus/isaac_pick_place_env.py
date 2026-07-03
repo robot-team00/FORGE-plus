@@ -626,6 +626,7 @@ if ISAAC_AVAILABLE:
             self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
             self._warmup     = torch.zeros(N, dtype=torch.long, device=d)
+            self._rq_static  = torch.zeros(N, dtype=torch.long, device=d)  # robotiq: static-arm window
             # Distance from the hand origin to the grasp point (between the fingertip
             # pads) along the hand's local +z. Per-env so it can be swept/calibrated;
             # 0.067 seats the block centrally between the panda pads (calibrated).
@@ -635,7 +636,9 @@ if ISAAC_AVAILABLE:
             self._grasp_tcp_d = torch.full((N,), _tcp, device=d)
             # Gripper-length delta vs the franka hand: shifts the FORGE hand-off /
             # transport / retract HEIGHTS so the BOTTLE traverses the same altitudes.
-            self._tcp_dz = _tcp - 0.067
+            # robotiq: EE(base_link) sits ~0.42 above the bottle BASE (lip grip at
+            # -0.22, base a further -0.20 at scale 0.62) vs the franka's ~0.17.
+            self._tcp_dz = 0.25 if self.cfg.gripper == "robotiq_2f140" else 0.0
             # Finger half-opening to rest the pads at during warmup: block half-width
             # (0.020) minus 1 mm so the pads sit just at the surface (clean seat, no
             # deep penetration), then the PD grip takes over and holds by friction.
@@ -644,9 +647,14 @@ if ISAAC_AVAILABLE:
             # inverted vs the ROS URDF). Calibration curve (probe_robotiq_env):
             # pad-body separation 0.040 m at 0 -> 0.127 m at 0.7; the ~1.6 cm bottle
             # neck maps to ~0.09; squeeze a little under, seat a little over.
-            self._rq_close = 0.05
-            self._rq_seat  = 0.10
-            self._rq_open  = 0.45
+            # calibrated (probe_rq_scene LIPGRIP, scale-0.62 bottle): pads KISS the
+            # neck at 0.19 during the warmup teleport, squeeze to 0.08 after; the
+            # bottle origin (its NECK) seats 0.22 below robotiq_base_link at the
+            # PAD-FACE midpoint xy (2.4 cm off the base_link axis!).
+            self._rq_close  = 0.08  # the statically-held squeeze (full close ejects the cone)
+            self._rq_seat   = 0.19
+            self._rq_open   = 0.45
+            self._rq_seat_dz = 0.22
             # PD gains for the position-controlled grip (effort = k·(target-pos) - kd·vel).
             # k·overlap sets the squeeze: 1500 N/m · 0.010 m = 15 N grip (friction
             # 1.6·15 = 24 N >> the 0.5 N block weight), penetration sub-mm under rigid contact.
@@ -713,29 +721,8 @@ if ISAAC_AVAILABLE:
             # 2-72 N range the task needs.
             self._surf_ks, self._surf_kd = 1200.0, 120.0
 
-            # PARSE GHOST (robotiq only, spawned BEFORE the robot — parse order matters,
-            # matching the healthy probes): a standalone 2F-140 articulation parked far
-            # below the workspace, gravity-free, never driven or rendered in-frame.
-            # Its presence makes PhysX materialize the merged gripper's loop joints.
-            if self.cfg.gripper == "robotiq_2f140":
-                from isaaclab.actuators import ImplicitActuatorCfg
-                self._ghost = Articulation(ArticulationCfg(
-                    prim_path="/World/GhostGripper",   # OUTSIDE the cloned env namespace (matches the healthy probes)
-                    spawn=sim_utils.UsdFileCfg(
-                        usd_path=("/workspace/assets/isaac51/Robots/Robotiq/2F-140/"
-                                  "Robotiq_2F_140_physics_edit.usd"),
-                        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
-                    ),
-                    init_state=ArticulationCfg.InitialStateCfg(
-                        pos=(0.0, 0.0, -5.0),
-                        joint_pos={"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
-                                   ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0}),
-                    actuators={"all_passive": ImplicitActuatorCfg(
-                        joint_names_expr=[".*"], effort_limit_sim=1.0,
-                        velocity_limit_sim=2.0, stiffness=0.0, damping=0.01,
-                        friction=0.0, armature=0.0)},
-                ))
-
+            # (recipe v3 needs no parse ghost — the NVIDIA-pattern attachment
+            # materializes the four-bar loop joints on its own.)
             # Robot
             robot_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
             robot_cfg.spawn.activate_contact_sensors = True
@@ -831,7 +818,11 @@ if ISAAC_AVAILABLE:
                         # FRICTION grasp holds it through the carry (a round mug body can't).
                         # Origin is at the base; the seat offsets by mug_grip_z to grip the neck.
                         usd_path="/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd",
-                        scale=(0.5, 0.5, 0.5),
+                        # robotiq: a ~24% larger bottle instance (closer to a real wine
+                        # bottle) — its fatter, longer cylindrical neck is what the
+                        # 40 mm 2F-140 pads grip reliably (LIPGRIP calibration).
+                        scale=(0.62, 0.62, 0.62) if self.cfg.gripper == "robotiq_2f140"
+                        else (0.5, 0.5, 0.5),
                         mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
                         # DYNAMIC — real physics: held by the friction grip, carried, released.
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -868,7 +859,7 @@ if ISAAC_AVAILABLE:
             # never touches either surface → was reading ~0 N). For the Robotiq the
             # touching bodies are the finger pads/links (regex segments cannot span
             # '/', and the bare hand reads ~0 N, so sense the four finger bodies).
-            _sensor_expr = ("/World/envs/env_.*/Robot/Robotiq_2F_140_edit/(left|right)_(inner|outer)_finger"
+            _sensor_expr = ("/World/envs/env_.*/Robot/panda_hand/(left|right)_(inner|outer)_finger"
                             if self.cfg.gripper == "robotiq_2f140" else
                             "/World/envs/env_.*/Robot/panda_(hand|leftfinger|rightfinger)")
             import os as _os
@@ -923,10 +914,6 @@ if ISAAC_AVAILABLE:
 
             # Register with scene
             self.scene.articulations["robot"]  = self._robot
-            if getattr(self, "_ghost", None) is not None:
-                # register the parse ghost so it initializes through the same
-                # InteractiveScene pipeline as the robot (view-creation ordering)
-                self.scene.articulations["ghost"] = self._ghost
             self.scene.rigid_objects["table"]  = self._table
             self.scene.rigid_objects["object"] = self._obj
             self.scene.rigid_objects["rack"]   = self._rack
@@ -939,11 +926,36 @@ if ISAAC_AVAILABLE:
             # ── Compliant contact on the rack (soft spring, not rigid impulse) ──
             if self.cfg.contact_stiffness > 0 and not self.cfg.render_minimal and _bisect < 1:
                 self._apply_rack_compliance()
+            if self.cfg.gripper == "robotiq_2f140":
+                self._apply_rubber_pads()
             self.scene.clone_environments(copy_from_source=False)
 
             # Cache joint / body indices
             self._arm_ids = list(range(7))
             self._ee_idx  = -1  # resolved lazily in _reset_idx (data not ready at setup time)
+
+        def _apply_rubber_pads(self) -> None:
+            """High-friction 'rubber' physics material on the 2F-140 pad collisions and
+            the bottle (the real pads are rubber; pair friction then stays ~2.0
+            regardless of the combine mode). Part of the LIPGRIP grasp calibration."""
+            try:
+                import omni.usd
+                from pxr import UsdShade, UsdPhysics
+                stage = omni.usd.get_context().get_stage()
+                mat = UsdShade.Material.Define(stage, "/World/RubberPadMat")
+                UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+                m = UsdPhysics.MaterialAPI(mat.GetPrim())
+                m.CreateStaticFrictionAttr(2.0); m.CreateDynamicFrictionAttr(2.0)
+                n = 0
+                for prim in stage.Traverse():
+                    pth = prim.GetPath().pathString
+                    if prim.HasAPI(UsdPhysics.CollisionAPI) and (
+                            ("Robot" in pth and "inner_finger" in pth) or "/Object" in pth):
+                        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, materialPurpose="physics")
+                        n += 1
+                print(f"[rubber] bound high-friction material to {n} collision prims")
+            except Exception as e:
+                print("[rubber] skipped:", e)
 
         def _apply_rack_compliance(self) -> None:
             """Bind a COMPLIANT-contact physics material to the rack collisions, so the
@@ -1090,7 +1102,8 @@ if ISAAC_AVAILABLE:
             raw = torch.where(in_setup, appr, pol)
             # Fast traverse during setup, SLOW (low-impulse) approach during the learned
             # insertion so the bottle never hits the cell with breaking momentum.
-            lam = torch.where(in_setup, torch.full_like(appr[:, :1], c.lam),
+            _setup_lam = 0.015 if self.cfg.gripper == "robotiq_2f140" else c.lam
+            lam = torch.where(in_setup, torch.full_like(appr[:, :1], _setup_lam),
                               torch.full_like(appr[:, :1], c.forge_lam))
             # After the policy releases, the bottle is placed — the hand no longer needs the
             # slow gentle-insertion motion cap, so retract at a MODERATE speed (the full setup
@@ -1200,7 +1213,18 @@ if ISAAC_AVAILABLE:
                 target = torch.where(retracting, rstep, target)
                 ori_k = torch.where(rel,
                                     torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
-            self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
+            if self.cfg.gripper == "robotiq_2f140":
+                # hold the ARM STILL through the warmup seat AND the squeeze (the
+                # _rq_static window outlasts warmup by ~50 substeps); a moving pad
+                # frame or squeeze-under-acceleration ejects the bottle. The setup
+                # countdown pauses so no traverse time is lost.
+                warmhold = self._rq_static > 0
+                self._rq_static = (self._rq_static - 1).clamp(min=0)
+                target = torch.where(warmhold.unsqueeze(-1), ee_pos_w, target)
+                self._setup_ctr = torch.where(warmhold, self._setup_ctr,
+                                              (self._setup_ctr - 1).clamp(min=0))
+            else:
+                self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
             return target, ori_k
 
         def _forge_get_observations(self) -> dict:
@@ -1626,7 +1650,28 @@ if ISAAC_AVAILABLE:
             # thin stem/neck near the top so the COM hangs below (pendulum -> self-rights
             # upright and resists tilting through the carry).
             carry = warm
-            if carry.any():
+            if carry.any() and self.cfg.gripper == "robotiq_2f140":
+                # TWO-PHASE warmup (the pads spawn closed and need ~25 substeps to
+                # open — pinning the bottle into still-closed pads ejects it):
+                #   phase A (first half): pads opening; PARK the bottle above the hand
+                #   phase B (second half): pads at the kiss angle; PIN at the pads —
+                #     PAD-FACE midpoint xy (~2.4 cm off the base_link axis) with the
+                #     bottle origin (its neck) _rq_seat_dz below base_link (LIPGRIP).
+                phase_a = warm & (self._warmup > self.cfg.warmup_substeps // 2)
+                pm = 0.5 * (r.data.body_pos_w[:, self._lf_idx] + r.data.body_pos_w[:, self._rf_idx])
+                pose = self._obj.data.root_pose_w.clone()
+                pose[carry, 0] = pm[carry, 0]
+                pose[carry, 1] = pm[carry, 1]
+                pose[carry, 2] = torch.where(
+                    phase_a[carry],
+                    r.data.body_pos_w[carry, self._ee_idx, 2] + 0.35,   # park high above
+                    r.data.body_pos_w[carry, self._ee_idx, 2] - self._rq_seat_dz)
+                pose[carry, 3] = 1.0; pose[carry, 4:7] = 0.0
+                self._obj.write_root_pose_to_sim(pose)
+                vel = self._obj.data.root_vel_w.clone()
+                vel[carry] = 0.0
+                self._obj.write_root_velocity_to_sim(vel)
+            elif carry.any():
                 R_ee = matrix_from_quat(r.data.body_quat_w[:, self._ee_idx])      # (N,3,3)
                 off  = torch.zeros(self.num_envs, 3, device=self.device)
                 off[:, 2] = self._grasp_tcp_d
@@ -1809,7 +1854,14 @@ if ISAAC_AVAILABLE:
                 ang_t = torch.where(close_mask,
                                     torch.full((self.num_envs,), self._rq_close, device=_d),
                                     torch.full((self.num_envs,), self._rq_open, device=_d))
-                ang_t = torch.where(warm, torch.full((self.num_envs,), self._rq_seat, device=_d), ang_t)
+                # two-phase warm targets (probe-proven sequence): phase A opens WIDE
+                # while the bottle parks; phase B closes to the KISS angle onto the
+                # pinned bottle FROM OPEN (slight preload — arriving from closed
+                # leaves a gap and the squeeze races the falling bottle).
+                _wa = self._warmup > (self.cfg.warmup_substeps // 2)
+                ang_t = torch.where(warm, torch.where(
+                    _wa, torch.full((self.num_envs,), self._rq_open, device=_d),
+                    torch.full((self.num_envs,), self._rq_seat, device=_d)), ang_t)
                 if self.cfg.forge_release_mode:
                     ang_t = torch.where(self._released,
                                         torch.full((self.num_envs,), self._rq_open, device=_d), ang_t)
@@ -2063,7 +2115,10 @@ if ISAAC_AVAILABLE:
             # Lazy-init ee body index (data unavailable during _setup_scene)
             if self._ee_idx < 0:
                 bn = list(self._robot.data.body_names)
-                self._ee_idx = bn.index("panda_hand")
+                # RECIPE v3: panda_hand is a container prim, not a body — the robotiq
+                # EE body is robotiq_base_link (same frame via the retargeted joint).
+                self._ee_idx = bn.index("robotiq_base_link"
+                                         if self.cfg.gripper == "robotiq_2f140" else "panda_hand")
                 if self.cfg.gripper == "robotiq_2f140":
                     self._lf_idx = bn.index("left_inner_finger")
                     self._rf_idx = bn.index("right_inner_finger")
@@ -2112,6 +2167,11 @@ if ISAAC_AVAILABLE:
             self._cf_filt[env_ids]     = 0.0
             self._cf_insert[env_ids]   = 0.0
             self._warmup[env_ids]      = self.cfg.warmup_substeps
+            # robotiq: keep the arm static an extra beat past warmup so the SQUEEZE
+            # completes before the traverse accelerates (squeeze-under-acceleration
+            # ejects the bottle; the probe always squeezed on a static arm)
+            self._rq_static[env_ids]   = (self.cfg.warmup_substeps + 50
+                                          if self.cfg.gripper == "robotiq_2f140" else 0)
             self._az_filt[env_ids]     = -1.0
             # Gripper closed when starting in carry/place mode (holding the object).
             self._gripper_cmd[env_ids] = -1.0 if self.cfg.place_only else 1.0

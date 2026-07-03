@@ -91,7 +91,7 @@ if "obj" in ASSETS:
         prim_path="/World/envs/env_.*/Object",
         spawn=sim_utils.UsdFileCfg(
             usd_path="/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd",
-            scale=(0.5, 0.5, 0.5),
+            scale=(0.62, 0.62, 0.62),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=False, disable_gravity=False,
@@ -280,51 +280,40 @@ if "obj" in ASSETS:
     #   stall ~0.146 = pads touch each other (no bottle);  >0.15 = bottle contact;
     #   ~0.155-0.17 = neck (16-18 mm);  ~0.25+ = fat body.
     hp = fr.data.body_pos_w[0, hand_i]
-    # ONE clean hold cycle on the STOCK four-bar (wear-free: single seat):
-    # open wide, teleport the bottle so its grip height (base+0.12) is d below the
-    # hand, squeeze overlapping the teleport hand-off, then physics owns it.
-    d = 0.165
-    gp = hp.clone(); gp[2] = hp[2] - d
-    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.35, joint_ids=[fid])
-    settle(40)
-    snap("open")
-    snap2("open")
-    pose = obj.data.root_pose_w.clone()
-    # measured: bottle origin ~ its NECK (extent -0.16/+0.06); pad faces ~0.17-0.20
-    # below base_link -> origin at base_link - 0.20 puts the neck between the pads
-    pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = hp[2] - 0.20
-    pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
-    PIN["pose"] = pose; PIN["obj"] = obj
-    for _i in range(40):
-        obj.write_root_pose_to_sim(pose)
-        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
-        settle(1)
-        if _i == 20:
-            _bn = list(fr.data.body_names)
-            print(f"  [pin] authored_obj_z={float(pose[0,2]):.3f} actual_obj_z={float(obj.data.root_pose_w[0,2]):.3f} "
-                  f"base_link_z={float(fr.data.body_pos_w[0,_bn.index('robotiq_base_link')][2]):.3f} "
-                  f"l_innf_z={float(fr.data.body_pos_w[0,_bn.index('left_inner_finger')][2]):.3f} "
-                  f"r_innf_z={float(fr.data.body_pos_w[0,_bn.index('right_inner_finger')][2]):.3f}", flush=True)
-            snap("seated"); snap2("seated")   # mid-teleport: true seat pose
+    # LIP-GRIP candidates: the bottle's flared lip is at its top (origin +0.06); a
+    # pinch just below the lip is SELF-ARRESTING (slide-down jams on the widening
+    # flare), unlike the shoulder taper. Seat the origin at base_link + zoff.
+    for zoff in [-0.22, -0.24]:
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.35, joint_ids=[fid])
+        settle(40)
+        # pin at the PAD-FACE midpoint xy (not base_link xy — the faces may be offset)
+        lpv = fr.data.body_pos_w[0, bn3.index("left_inner_finger")]
+        rpv = fr.data.body_pos_w[0, bn3.index("right_inner_finger")]
+        pmx = 0.5 * (float(lpv[0]) + float(rpv[0])); pmy = 0.5 * (float(lpv[1]) + float(rpv[1]))
+        pose = obj.data.root_pose_w.clone()
+        pose[0, 0] = pmx; pose[0, 1] = pmy; pose[0, 2] = hp[2] + zoff
+        pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
+        print(f"  pin xy=({pmx:.3f},{pmy:.3f}) vs base_link=({float(hp[0]):.3f},{float(hp[1]):.3f})", flush=True)
+        PIN["pose"] = pose; PIN["obj"] = obj
+        # pads KISS the neck while pinned
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.19, joint_ids=[fid])
+        for _i in range(25):
             obj.write_root_pose_to_sim(pose)
             obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
-    # pads KISS the neck while pinned (no squeeze -> no penetration buildup)
-    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.165, joint_ids=[fid])
-    for _i in range(20):
-        obj.write_root_pose_to_sim(pose)
-        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
-        settle(1)
-    PIN["pose"] = None
-    # NOW squeeze — physics owns the bottle; the pads catch it within ~10 steps
-    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.05, joint_ids=[fid])
-    settle(30)
-    snap("squeezed"); snap2("squeezed")
-    settle(200)
-    snap("held")
-    bz1 = float(obj.data.root_pose_w[0, 2])
-    print(f"STOCKHOLD d={d}: base z {float(pose[0,2]):.3f} -> {bz1:.3f} "
-          f"held={(float(pose[0,2]) - bz1) < 0.03} ang={float(fr.data.joint_pos[0,fid]):+.3f} "
-          f"sep={sep():.4f}", flush=True)
+            settle(1)
+        PIN["pose"] = None
+        # squeeze with physics owning the bottle
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.08, joint_ids=[fid])
+        settle(6)
+        v = obj.data.root_vel_w[0, :3]
+        print(f"  post-release vel=({float(v[0]):+.3f},{float(v[1]):+.3f},{float(v[2]):+.3f})", flush=True)
+        settle(224)
+        bz1 = float(obj.data.root_pose_w[0, 2])
+        held = (float(pose[0, 2]) - bz1) < 0.03
+        print(f"LIPGRIP zoff={zoff:+.3f}: obj z {float(pose[0,2]):.3f} -> {bz1:.3f} "
+              f"held={held} ang={float(fr.data.joint_pos[0,fid]):+.3f} sep={sep():.4f}", flush=True)
+        if held:
+            snap(f"lip{int(-zoff*1000)}"); snap2(f"lip{int(-zoff*1000)}")
     fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.40, joint_ids=[fid])
     settle(120)
     bz2 = float(obj.data.root_pose_w[0, 2])

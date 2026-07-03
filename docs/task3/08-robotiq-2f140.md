@@ -152,7 +152,36 @@ remains). Open options: pad-tip pinch on the thin neck section, a robotiq-specif
 bottle scale (~0.6 → fatter, longer cylindrical neck), or letting RL fine-tune grip
 force as the franka pipeline does.
 
-## 7. Remaining plan (next session)
+## 7. Grasp calibration SOLVED in the probe; env integration remains (2026-07-03)
+
+**The grasp works** (`probe_rq_scene.py` LIPGRIP, `held=True`): the missing piece was a
+**2.4 cm lateral offset** — the pad faces are centered at the pad-body midpoint xy, NOT
+on the `robotiq_base_link` axis. Held recipe (scale-0.62 bottle — a ~24% larger,
+closer-to-real instance whose fatter cylindrical neck suits the 40 mm pads):
+- seat the bottle origin (its neck) at the PAD-FACE midpoint xy, 0.22 below
+  `robotiq_base_link`;
+- pads open wide first, then close to the KISS angle (0.19) onto the pinned bottle
+  FROM OPEN (slight preload), then unpin and squeeze to 0.08 **on a static arm**;
+- rubber (μ=2.0) bound to pads AND bottle; full-close ejects the cone
+  (watermelon-seed), squeeze-while-pinned builds penetration and ejects violently.
+
+**Env wiring landed** (seat branch, two-phase warm, static-arm window, gentle robotiq
+traverse 0.015, warm-paused setup counter, scale-0.62 spawn, `_apply_rubber_pads`,
+`_tcp_dz` 0.25) — but the env's substep cadence + live OSC still diverges from the
+probe's step cadence: the phase-B close slams the pinned bottle (finger wrenched past
+its limit) or the squeeze races a falling bottle. One fake SUCCESS observed (ejected
+bottle landed in the cell — the loop's geometric `is_success` cannot tell luck from
+skill; the render's held-seat validation does).
+
+## 8. Remaining plan (next session)
+
+1. Refactor the robotiq warmup as an explicit scripted seat state-machine at
+   ENV-STEP granularity mirroring the probe exactly: [open-wide, park] →
+   [kiss-close onto pinned bottle, rate-limited] → [unpin] → [squeeze, static arm]
+   → [hand to the traverse]. Verify with the runner's a0 trace (bottle carried
+   through the traverse), then zero-shot policy, then render
+   `forge_recovery_robotiq.mp4` (+ rename the franka video).
+## 9. (older notes)  Remaining plan (next session)
 
 0. ~~Baseline~~ superseded by §6. **Next**: env v3 branch fixes (EE body, sensor path, drop ghost), then grasp options above, zero-shot, render.
 
@@ -161,7 +190,36 @@ force as the franka pipeline does.
    it. Two clean fingers → our attachment recipe is at fault (diff against their
    variant layer); broken too → the sim stack can't do this gripper and the honest
    fallback is the Franka-hand demo only (report as a limitation on issue #28).
-## 7. Remaining plan (next session)
+## 7. Grasp calibration SOLVED in the probe; env integration remains (2026-07-03)
+
+**The grasp works** (`probe_rq_scene.py` LIPGRIP, `held=True`): the missing piece was a
+**2.4 cm lateral offset** — the pad faces are centered at the pad-body midpoint xy, NOT
+on the `robotiq_base_link` axis. Held recipe (scale-0.62 bottle — a ~24% larger,
+closer-to-real instance whose fatter cylindrical neck suits the 40 mm pads):
+- seat the bottle origin (its neck) at the PAD-FACE midpoint xy, 0.22 below
+  `robotiq_base_link`;
+- pads open wide first, then close to the KISS angle (0.19) onto the pinned bottle
+  FROM OPEN (slight preload), then unpin and squeeze to 0.08 **on a static arm**;
+- rubber (μ=2.0) bound to pads AND bottle; full-close ejects the cone
+  (watermelon-seed), squeeze-while-pinned builds penetration and ejects violently.
+
+**Env wiring landed** (seat branch, two-phase warm, static-arm window, gentle robotiq
+traverse 0.015, warm-paused setup counter, scale-0.62 spawn, `_apply_rubber_pads`,
+`_tcp_dz` 0.25) — but the env's substep cadence + live OSC still diverges from the
+probe's step cadence: the phase-B close slams the pinned bottle (finger wrenched past
+its limit) or the squeeze races a falling bottle. One fake SUCCESS observed (ejected
+bottle landed in the cell — the loop's geometric `is_success` cannot tell luck from
+skill; the render's held-seat validation does).
+
+## 8. Remaining plan (next session)
+
+1. Refactor the robotiq warmup as an explicit scripted seat state-machine at
+   ENV-STEP granularity mirroring the probe exactly: [open-wide, park] →
+   [kiss-close onto pinned bottle, rate-limited] → [unpin] → [squeeze, static arm]
+   → [hand to the traverse]. Verify with the runner's a0 trace (bottle carried
+   through the traverse), then zero-shot policy, then render
+   `forge_recovery_robotiq.mp4` (+ rename the franka video).
+## 9. (older notes)  Remaining plan (next session)
 
 1. **Mimic-tree v2**: re-author the surgery in `build_franka_robotiq_2f140.py` with
    the MEASURED joint relations below (`probe_rq_scene.py RELATIONS=1`, healthy

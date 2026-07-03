@@ -89,7 +89,10 @@ def main() -> None:
             # TELEPORT CONTRACT: the robotiq path starts at the DEFAULT arm pose (no
             # reset teleport), so the scripted setup needs a longer window to drive
             # the ~0.5 m from the spawn pose to the cell-entrance hand-off.
-            cfg.forge_setup_steps = 400
+            cfg.forge_setup_steps = 700   # gentler robotiq traverse (0.015/substep) needs more steps
+            # the 2F-140 drive needs ~30 env steps to open from the closed spawn to
+            # the kiss angle before the bottle teleports in (drive vel limit 1 rad/s)
+            cfg.warmup_substeps   = 100
             # The gripper's four-bar loop joints only survive a RAW parse — the
             # physics-replicated clone path drops them (single env: nothing to
             # replicate anyway).
