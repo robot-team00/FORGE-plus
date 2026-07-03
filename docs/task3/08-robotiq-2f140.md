@@ -96,7 +96,33 @@ gripper = 15; arm joints keep ids 0–6, `finger_joint` id 7).
 - **Contact-sensor regex**: prim-path expressions cannot span `/` — the robotiq sensor
   watches the four finger bodies (one path depth) instead of hand+fingers.
 
-## 5. Remaining plan (next session)
+## 5. Mimic-tree v2 attempt log (2026-07-03)
+
+Authored from the measured table: both couplers verified tracking their fits in-sim
+(left 0.87·θ+0.085, right 0.42·θ−0.03 with limit clamping — the PhysX mimic convention
+`follower = −(gearing·ref + offset)` and degree-unit offsets are confirmed working).
+The PADS defeated every scheme tried: the mimic on `left_inner_finger_joint` silently
+never attaches (the joint dangles); drive-locks at the closed pose form a V that
+ejects the bottle (watermelon-seed); inward spring-loading crosses the tips and blocks
+closing; limit-locking (lower=upper) at the grip-proper angle still leaves a
+depth-independent stall. Rubber-pad friction material (μ=2.0, bound to the pad
+collision prims — machinery in `probe_rq_scene.py`) did not change the outcome.
+
+**Key visual finding** (dual-camera snapshots): in EVERY composed configuration —
+including the restored stock four-bar — only ONE finger forms a proper articulated
+chain; the second never assembles into a pincer. All earlier "healthy" verdicts were
+based on pad-body-origin separation sweeps, which the working knuckle mimic can
+produce even with a collapsed distal chain. The composition (attachment recipe) is
+now the prime suspect.
+
+## 6. Remaining plan (next session)
+
+0. **Baseline first**: mirror NVIDIA's UR10e tree from S3 and spawn their STOCK
+   `UR10e_ROBOTIQ_GRIPPER_CFG` (their own combo, none of our composition) — snapshot
+   it. Two clean fingers → our attachment recipe is at fault (diff against their
+   variant layer); broken too → the sim stack can't do this gripper and the honest
+   fallback is the Franka-hand demo only (report as a limitation on issue #28).
+## 7. Remaining plan (next session)
 
 1. **Mimic-tree v2**: re-author the surgery in `build_franka_robotiq_2f140.py` with
    the MEASURED joint relations below (`probe_rq_scene.py RELATIONS=1`, healthy

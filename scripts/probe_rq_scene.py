@@ -23,6 +23,8 @@ scene = InteractiveScene(InteractiveSceneCfg(num_envs=1, env_spacing=4.0,
                                              replicate_physics=REPLICATE))
 print("scene created; replicate_physics =", REPLICATE, flush=True)
 
+# mimic-tree v2 roles: drive the finger_joint; LOCK the right pad at its constant
+# (target = default_joint_pos); everything else is mimic-owned (passive).
 GRIP_ACTS = {
     "gripper_drive": ImplicitActuatorCfg(joint_names_expr=["finger_joint"],
         effort_limit_sim=10.0, velocity_limit_sim=1.0, stiffness=11.25, damping=0.1,
@@ -108,6 +110,20 @@ scene.articulations["robot"] = fr
 scene.articulations["ghost"] = ghost
 scene.clone_environments(copy_from_source=False)
 print("cloned", flush=True)
+import omni.usd as _ou
+from pxr import UsdShade as _US, UsdPhysics as _UP
+_st = _ou.get_context().get_stage()
+_mat = _US.Material.Define(_st, "/World/RubberPadMat")
+_UP.MaterialAPI.Apply(_mat.GetPrim())
+_mapi = _UP.MaterialAPI(_mat.GetPrim())
+_mapi.CreateStaticFrictionAttr(2.0); _mapi.CreateDynamicFrictionAttr(2.0)
+_nb = 0
+for _pr in _st.Traverse():
+    _pth = _pr.GetPath().pathString
+    if "Robot" in _pth and ("inner_finger" in _pth) and _pr.HasAPI(_UP.CollisionAPI):
+        _US.MaterialBindingAPI.Apply(_pr).Bind(_mat, materialPurpose="physics")
+        _nb += 1
+print(f"rubber pads bound to {_nb} collision prims", flush=True)
 sim.reset()
 print("sim reset ok", flush=True)
 
@@ -176,25 +192,356 @@ if bool(int(os.environ.get("RELATIONS", "0"))):
 # grip height (base + mug_grip_z) sits at candidate points along the FINGER AXIS
 # (knuckle-mid -> finger-mid, extended), close the drive, settle, and report which
 # candidate the pads actually HOLD without tearing the four-bar.
+# minimal camera for hold-test snapshots
+import numpy as np
+from PIL import Image
+import omni.usd
+import omni.replicator.core as rep
+from pxr import Gf, UsdGeom, UsdLux
+_stage = omni.usd.get_context().get_stage()
+UsdLux.DomeLight.Define(_stage, "/World/Dome").CreateIntensityAttr(1200.0)
+_cam = UsdGeom.Camera.Define(_stage, "/World/Cam")
+_cam.CreateFocalLengthAttr(30.0)
+_eye = Gf.Vec3d(0.95, -0.75, 1.05)
+_tgt = Gf.Vec3d(0.21, 0.01, 0.82)   # the measured pad zone
+_up = Gf.Vec3d(0, 0, 1)
+_f = (_tgt - _eye).GetNormalized(); _r = Gf.Cross(_f, _up).GetNormalized(); _t = Gf.Cross(_r, _f).GetNormalized()
+UsdGeom.Xformable(_cam).AddTransformOp().Set(Gf.Matrix4d(
+    _r[0],_r[1],_r[2],0, _t[0],_t[1],_t[2],0, -_f[0],-_f[1],-_f[2],0, _eye[0],_eye[1],_eye[2],1))
+_rp = rep.create.render_product("/World/Cam", (960, 540))
+_rgb = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb.attach([_rp])
+try:
+    from omni.replicator.core.scripts.utils import annotator_utils as _au
+    _of = _au._resize_data_for_overscan
+    _au._resize_data_for_overscan = lambda d, pr: d if not pr or pr.get("datawindow_overscan_z") is None else _of(d, pr)
+except Exception:
+    pass
+for _ in range(140): app.update()
+
+def snap(name):
+    app.update(); app.update()
+    d = np.asarray(_rgb.get_data())
+    if d.ndim >= 3 and d.shape[0] > 1:
+        Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
+        print(f"snap {name} saved", flush=True)
+
+# second camera: opposite azimuth on the robot gripper + one on the ghost
+_cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
+_cam2.CreateFocalLengthAttr(30.0)
+_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
+UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
+    _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
+_rp2 = rep.create.render_product("/World/Cam2", (960, 540))
+_rgb2 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb2.attach([_rp2])
+_cam3 = UsdGeom.Camera.Define(_stage, "/World/Cam3")
+_cam3.CreateFocalLengthAttr(30.0)
+_e3, _t3 = Gf.Vec3d(0.6, -0.6, -4.6), Gf.Vec3d(0.0, 0.0, -5.05)
+_f3 = (_t3 - _e3).GetNormalized(); _r3 = Gf.Cross(_f3, Gf.Vec3d(0,0,1)).GetNormalized(); _u3 = Gf.Cross(_r3, _f3).GetNormalized()
+UsdGeom.Xformable(_cam3).AddTransformOp().Set(Gf.Matrix4d(
+    _r3[0],_r3[1],_r3[2],0, _u3[0],_u3[1],_u3[2],0, -_f3[0],-_f3[1],-_f3[2],0, _e3[0],_e3[1],_e3[2],1))
+_rp3 = rep.create.render_product("/World/Cam3", (960, 540))
+_rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb3.attach([_rp3])
+
+def snap2(name):
+    app.update(); app.update()
+    for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
+        d = np.asarray(ann.get_data())
+        if d.ndim >= 3 and d.shape[0] > 1:
+            Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}_{tag}.png")
+    print(f"snap2 {name} saved", flush=True)
+
+snap("preclose")
+
 if "obj" in ASSETS:
     bn3 = list(fr.data.body_names)
     MUG_GRIP_Z = 0.12
     hand_i = bn3.index("panda_hand")
-    for d in [0.12, 0.16, 0.20, 0.24]:
-        hp = fr.data.body_pos_w[0, hand_i]
-        gp = hp.clone(); gp[2] = hp[2] - d          # candidate grip point: d below the hand
-        # seat WIDE OPEN (no overlap while teleporting), grip height at gp
+    from isaaclab.utils.math import quat_apply_inverse
+    # CONTACT SCAN: sweep the bottle's grip height along the vertical line through the
+    # PAD MIDPOINT; the close-stall angle maps where the pads are and what they touch:
+    #   stall ~0.146 = pads touch each other (no bottle);  >0.15 = bottle contact;
+    #   ~0.155-0.17 = neck (16-18 mm);  ~0.25+ = fat body.
+    hp = fr.data.body_pos_w[0, hand_i]
+    # ONE clean hold cycle on the STOCK four-bar (wear-free: single seat):
+    # open wide, teleport the bottle so its grip height (base+0.12) is d below the
+    # hand, squeeze overlapping the teleport hand-off, then physics owns it.
+    d = 0.12
+    gp = hp.clone(); gp[2] = hp[2] - d
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.35, joint_ids=[fid])
+    settle(40)
+    snap("open")
+    snap2("open")
+    pose = obj.data.root_pose_w.clone()
+    pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = gp[2] - MUG_GRIP_Z
+    pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
+    for _ in range(40):
+        obj.write_root_pose_to_sim(pose)
+        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+        settle(1)
+    snap("seated")
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.10, joint_ids=[fid])
+    for _ in range(15):
+        obj.write_root_pose_to_sim(pose)
+        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+        settle(1)
+    snap("squeezed")
+    snap2("squeezed")
+    settle(200)
+    snap("held")
+    bz1 = float(obj.data.root_pose_w[0, 2])
+    print(f"STOCKHOLD d={d}: base z {float(pose[0,2]):.3f} -> {bz1:.3f} "
+          f"held={(float(pose[0,2]) - bz1) < 0.03} ang={float(fr.data.joint_pos[0,fid]):+.3f} "
+          f"sep={sep():.4f}", flush=True)
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.40, joint_ids=[fid])
+    settle(120)
+    bz2 = float(obj.data.root_pose_w[0, 2])
+    print(f"RELEASE : base z {bz1:.3f} -> {bz2:.3f} dropped={bz2 < bz1 - 0.05} "
+          f"ang={float(fr.data.joint_pos[0,fid]):+.3f}", flush=True)
+    snap("released")
+
+os._exit(0)
+
+
+# ── HOLD TEST (ground truth for the env warmup seat): teleport the bottle so its
+# grip height (base + mug_grip_z) sits at candidate points along the FINGER AXIS
+# (knuckle-mid -> finger-mid, extended), close the drive, settle, and report which
+# candidate the pads actually HOLD without tearing the four-bar.
+# minimal camera for hold-test snapshots
+import numpy as np
+from PIL import Image
+import omni.usd
+import omni.replicator.core as rep
+from pxr import Gf, UsdGeom, UsdLux
+_stage = omni.usd.get_context().get_stage()
+UsdLux.DomeLight.Define(_stage, "/World/Dome").CreateIntensityAttr(1200.0)
+_cam = UsdGeom.Camera.Define(_stage, "/World/Cam")
+_cam.CreateFocalLengthAttr(30.0)
+_eye = Gf.Vec3d(0.95, -0.75, 1.05)
+_tgt = Gf.Vec3d(0.21, 0.01, 0.82)   # the measured pad zone
+_up = Gf.Vec3d(0, 0, 1)
+_f = (_tgt - _eye).GetNormalized(); _r = Gf.Cross(_f, _up).GetNormalized(); _t = Gf.Cross(_r, _f).GetNormalized()
+UsdGeom.Xformable(_cam).AddTransformOp().Set(Gf.Matrix4d(
+    _r[0],_r[1],_r[2],0, _t[0],_t[1],_t[2],0, -_f[0],-_f[1],-_f[2],0, _eye[0],_eye[1],_eye[2],1))
+_rp = rep.create.render_product("/World/Cam", (960, 540))
+_rgb = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb.attach([_rp])
+try:
+    from omni.replicator.core.scripts.utils import annotator_utils as _au
+    _of = _au._resize_data_for_overscan
+    _au._resize_data_for_overscan = lambda d, pr: d if not pr or pr.get("datawindow_overscan_z") is None else _of(d, pr)
+except Exception:
+    pass
+for _ in range(140): app.update()
+
+def snap(name):
+    app.update(); app.update()
+    d = np.asarray(_rgb.get_data())
+    if d.ndim >= 3 and d.shape[0] > 1:
+        Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
+        print(f"snap {name} saved", flush=True)
+
+# second camera: opposite azimuth on the robot gripper + one on the ghost
+_cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
+_cam2.CreateFocalLengthAttr(30.0)
+_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
+UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
+    _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
+_rp2 = rep.create.render_product("/World/Cam2", (960, 540))
+_rgb2 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb2.attach([_rp2])
+_cam3 = UsdGeom.Camera.Define(_stage, "/World/Cam3")
+_cam3.CreateFocalLengthAttr(30.0)
+_e3, _t3 = Gf.Vec3d(0.6, -0.6, -4.6), Gf.Vec3d(0.0, 0.0, -5.05)
+_f3 = (_t3 - _e3).GetNormalized(); _r3 = Gf.Cross(_f3, Gf.Vec3d(0,0,1)).GetNormalized(); _u3 = Gf.Cross(_r3, _f3).GetNormalized()
+UsdGeom.Xformable(_cam3).AddTransformOp().Set(Gf.Matrix4d(
+    _r3[0],_r3[1],_r3[2],0, _u3[0],_u3[1],_u3[2],0, -_f3[0],-_f3[1],-_f3[2],0, _e3[0],_e3[1],_e3[2],1))
+_rp3 = rep.create.render_product("/World/Cam3", (960, 540))
+_rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb3.attach([_rp3])
+
+def snap2(name):
+    app.update(); app.update()
+    for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
+        d = np.asarray(ann.get_data())
+        if d.ndim >= 3 and d.shape[0] > 1:
+            Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}_{tag}.png")
+    print(f"snap2 {name} saved", flush=True)
+
+snap("preclose")
+
+if "obj" in ASSETS:
+    bn3 = list(fr.data.body_names)
+    MUG_GRIP_Z = 0.12
+    hand_i = bn3.index("panda_hand")
+    from isaaclab.utils.math import quat_apply_inverse
+    # CONTACT SCAN: sweep the bottle's grip height along the vertical line through the
+    # PAD MIDPOINT; the close-stall angle maps where the pads are and what they touch:
+    #   stall ~0.146 = pads touch each other (no bottle);  >0.15 = bottle contact;
+    #   ~0.155-0.17 = neck (16-18 mm);  ~0.25+ = fat body.
+    pm = 0.5 * (fr.data.body_pos_w[0, bn3.index("left_inner_finger")]
+                + fr.data.body_pos_w[0, bn3.index("right_inner_finger")])
+    hp = fr.data.body_pos_w[0, hand_i]
+    hq = fr.data.body_quat_w[0, hand_i]
+    print(f"SCAN pad_mid_world=({float(pm[0]):.3f},{float(pm[1]):.3f},{float(pm[2]):.3f}) "
+          f"hand=({float(hp[0]):.3f},{float(hp[1]):.3f},{float(hp[2]):.3f})", flush=True)
+    results = []
+    for dz in [-0.17, -0.20, -0.23, -0.26, -0.29]:
+        zc = float(pm[2]) + dz                      # candidate grip height (world z)
         fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.35, joint_ids=[fid])
-        settle(40)
+        settle(30)
         pose = obj.data.root_pose_w.clone()
-        pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = gp[2] - MUG_GRIP_Z
+        pose[0, 0] = pm[0]; pose[0, 1] = pm[1]; pose[0, 2] = zc - MUG_GRIP_Z
         pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
-        for _ in range(30):
+        # close to a firm target WHILE the teleport holds the bottle in place
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.05, joint_ids=[fid])
+        for _ in range(60):
             obj.write_root_pose_to_sim(pose)
             obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
             settle(1)
-        # close and let go of the teleport
-        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.05, joint_ids=[fid])
+        ang = float(fr.data.joint_pos[0, fid])
+        gp_h = quat_apply_inverse(hq.unsqueeze(0),
+                                  (torch.tensor([float(pm[0]), float(pm[1]), zc],
+                                                device=fr.device) - hp).unsqueeze(0))[0]
+        print(f"SCAN dz={dz:+.2f}: zc={zc:.3f} stall={ang:+.3f} "
+              f"grip_in_hand=({float(gp_h[0]):+.3f},{float(gp_h[1]):+.3f},{float(gp_h[2]):+.3f})",
+              flush=True)
+        snap(f"scan_{int(-dz*100)}")
+        results.append((dz, ang))
+
+    # HOLD test at the depth whose stall looks like the NECK (~0.15-0.19)
+    _neck = [r for r in results if 0.14 < r[1] < 0.20]
+    _pick = min(_neck, key=lambda r: abs(r[1] - 0.165))[0] if _neck else -0.23
+    print(f"HOLD pick dz={_pick:+.2f}", flush=True)
+    zc = float(pm[2]) + _pick
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.20, joint_ids=[fid])
+    settle(30)
+    pose = obj.data.root_pose_w.clone()
+    pose[0, 0] = pm[0]; pose[0, 1] = pm[1]; pose[0, 2] = zc - MUG_GRIP_Z
+    pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
+    for _ in range(40):
+        obj.write_root_pose_to_sim(pose)
+        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+        settle(1)
+    snap("seated")
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.08, joint_ids=[fid])
+    for _ in range(15):
+        obj.write_root_pose_to_sim(pose)
+        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+        settle(1)
+    snap("squeezed")
+    snap2("squeezed")
+    settle(200)
+    snap("released_teleport")
+    bz1 = float(obj.data.root_pose_w[0, 2])
+    print(f"HOLDNECK: base z {float(pose[0,2]):.3f} -> {bz1:.3f} "
+          f"held={(float(pose[0,2]) - bz1) < 0.03} ang={float(fr.data.joint_pos[0,fid]):+.3f} "
+          f"sep={sep():.4f}", flush=True)
+    # and can it RELEASE? open target, bottle should drop free
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.40, joint_ids=[fid])
+    settle(120)
+    bz2 = float(obj.data.root_pose_w[0, 2])
+    print(f"RELEASE : base z {bz1:.3f} -> {bz2:.3f} dropped={bz2 < bz1 - 0.05} "
+          f"ang={float(fr.data.joint_pos[0,fid]):+.3f}", flush=True)
+
+os._exit(0)
+
+
+# ── HOLD TEST (ground truth for the env warmup seat): teleport the bottle so its
+# grip height (base + mug_grip_z) sits at candidate points along the FINGER AXIS
+# (knuckle-mid -> finger-mid, extended), close the drive, settle, and report which
+# candidate the pads actually HOLD without tearing the four-bar.
+# minimal camera for hold-test snapshots
+import numpy as np
+from PIL import Image
+import omni.usd
+import omni.replicator.core as rep
+from pxr import Gf, UsdGeom, UsdLux
+_stage = omni.usd.get_context().get_stage()
+UsdLux.DomeLight.Define(_stage, "/World/Dome").CreateIntensityAttr(1200.0)
+_cam = UsdGeom.Camera.Define(_stage, "/World/Cam")
+_cam.CreateFocalLengthAttr(30.0)
+_eye = Gf.Vec3d(0.95, -0.75, 1.05)
+_tgt = Gf.Vec3d(0.21, 0.01, 0.82)   # the measured pad zone
+_up = Gf.Vec3d(0, 0, 1)
+_f = (_tgt - _eye).GetNormalized(); _r = Gf.Cross(_f, _up).GetNormalized(); _t = Gf.Cross(_r, _f).GetNormalized()
+UsdGeom.Xformable(_cam).AddTransformOp().Set(Gf.Matrix4d(
+    _r[0],_r[1],_r[2],0, _t[0],_t[1],_t[2],0, -_f[0],-_f[1],-_f[2],0, _eye[0],_eye[1],_eye[2],1))
+_rp = rep.create.render_product("/World/Cam", (960, 540))
+_rgb = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb.attach([_rp])
+try:
+    from omni.replicator.core.scripts.utils import annotator_utils as _au
+    _of = _au._resize_data_for_overscan
+    _au._resize_data_for_overscan = lambda d, pr: d if not pr or pr.get("datawindow_overscan_z") is None else _of(d, pr)
+except Exception:
+    pass
+for _ in range(140): app.update()
+
+def snap(name):
+    app.update(); app.update()
+    d = np.asarray(_rgb.get_data())
+    if d.ndim >= 3 and d.shape[0] > 1:
+        Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
+        print(f"snap {name} saved", flush=True)
+
+# second camera: opposite azimuth on the robot gripper + one on the ghost
+_cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
+_cam2.CreateFocalLengthAttr(30.0)
+_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
+UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
+    _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
+_rp2 = rep.create.render_product("/World/Cam2", (960, 540))
+_rgb2 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb2.attach([_rp2])
+_cam3 = UsdGeom.Camera.Define(_stage, "/World/Cam3")
+_cam3.CreateFocalLengthAttr(30.0)
+_e3, _t3 = Gf.Vec3d(0.6, -0.6, -4.6), Gf.Vec3d(0.0, 0.0, -5.05)
+_f3 = (_t3 - _e3).GetNormalized(); _r3 = Gf.Cross(_f3, Gf.Vec3d(0,0,1)).GetNormalized(); _u3 = Gf.Cross(_r3, _f3).GetNormalized()
+UsdGeom.Xformable(_cam3).AddTransformOp().Set(Gf.Matrix4d(
+    _r3[0],_r3[1],_r3[2],0, _u3[0],_u3[1],_u3[2],0, -_f3[0],-_f3[1],-_f3[2],0, _e3[0],_e3[1],_e3[2],1))
+_rp3 = rep.create.render_product("/World/Cam3", (960, 540))
+_rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
+_rgb3.attach([_rp3])
+
+def snap2(name):
+    app.update(); app.update()
+    for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
+        d = np.asarray(ann.get_data())
+        if d.ndim >= 3 and d.shape[0] > 1:
+            Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}_{tag}.png")
+    print(f"snap2 {name} saved", flush=True)
+
+snap("preclose")
+
+if "obj" in ASSETS:
+    bn3 = list(fr.data.body_names)
+    MUG_GRIP_Z = 0.12
+    hand_i = bn3.index("panda_hand")
+    for d in [0.18, 0.21, 0.24]:
+        hp = fr.data.body_pos_w[0, hand_i]
+        gp = hp.clone(); gp[2] = hp[2] - d          # candidate grip point: d below the hand
+        # seat with the pads JUST AT the neck width (~18 mm opening) so the grip is
+        # already closing on the neck when the teleport lets go (franka-warmup style)
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.165, joint_ids=[fid])
+        pose = obj.data.root_pose_w.clone()
+        pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = gp[2] - MUG_GRIP_Z
+        pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
+        for _ in range(40):
+            obj.write_root_pose_to_sim(pose)
+            obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+            settle(1)
+        # squeeze WHILE still holding the teleport a few steps, then let physics own it
+        fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.10, joint_ids=[fid])
+        for _ in range(12):
+            obj.write_root_pose_to_sim(pose)
+            obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+            settle(1)
         settle(150)
         bz0 = float(pose[0, 2])
         bz1 = float(obj.data.root_pose_w[0, 2])
@@ -202,5 +549,6 @@ if "obj" in ASSETS:
         print(f"HOLD d={d:.2f}: gp=({float(gp[0]):.3f},{float(gp[1]):.3f},{float(gp[2]):.3f}) "
               f"base z {bz0:.3f}->{bz1:.3f} held={held} fourbar_sep={sep():.4f} "
               f"ang={float(fr.data.joint_pos[0,fid]):+.3f}", flush=True)
+        snap(f"hold_d{int(d*100)}")
 
 os._exit(0)   # skip app.close() — hangs headless
