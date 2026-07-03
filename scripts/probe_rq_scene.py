@@ -39,18 +39,21 @@ GRIP_ACTS = {
         friction=0.0, armature=0.0),
 }
 
-ghost = Articulation(ArticulationCfg(
-    prim_path="/World/GhostGripper",
-    spawn=sim_utils.UsdFileCfg(
-        usd_path="/workspace/assets/isaac51/Robots/Robotiq/2F-140/Robotiq_2F_140_physics_edit.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True)),
-    init_state=ArticulationCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0),
-        joint_pos={"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
-                   ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0}),
-    actuators={"all_passive": ImplicitActuatorCfg(joint_names_expr=[".*"],
-        effort_limit_sim=1.0, velocity_limit_sim=2.0, stiffness=0.0, damping=0.01,
-        friction=0.0, armature=0.0)},
-))
+GHOST = bool(int(os.environ.get("GHOST", "0")))
+ghost = None
+if GHOST:
+    ghost = ghost = Articulation(ArticulationCfg(
+        prim_path="/World/GhostGripper",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/workspace/assets/isaac51/Robots/Robotiq/2F-140/Robotiq_2F_140_physics_edit.usd",
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True)),
+        init_state=ArticulationCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0),
+            joint_pos={"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
+                       ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0}),
+        actuators={"all_passive": ImplicitActuatorCfg(joint_names_expr=[".*"],
+            effort_limit_sim=1.0, velocity_limit_sim=2.0, stiffness=0.0, damping=0.01,
+            friction=0.0, armature=0.0)},
+    ))
 
 fr_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 fr_cfg.spawn.usd_path = "/workspace/assets/isaac51/Robots/FrankaRobotics/FrankaPanda/franka_robotiq_2f140.usd"
@@ -107,7 +110,8 @@ if "rack" in ASSETS:
     scene.rigid_objects["rack"] = rack
 
 scene.articulations["robot"] = fr
-scene.articulations["ghost"] = ghost
+if ghost is not None:
+    scene.articulations["ghost"] = ghost
 scene.clone_environments(copy_from_source=False)
 print("cloned", flush=True)
 import omni.usd as _ou
@@ -120,7 +124,8 @@ _mapi.CreateStaticFrictionAttr(2.0); _mapi.CreateDynamicFrictionAttr(2.0)
 _nb = 0
 for _pr in _st.Traverse():
     _pth = _pr.GetPath().pathString
-    if "Robot" in _pth and ("inner_finger" in _pth) and _pr.HasAPI(_UP.CollisionAPI):
+    if _pr.HasAPI(_UP.CollisionAPI) and (("Robot" in _pth and "inner_finger" in _pth)
+                                          or "/Object" in _pth):
         _US.MaterialBindingAPI.Apply(_pr).Bind(_mat, materialPurpose="physics")
         _nb += 1
 print(f"rubber pads bound to {_nb} collision prims", flush=True)
@@ -162,8 +167,8 @@ def fingertips(tag):
         print(f"  [{tag}] fingertips found: {len(tips)} (expected 2)", flush=True)
         return
     bn2 = list(fr.data.body_names)
-    hp = fr.data.body_pos_w[0, bn2.index("panda_hand")]
-    hq = fr.data.body_quat_w[0, bn2.index("panda_hand")]
+    hp = fr.data.body_pos_w[0, bn2.index("robotiq_base_link")]
+    hq = fr.data.body_quat_w[0, bn2.index("robotiq_base_link")]
     mid = torch.tensor([[(tips[0][i] + tips[1][i]) / 2 for i in range(3)]], device=fr.device) - hp
     mh = quat_apply_inverse(hq.unsqueeze(0), mid)[0]
     tsep = sum((tips[0][i] - tips[1][i]) ** 2 for i in range(3)) ** 0.5
@@ -219,8 +224,13 @@ except Exception:
     pass
 for _ in range(140): app.update()
 
+PIN = {"pose": None, "obj": None}
 def snap(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     d = np.asarray(_rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1:
         Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
@@ -229,7 +239,7 @@ def snap(name):
 # second camera: opposite azimuth on the robot gripper + one on the ghost
 _cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
 _cam2.CreateFocalLengthAttr(30.0)
-_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_e2, _t2 = Gf.Vec3d(1.35, 0.02, 0.88), Gf.Vec3d(0.21, 0.0, 0.80)   # head-on (+x): both fingers side by side
 _f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
 UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
     _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
@@ -247,7 +257,11 @@ _rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
 _rgb3.attach([_rp3])
 
 def snap2(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
         d = np.asarray(ann.get_data())
         if d.ndim >= 3 and d.shape[0] > 1:
@@ -259,7 +273,7 @@ snap("preclose")
 if "obj" in ASSETS:
     bn3 = list(fr.data.body_names)
     MUG_GRIP_Z = 0.12
-    hand_i = bn3.index("panda_hand")
+    hand_i = bn3.index("robotiq_base_link")
     from isaaclab.utils.math import quat_apply_inverse
     # CONTACT SCAN: sweep the bottle's grip height along the vertical line through the
     # PAD MIDPOINT; the close-stall angle maps where the pads are and what they touch:
@@ -269,27 +283,42 @@ if "obj" in ASSETS:
     # ONE clean hold cycle on the STOCK four-bar (wear-free: single seat):
     # open wide, teleport the bottle so its grip height (base+0.12) is d below the
     # hand, squeeze overlapping the teleport hand-off, then physics owns it.
-    d = 0.12
+    d = 0.165
     gp = hp.clone(); gp[2] = hp[2] - d
     fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.35, joint_ids=[fid])
     settle(40)
     snap("open")
     snap2("open")
     pose = obj.data.root_pose_w.clone()
-    pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = gp[2] - MUG_GRIP_Z
+    # measured: bottle origin ~ its NECK (extent -0.16/+0.06); pad faces ~0.17-0.20
+    # below base_link -> origin at base_link - 0.20 puts the neck between the pads
+    pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = hp[2] - 0.20
     pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
-    for _ in range(40):
+    PIN["pose"] = pose; PIN["obj"] = obj
+    for _i in range(40):
         obj.write_root_pose_to_sim(pose)
         obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
         settle(1)
-    snap("seated")
-    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.10, joint_ids=[fid])
-    for _ in range(15):
+        if _i == 20:
+            _bn = list(fr.data.body_names)
+            print(f"  [pin] authored_obj_z={float(pose[0,2]):.3f} actual_obj_z={float(obj.data.root_pose_w[0,2]):.3f} "
+                  f"base_link_z={float(fr.data.body_pos_w[0,_bn.index('robotiq_base_link')][2]):.3f} "
+                  f"l_innf_z={float(fr.data.body_pos_w[0,_bn.index('left_inner_finger')][2]):.3f} "
+                  f"r_innf_z={float(fr.data.body_pos_w[0,_bn.index('right_inner_finger')][2]):.3f}", flush=True)
+            snap("seated"); snap2("seated")   # mid-teleport: true seat pose
+            obj.write_root_pose_to_sim(pose)
+            obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+    # pads KISS the neck while pinned (no squeeze -> no penetration buildup)
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.165, joint_ids=[fid])
+    for _i in range(20):
         obj.write_root_pose_to_sim(pose)
         obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
         settle(1)
-    snap("squeezed")
-    snap2("squeezed")
+    PIN["pose"] = None
+    # NOW squeeze — physics owns the bottle; the pads catch it within ~10 steps
+    fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.05, joint_ids=[fid])
+    settle(30)
+    snap("squeezed"); snap2("squeezed")
     settle(200)
     snap("held")
     bz1 = float(obj.data.root_pose_w[0, 2])
@@ -337,8 +366,13 @@ except Exception:
     pass
 for _ in range(140): app.update()
 
+PIN = {"pose": None, "obj": None}
 def snap(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     d = np.asarray(_rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1:
         Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
@@ -347,7 +381,7 @@ def snap(name):
 # second camera: opposite azimuth on the robot gripper + one on the ghost
 _cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
 _cam2.CreateFocalLengthAttr(30.0)
-_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_e2, _t2 = Gf.Vec3d(1.35, 0.02, 0.88), Gf.Vec3d(0.21, 0.0, 0.80)   # head-on (+x): both fingers side by side
 _f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
 UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
     _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
@@ -365,7 +399,11 @@ _rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
 _rgb3.attach([_rp3])
 
 def snap2(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
         d = np.asarray(ann.get_data())
         if d.ndim >= 3 and d.shape[0] > 1:
@@ -377,7 +415,7 @@ snap("preclose")
 if "obj" in ASSETS:
     bn3 = list(fr.data.body_names)
     MUG_GRIP_Z = 0.12
-    hand_i = bn3.index("panda_hand")
+    hand_i = bn3.index("robotiq_base_link")
     from isaaclab.utils.math import quat_apply_inverse
     # CONTACT SCAN: sweep the bottle's grip height along the vertical line through the
     # PAD MIDPOINT; the close-stall angle maps where the pads are and what they touch:
@@ -423,11 +461,20 @@ if "obj" in ASSETS:
     pose = obj.data.root_pose_w.clone()
     pose[0, 0] = pm[0]; pose[0, 1] = pm[1]; pose[0, 2] = zc - MUG_GRIP_Z
     pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
-    for _ in range(40):
+    PIN["pose"] = pose; PIN["obj"] = obj
+    for _i in range(40):
         obj.write_root_pose_to_sim(pose)
         obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
         settle(1)
-    snap("seated")
+        if _i == 20:
+            _bn = list(fr.data.body_names)
+            print(f"  [pin] authored_obj_z={float(pose[0,2]):.3f} actual_obj_z={float(obj.data.root_pose_w[0,2]):.3f} "
+                  f"base_link_z={float(fr.data.body_pos_w[0,_bn.index('robotiq_base_link')][2]):.3f} "
+                  f"l_innf_z={float(fr.data.body_pos_w[0,_bn.index('left_inner_finger')][2]):.3f} "
+                  f"r_innf_z={float(fr.data.body_pos_w[0,_bn.index('right_inner_finger')][2]):.3f}", flush=True)
+            snap("seated"); snap2("seated")   # mid-teleport: true seat pose
+            obj.write_root_pose_to_sim(pose)
+            obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
     fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.08, joint_ids=[fid])
     for _ in range(15):
         obj.write_root_pose_to_sim(pose)
@@ -482,8 +529,13 @@ except Exception:
     pass
 for _ in range(140): app.update()
 
+PIN = {"pose": None, "obj": None}
 def snap(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     d = np.asarray(_rgb.get_data())
     if d.ndim >= 3 and d.shape[0] > 1:
         Image.fromarray(d[:, :, :3]).save(f"/workspace/logs/rqs_{name}.png")
@@ -492,7 +544,7 @@ def snap(name):
 # second camera: opposite azimuth on the robot gripper + one on the ghost
 _cam2 = UsdGeom.Camera.Define(_stage, "/World/Cam2")
 _cam2.CreateFocalLengthAttr(30.0)
-_e2, _t2 = Gf.Vec3d(0.35, 0.95, 1.0), Gf.Vec3d(0.21, 0.01, 0.82)
+_e2, _t2 = Gf.Vec3d(1.35, 0.02, 0.88), Gf.Vec3d(0.21, 0.0, 0.80)   # head-on (+x): both fingers side by side
 _f2 = (_t2 - _e2).GetNormalized(); _r2 = Gf.Cross(_f2, Gf.Vec3d(0,0,1)).GetNormalized(); _u2 = Gf.Cross(_r2, _f2).GetNormalized()
 UsdGeom.Xformable(_cam2).AddTransformOp().Set(Gf.Matrix4d(
     _r2[0],_r2[1],_r2[2],0, _u2[0],_u2[1],_u2[2],0, -_f2[0],-_f2[1],-_f2[2],0, _e2[0],_e2[1],_e2[2],1))
@@ -510,7 +562,11 @@ _rgb3 = rep.AnnotatorRegistry.get_annotator("rgb")
 _rgb3.attach([_rp3])
 
 def snap2(name):
-    app.update(); app.update()
+    for _ in range(2):
+        if PIN["pose"] is not None:
+            PIN["obj"].write_root_pose_to_sim(PIN["pose"])
+            PIN["obj"].write_root_velocity_to_sim(torch.zeros_like(PIN["obj"].data.root_vel_w))
+        app.update()
     for tag, ann in [("b", _rgb2), ("ghost", _rgb3)]:
         d = np.asarray(ann.get_data())
         if d.ndim >= 3 and d.shape[0] > 1:
@@ -522,7 +578,7 @@ snap("preclose")
 if "obj" in ASSETS:
     bn3 = list(fr.data.body_names)
     MUG_GRIP_Z = 0.12
-    hand_i = bn3.index("panda_hand")
+    hand_i = bn3.index("robotiq_base_link")
     for d in [0.18, 0.21, 0.24]:
         hp = fr.data.body_pos_w[0, hand_i]
         gp = hp.clone(); gp[2] = hp[2] - d          # candidate grip point: d below the hand
@@ -530,6 +586,7 @@ if "obj" in ASSETS:
         # already closing on the neck when the teleport lets go (franka-warmup style)
         fr.set_joint_position_target(torch.zeros(1, 1, device=fr.device) + 0.165, joint_ids=[fid])
         pose = obj.data.root_pose_w.clone()
+        # (stale duplicated block, not executed)
         pose[0, 0] = gp[0]; pose[0, 1] = gp[1]; pose[0, 2] = gp[2] - MUG_GRIP_Z
         pose[0, 3] = 1.0; pose[0, 4:7] = 0.0
         for _ in range(40):

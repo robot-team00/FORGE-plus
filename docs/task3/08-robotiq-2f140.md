@@ -115,9 +115,48 @@ based on pad-body-origin separation sweeps, which the working knuckle mimic can
 produce even with a collapsed distal chain. The composition (attachment recipe) is
 now the prime suspect.
 
-## 6. Remaining plan (next session)
+## 6. RECIPE v3 — the breakthrough (NVIDIA's own 2F-140 pattern)
 
-0. **Baseline first**: mirror NVIDIA's UR10e tree from S3 and spawn their STOCK
+The bucket also holds `ur10e/configuration/ur10e_Gripper_2F_140.usd` — NVIDIA's OWN
+2F-140 attachment (dumped to `/workspace/logs/usd_dumps/ur_cfg140.usda`). It differs
+from the 2F-85 recipe in three decisive ways, now replicated for the Franka in
+`build_franka_robotiq_2f140.py` (v3):
+1. the gripper payload composes ONTO the arm's own EE-link prim (here `panda_hand`),
+   no separate holder Xform;
+2. NO added fixed joint — the arm's `panda_hand_joint` is RETARGETED
+   (`physics:body1 = panda_hand/robotiq_base_link`, anchors unchanged) so the gripper
+   base becomes the arm's distal link in a clean tree;
+3. BOTH articulation APIs are deleted there (the stray `PhysxArticulationAPI` left on
+   the old holder was the parser poison), and `panda_hand` stops being a rigid body.
+
+**Result: a fully healthy two-finger gripper, stock four-bar intact, NO parse ghost
+needed.** And the session's scariest bug dissolved: the "one-finger collapse" seen in
+every earlier snapshot was an OCCLUSION artifact — the side cameras looked straight
+down the finger-spread axis; the head-on view shows two perfect fingers
+(`/workspace/logs/rqs_open_b.png`).
+
+**ENV IMPACT (not yet applied)**: with v3, `panda_hand` is no longer a BODY — the env's
+robotiq branch must use `robotiq_base_link` as the EE body (same frame as the old
+panda_hand via the retargeted joint) and the contact-sensor path becomes
+`Robot/panda_hand/(left|right)_(inner|outer)_finger`. The ghost + holding-gains
+workarounds can likely be dropped.
+
+**Grasp calibration status** (`probe_rq_scene.py`, single-cycle hold tests with pinned
+snapshots — note: snapshots advance physics, so in-teleport frames need the PIN
+mechanism in `snap()`): the bottle USD origin sits near its NECK (extent −0.16/+0.06);
+seating the origin at `base_link − 0.20` puts the neck between the pad faces and the
+squeeze stalls at neck thickness (0.158) — but the bottle still cone-slides out of the
+40 mm pads (they straddle the conical shoulder; squeezing while pinned instead builds
+penetration and ejects violently — kiss-then-squeeze avoids that but the slide
+remains). Open options: pad-tip pinch on the thin neck section, a robotiq-specific
+bottle scale (~0.6 → fatter, longer cylindrical neck), or letting RL fine-tune grip
+force as the franka pipeline does.
+
+## 7. Remaining plan (next session)
+
+0. ~~Baseline~~ superseded by §6. **Next**: env v3 branch fixes (EE body, sensor path, drop ghost), then grasp options above, zero-shot, render.
+
+0b. (old) **Baseline first**: mirror NVIDIA's UR10e tree from S3 and spawn their STOCK
    `UR10e_ROBOTIQ_GRIPPER_CFG` (their own combo, none of our composition) — snapshot
    it. Two clean fingers → our attachment recipe is at fault (diff against their
    variant layer); broken too → the sim stack can't do this gripper and the honest

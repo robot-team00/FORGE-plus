@@ -39,25 +39,23 @@ ROOT_PATH = f"{FP_DIR}/franka_robotiq_2f140.usd"
 # extra nesting level; the 140 physics_edit does not). All overs are one level up,
 # and the ArticulationRootAPI delete + flange pose sit on the holder prim itself.
 #
-# NOTE 2 — TELEPORT CONTRACT: the 2F-140 closes each finger's four-bar with
-# maximal-coordinate loop joints (inner_knuckle_joints, excludeFromArticulation=1).
-# On this PhysX build those loop constraints DO NOT survive articulation joint-state
-# teleports (write_joint_state_to_sim) — verified in probe_rq_isolate tests A–D: any
-# teleport (even arm-only, gripper shape unchanged) leaves the linkage in a flipped/
-# degenerate branch and the pads collapse. The asset works when: (a) it spawns at its
-# authored default pose (parse-consistent), (b) it is driven only by forces/position
-# TARGETS afterwards, and (c) see NOTE 3. The env honors this for gripper
-# "robotiq_2f140": no joint-state writes, grip/open via finger_joint drive targets,
-# and the FORGE setup drive (OSC) takes the arm from the default pose to the hand-off.
-#
-# NOTE 3 — THE PARSE GHOST (PhysX quirk, empirically airtight): the merged gripper's
-# excluded loop joints are only MATERIALIZED by the physics parser when a STANDALONE
-# articulation instance of the same gripper USD also exists in the scene. Without it
-# the loop constraints silently never exist and the four-bar collapses at spawn
-# (5/5 broken solo-free runs vs 3/3 healthy runs with the ghost — probe_rq_isolate
-# probe_ghost run flipped ONLY this variable). The env therefore spawns a "parse
-# ghost": one gravity-free 2F-140 articulation parked far outside the workspace.
-# It is invisible to the camera, never touched, and costs ~10 bodies of sim.
+# NOTE 2 — RECIPE v3 (NVIDIA's own 2F-140 attachment pattern, from
+# ur10e/configuration/ur10e_Gripper_2F_140.usd): the 2F-85-style recipe (separate
+# holder prim + AssemblerFixedJoint) produced a subtly broken mechanism (loop joints
+# needing a "parse ghost", tearing under teleports/sag, one finger never assembling
+# — see docs/task3/08 sections 2-5). NVIDIA attaches the 140 differently:
+#   * payload the gripper ONTO the arm's own EE-link prim (here panda_hand), and
+#     delete BOTH articulation APIs there (a stray PhysxArticulationAPI on the old
+#     holder was likely the parser confusion all along);
+#   * panda_hand also stops being a rigid body (APIs deleted) — it becomes the
+#     container prim, exactly like NVIDIA's massless ur10e ee_link;
+#   * NO added fixed joint: the arm's own panda_hand_joint is RETARGETED to
+#     physics:body1 = panda_hand/robotiq_base_link with UNCHANGED local anchors
+#     (the 2F-85 recipe proved base_link frame == panda_hand frame), so the gripper
+#     base becomes the arm's distal link in a clean articulation tree;
+#   * the stock four-bar (loop joints, pads, springs) is left fully intact.
+# ENV NOTE: panda_hand is no longer a BODY — the robotiq EE body is
+# "robotiq_base_link" (same frame). The parse ghost should no longer be needed.
 CFG_USDA = """#usda 1.0
 (
     defaultPrim = "panda"
@@ -65,29 +63,26 @@ CFG_USDA = """#usda 1.0
 
 def Xform "panda"
 {
-    def Xform "Robotiq_2F_140_edit" (
-        delete apiSchemas = ["PhysicsArticulationRootAPI"]
+    over "panda_hand" (
+        delete apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI", "PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
         prepend payload = @../../../Robotiq/2F-140/Robotiq_2F_140_physics_edit.usd@
     )
     {
-        quatd xformOp:orient = (0, 0.9238795325112867, 0.3826834323650898, 0)
-        double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (0.08799996972084045, 0, 0.9259999394416809)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-        over "robotiq_base_link"
+        over "geometry" (
+            active = false
+        )
         {
-            def PhysicsFixedJoint "AssemblerFixedJoint"
-            {
-                rel physics:body0 = </panda/panda_hand>
-                rel physics:body1 = </panda/Robotiq_2F_140_edit/robotiq_base_link>
-                point3f physics:localPos0 = (0, 0, 0)
-                point3f physics:localPos1 = (0, 0, 0)
-                quatf physics:localRot0 = (1, 0, 0, 0)
-                quatf physics:localRot1 = (1, 0, 0, 0)
-            }
         }
-
+        over "panda_finger_joint1" (
+            active = false
+        )
+        {
+        }
+        over "panda_finger_joint2" (
+            active = false
+        )
+        {
+        }
         over "finger_joint"
         {
             float state:angular:physics:position = 0
@@ -140,22 +135,11 @@ def Xform "panda"
         }
     }
 
-    over "panda_hand"
+    over "panda_link7"
     {
-        over "panda_finger_joint1" (
-            active = false
-        )
+        over "panda_hand_joint"
         {
-        }
-        over "panda_finger_joint2" (
-            active = false
-        )
-        {
-        }
-        over "geometry" (
-            active = false
-        )
-        {
+            rel physics:body1 = </panda/panda_hand/robotiq_base_link>
         }
     }
 
