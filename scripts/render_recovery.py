@@ -66,16 +66,22 @@ for _k in ["/rtx/reflections/enabled", "/rtx/translucency/enabled",
             "/rtx/directLighting/sampledLighting/enabled"]:
     S.set(_k, False)
 
-JAM   = float(os.environ.get("JAM", "0.05"))
+GRIPPER0 = os.environ.get("GRIPPER", "franka_panda")
+# robotiq defaults: the cell funnel forgives ~±3 cm and self-centers a 5 cm
+# fault — the wedge only holds at 8 cm; the episode seats on attempt 3 after
+# three signature->recovery cycles (env smoke 46), so K_MAX 6.
+JAM   = float(os.environ.get("JAM", "0.08" if GRIPPER0 == "robotiq_2f140" else "0.05"))
 OBJ   = int(os.environ.get("OBJ", "0"))       # 0 = glass (fragile, break ~22 N)
-K_MAX = int(os.environ.get("K_MAX", "5"))
+K_MAX = int(os.environ.get("K_MAX", "6" if GRIPPER0 == "robotiq_2f140" else "5"))
 CAP_EVERY = int(os.environ.get("CAP_EVERY", "1"))   # capture every Nth control step
 TAKE  = int(os.environ.get("TAKE", "1"))      # take index — encodes to a VERSIONED take file
                                               # (never clobbers the approved docs/ video)
 
+GRIPPER = os.environ.get("GRIPPER", "franka_panda")   # franka_panda | robotiq_2f140
+
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs   = 1
-cfg.gripper          = "franka_panda"
+cfg.gripper          = GRIPPER
 cfg.place_strategy   = "insert"
 cfg.settle_steps     = 400
 cfg.episode_length_s = 120.0   # the loop owns the timeline — no auto-reset mid-demo
@@ -89,6 +95,12 @@ cfg.rec_dur_steps       = 80      # recovery maneuver: ~40 control steps to re-r
 cfg.grasp_topdown       = False
 cfg.forge_obj_cls       = OBJ
 cfg.render_minimal      = bool(int(os.environ.get("RENDER_MINIMAL", "0")))
+if GRIPPER == "robotiq_2f140":
+    # mirror run_recovery_insertion.py: long setup drive from the spawn pose
+    # (arrival-armed seat), probe-v50 seat cadence, raw parse (loop joints).
+    cfg.forge_setup_steps = 4000
+    cfg.warmup_substeps   = 100
+    cfg.scene.replicate_physics = False
 
 from isaaclab.envs import DirectRLEnv as _DRL
 FrankaPickPlaceEnv.render = _DRL.render
@@ -172,7 +184,8 @@ os.makedirs(FRAMEDIR, exist_ok=True)
 for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
 # Takes encode to VERSIONED scratch files (render_takes/forge_recovery_take_NNN.mp4); only an
 # approved take is copied to the stable, README-linked docs/videos/task3/forge_recovery.mp4.
-OUTPUT = os.environ.get("OUT", "/workspace/render_takes/forge_recovery_take_%03d.mp4" % TAKE)
+_gtag = "robotiq" if GRIPPER == "robotiq_2f140" else "franka"
+OUTPUT = os.environ.get("OUT", "/workspace/render_takes/forge_recovery_%s_take_%03d.mp4" % (_gtag, TAKE))
 Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 
 W, H = 960, 540
@@ -328,7 +341,12 @@ def _draw_frame(attempt, step):
 t0 = _time.time()
 def _on_step(e, attempt, step):
     hud["attempt"] = attempt
-    if step % CAP_EVERY != 0:
+    # robotiq: the scripted approach is ~2000 control steps (vs franka's 350) —
+    # capture it sparsely (x6) so the take stays watchable; the LEARNED/recovery
+    # action keeps the full CAP_EVERY density.
+    _ce = CAP_EVERY * (6 if (GRIPPER == "robotiq_2f140"
+                             and int(e._setup_ctr[0].item()) > 0) else 1)
+    if step % _ce != 0:
         return
     ok = _draw_frame(attempt, step)
     if step % 40 == 0:
@@ -348,9 +366,15 @@ for a in result.log:
 # that slipped/fell into the cell is a lucky drop, not a place: the take is rejected.
 seat_valid = False
 if result.outcome == RecoveryOutcome.SUCCESS:
-    gap  = float((env._robot.data.joint_pos[0, 7] + env._robot.data.joint_pos[0, 8]).item())
     rel0 = bool(env._released[0].item())
-    seat_valid = env.is_success() and (0.008 < gap < 0.030) and not rel0
+    if GRIPPER == "robotiq_2f140":
+        # held = finger_joint at the neck stall (~0.70); free-close on air is
+        # ~0.785 and only reachable after a release/drop.
+        gap = float(env._robot.data.joint_pos[0, env._grip_ids[0]].item())
+        seat_valid = env.is_success() and (0.55 < gap < 0.78) and not rel0
+    else:
+        gap  = float((env._robot.data.joint_pos[0, 7] + env._robot.data.joint_pos[0, 8]).item())
+        seat_valid = env.is_success() and (0.008 < gap < 0.030) and not rel0
     print("seat validation: in_cell=%s gap=%.4f rel=%d -> %s"
           % (env.is_success(), gap, int(rel0), "VALID" if seat_valid else "REJECT"), flush=True)
 

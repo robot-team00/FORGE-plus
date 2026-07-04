@@ -89,7 +89,10 @@ def main() -> None:
             # TELEPORT CONTRACT: the robotiq path starts at the DEFAULT arm pose (no
             # reset teleport), so the scripted setup needs a longer window to drive
             # the ~0.5 m from the spawn pose to the cell-entrance hand-off.
-            cfg.forge_setup_steps = 700   # gentler robotiq traverse (0.015/substep) needs more steps
+            cfg.forge_setup_steps = 4000  # predrive 600 + seat 270 + hover-lift + ~2 cm/s carry
+                                          # (base at (-0.15,0.12): dest ~0.46 m dead-ahead) +
+                                          # the seat window on the stiff drives + a post-
+                                          # grip settle hold before the policy goes live.
             # the 2F-140 drive needs ~30 env steps to open from the closed spawn to
             # the kiss angle before the bottle teleports in (drive vel limit 1 rad/s)
             cfg.warmup_substeps   = 100
@@ -158,6 +161,14 @@ def main() -> None:
                   f"{gtxt} cf={cf:5.2f} rec={int(e._rec_steps[0])} "
                   f"setup={int(e._setup_ctr[0])} rel={int(e._released[0])} "
                   f"fail={e.is_failure()}", flush=True)
+            if os.environ.get("RQ_TRACE") == "1" and step % 40 == 0 \
+                    and int(e._setup_ctr[0]) == 0:
+                q = e._robot.data.body_quat_w[0, e._ee_idx]
+                a = e._actions[0]
+                print(f"      [obs] jp={[round(float(v), 2) for v in e._robot.data.joint_pos[0, :7]]} "
+                      f"quat={[round(float(v), 3) for v in q]} "
+                      f"act={[round(float(v), 2) for v in a[:3]]}"
+                      f"{' m7=%+.2f' % float(a[7]) if a.shape[0] > 7 else ''}", flush=True)
 
     result = loop.run(env, on_step=_on_step)
 
@@ -217,8 +228,7 @@ def main() -> None:
             "log": [a.__dict__ for a in result.log],
         }, fh, indent=2)
     print(f"  wrote {args.out}", flush=True)
-    _app.close()
-    os._exit(0)
+    os._exit(0)   # skip app.close() — it hangs headless and pins GPU memory
 
 
 if __name__ == "__main__":

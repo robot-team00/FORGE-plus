@@ -56,6 +56,28 @@ ROOT_PATH = f"{FP_DIR}/franka_robotiq_2f140.usd"
 #   * the stock four-bar (loop joints, pads, springs) is left fully intact.
 # ENV NOTE: panda_hand is no longer a BODY — the robotiq EE body is
 # "robotiq_base_link" (same frame). The parse ghost should no longer be needed.
+#
+# NOTE 3 — WRONG-BRANCH FIX (probe_rq_scene v48/v49): in the merged articulation
+# the parser keeps the *_inner_finger_pad_joints as TREE edges and demotes the
+# base->inner_knuckle joints to maximal-coordinate loop joints — WHICH STAY ALIVE.
+# The gripper misbehaves (pads scissor, gap floors ~30 mm) because the four-bar
+# assembles in the WRONG branch: NVIDIA models *_outer_finger_joint as a free
+# 0-180 deg pivot (adaptive-grasp spring DOF; the ROS URDF has it FIXED), and at
+# spawn the fingers fold onto that parasitic DOF. The v48 relations sweep showed
+# the right finger snapping into the TRUE branch at high closure: outer_finger=0,
+# inner_finger=-theta (pads parallel, loop-enforced, exact to 4 decimals),
+# pad_joint=+theta. Fix: clamp *_outer_finger_joint limits to (0, 0.01 deg) so only
+# the correct branch can assemble; NO mimic joints are added (adding mimics that
+# fight the live loop NaNs the sim instantly; mimicking the demoted knuckle joints
+# also NaNs). NVIDIA's stock mimic on right_outer_knuckle_joint stays.
+#
+# NOTE 4 — DO NOT bake an arm spawn pose (state:angular on panda_joint1..7) into
+# this layer: it acts like a PARSE-TIME TELEPORT on the merged gripper — the
+# four-bar spawns collapsed (finger sep 0.0037 vs healthy ~0.034) and the torn
+# loop constraints poison the articulation (mass matrix / gravity comp garbage,
+# the arm goes limp and sinks — env smoke 7). The env instead PRE-DRIVES the arm
+# from the stock folded spawn to the side-grip pose with the holding gains (the
+# probe's servo mechanism, proven tear-free), then hands the arm to the OSC.
 CFG_USDA = """#usda 1.0
 (
     defaultPrim = "panda"
@@ -105,11 +127,15 @@ def Xform "panda"
         }
         over "left_outer_finger_joint"
         {
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 0.01
             float state:angular:physics:position = 0
             float state:angular:physics:velocity = 0
         }
         over "right_outer_finger_joint"
         {
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 0.01
             float state:angular:physics:position = 0
             float state:angular:physics:velocity = 0
         }

@@ -626,35 +626,142 @@ if ISAAC_AVAILABLE:
             self._advanced   = torch.zeros(N, dtype=torch.bool, device=d)  # advanced a phase this step
             self._set_reset  = torch.zeros(N, dtype=torch.bool, device=d)
             self._warmup     = torch.zeros(N, dtype=torch.long, device=d)
-            self._rq_static  = torch.zeros(N, dtype=torch.long, device=d)  # robotiq: static-arm window
+            # robotiq seat WINDOW: the arm spawns folded (no teleport under the
+            # contract) and the OSC traverse pace varies, so the seat is ARMED BY
+            # ARRIVAL at the stage-2 hand-off pose (not by a countdown value) and
+            # runs on its own counter while the arm freezes and setup_ctr pauses.
+            # _rq_seatctr: -1 = pending (traverse; bottle parked), >0 = seat active
+            # (probe-v50 cadence below), 0 = done (grip established, setup resumes).
+            self._rq_seatctr = torch.zeros(N, dtype=torch.long, device=d)
+            # PRE-DRIVE (robotiq): joint-position-drive the arm from the folded USD
+            # spawn to the probe-approved side-grip pose on the HOLDING gains (the
+            # probe's servo mechanism — proven tear-free; asset NOTE 4: baking the
+            # pose as spawn state tears the four-bar at parse). The OSC gets the
+            # arm only when this counter expires (gains zeroed at that moment).
+            self._rq_predrive = torch.full((N,), -1, dtype=torch.long, device=d)
+            self._RQ_PREDRIVE = 600   # substeps; open-loop drive to the probe pose
+            self._rq_pd_ext = 0       # tolerance-gated extensions used (max 4 x 240)
+            # The closed-loop pose servo is OFF: chasing the hand-off pose walks
+            # the arm into OSC-hostile pose families (smoke 13 vertical-shoulder
+            # runaway, smoke 14 reared-up clamp corner). The open-loop command
+            # reproduces the probe pose exactly (smoke 9: ee (0.154,0,0.75),
+            # level) — the seat happens THERE, and the OSC carries the gripped
+            # bottle to the cell (carry stability proven in smokes 12/13).
+            self._rq_servo_on = False
+            # Integral z feedforward for the OSC carry: PhysX's gravity comp is
+            # ~50 N-equivalent short for this loop-jointed articulation in
+            # extended poses (smoke 15: 13 cm sag drove the carried bottle into
+            # the rack wall at 25 N). The integrator self-calibrates the missing
+            # lift during the scripted setup and FREEZES when the policy goes
+            # live (so it never fights the intentional insertion contact).
+            self._rq_fup = torch.zeros(N, device=d)   # (legacy J-row lift — unused)
+            self._rq_ag  = torch.zeros(N, device=d)   # adaptive gravity-comp scale (tau += ag*grav)
+            self._rq_f   = torch.zeros(N, 3, device=d)  # LEARNED-phase residual EE force (N)
+            self._rq_prev_ee: torch.Tensor | None = None   # realized-vs-commanded step memory
+            self._rq_prev_cmd = torch.zeros(N, 3, device=d)
+            self._rq_carry_dz = 0.13  # extra carry altitude: must ALSO offset the
+                                      # -0.045 tcp_dz (which lowers BOTH stages) so
+                                      # the carried bottle clears the rack top —
+                                      # at +0.08 it skimmed rim height and dropped
+                                      # into the goal cell mid-carry (smokes 28/29)
+            self._rq_des_z = torch.zeros(N, device=d)  # unclamped setup z target (integrator error)
+            self._rq_lift_ok = True   # False between OSC handoff and lift convergence:
+            self._rq_liftctr = 0      # xy HELD at the handoff anchor until the integrator
+                                      # has learned the lift (carrying early = rack strike)
+            self._rq_hover_xy = torch.zeros(N, 2, device=d)  # FIXED hover anchor — following
+                                      # the live xy is a moving target = zero xy stiffness
+                                      # and the arm drifts away unopposed (smoke 18)
+            # Grip height on the bottle (robotiq): 0.14, NOT cfg.mug_grip_z 0.12.
+            # Mesh profile (scale 0.5): the neck TAPERS up to z~0.115 (16.6->18.5
+            # mm below it — a camming ramp that converts any axial load into a
+            # pad-opening force; the bottle slid up through the pinch in every
+            # press/wedge, smokes 30-37). 0.12-0.15 is a TRUE 15.5 mm cylinder
+            # with the string-ring bulge at 0.142 — gripping at 0.14 puts the pad
+            # column on the cylinder with the RING inside the pinch: a positive
+            # interlock against axial slip.
+            self._rq_grip_h = 0.14
+            self._rq_rimz = torch.full((N,), -1.0, device=d)  # rim-contact altitude (-1 unset)
+            self._rq_rec_prev = torch.zeros(N, dtype=torch.long, device=d)  # recovery edge detect
+            self._rq_centered = False  # True after the first recovery centers the approach
+            self._rq_desc = torch.zeros(N, dtype=torch.bool, device=d)  # LATCHED descent:
+                                      # a hysteresis-free arrival gate chattered the z
+                                      # target 0.80/0.68 for 400 substeps at the boundary
+                                      # and destabilized the hover (smoke 21)
+            # COMMAND targets, droop-compensated (= 2*desired - reached, smoke 8):
+            # the holding gains sag under gravity, so commanding the desired pose
+            # directly lands j2/j4 ~0.2 rad low (hand pitched ~23 deg down).
+            # Desired MEASURED pose: [0, -1.4089, 0, -2.6779, 0, 2.896, 0.7204].
+            # _rq_arm_cmd is the LIVE command the predrive SERVO trims every 120
+            # substeps (probe servo: z err -> j2, pitch err -> j6) so the hand ends
+            # LEVEL at the hand-off height regardless of droop.
+            self._rq_arm_pose = torch.tensor(
+                [0.0, -1.2318, -0.0005, -2.4548, 0.0006, 2.9060, 0.7198], device=d)
+            self._rq_arm_cmd = self._rq_arm_pose.clone()
+            self._rq_drive_mode = False  # True (robotiq) until the seat completes:
+                                         # arm on HOLDING-GAIN joint drives (probe
+                                         # regime: zero sag, level pads); the OSC
+                                         # gets the arm only after the grip holds.
+            self._RQ_SEAT_HI = 270   # window length: pin+settle 50, kiss 50, ...
+            self._RQ_KISS_HI = 220   # ctr<=220: pads target kiss
+            self._RQ_KISS_LO = 170   # ctr<=170: full-close squeeze (0.785)
+            self._RQ_PIN_LO  = 40    # ctr<=40: unpin. The squeeze must be FULLY
+                                     # stalled+settled before release: unpinning at
+                                     # 110 freed the bottle mid-close and the still-
+                                     # closing pads extruded it down the neck taper
+                                     # (smokes 9/11: pinned stall 0.587 = correct,
+                                     # post-unpin creep to 0.70 = escape).
             # Distance from the hand origin to the grasp point (between the fingertip
             # pads) along the hand's local +z. Per-env so it can be swept/calibrated;
             # 0.067 seats the block centrally between the panda pads (calibrated).
             # The Robotiq 2F-140's pads sit much lower below the flange (calibrated
             # empirically via the headless recovery probe).
-            _tcp = 0.19 if self.cfg.gripper == "robotiq_2f140" else 0.067
+            # robotiq: the grip point (neck between the fingertip pads) sits 0.214 m
+            # along the hand's local +z from robotiq_base_link (probe v50: EE at
+            # x=0.145, held grip at x=0.359, approach = local +z). Same PERPENDICULAR
+            # side grip as the franka demo, just a longer hand.
+            _tcp = 0.214 if self.cfg.gripper == "robotiq_2f140" else 0.067
             self._grasp_tcp_d = torch.full((N,), _tcp, device=d)
             # Gripper-length delta vs the franka hand: shifts the FORGE hand-off /
             # transport / retract HEIGHTS so the BOTTLE traverses the same altitudes.
-            # robotiq: EE(base_link) sits ~0.42 above the bottle BASE (lip grip at
-            # -0.22, base a further -0.20 at scale 0.62) vs the franka's ~0.17.
-            self._tcp_dz = 0.25 if self.cfg.gripper == "robotiq_2f140" else 0.0
+            # With the perpendicular side grip the extra length extends HORIZONTALLY,
+            # so no height shift (the old 0.25 was for the abandoned top-down lip grip).
+            # -0.045 (robotiq): the horizontal side grip holds the bottle base at
+            # grasp_z - 0.12 = 0.535 at the franka's approach altitude — 4 cm of
+            # FREE SPACE above the rim. The policy was trained ENTIRELY in-contact
+            # (franka's tilted grasp parks the base ON the rim, cf ~6 N from step
+            # one); in free space its action mean saturates (+1,+1) and it flees
+            # (offline probe, smoke 27). Lowering the hand-off by 4.5 cm restores
+            # the trained bottle-on-rim contact state at the policy hand-off.
+            self._tcp_dz = -0.045 if self.cfg.gripper == "robotiq_2f140" else 0.0
+            # The FORGE setup dest places the EE at the cell xy; with the horizontal
+            # side grip the BOTTLE then hangs one tcp-length further along the +x
+            # approach axis. The learned policy was trained on the franka's ~6.7 cm
+            # lean — keep the BOTTLE at that same offset by pulling the (longer)
+            # robotiq EE dest back by the tcp difference.
+            # Aim the contact-terminated descent at the JAM WEDGE point (bottle
+            # base -> rack_x + jam_dx): the wedge loads the pinch LATERALLY,
+            # which it sustains (carries, 25 N strikes) — a downward rim press
+            # always slips out axially through the four-bar's compliance
+            # (smokes 30-35; the 0.12 grip is on the neck taper, mesh-verified).
+            # The wedged bottle IS the trained jam state: the policy wakes in
+            # contact, can't descend -> force signature -> recovery -> learned
+            # re-insertion. (The franka demo seeds the same fault via base-aim.)
+            self._rq_dest_dx = (self.cfg.jam_dx - _tcp) if self.cfg.gripper == "robotiq_2f140" else 0.0
             # Finger half-opening to rest the pads at during warmup: block half-width
             # (0.020) minus 1 mm so the pads sit just at the surface (clean seat, no
             # deep penetration), then the PD grip takes over and holds by friction.
             self._grasp_seat_w = 0.006
-            # Robotiq finger_joint targets (rad; 0 = CLOSED, 0.785 = fully open —
-            # inverted vs the ROS URDF). Calibration curve (probe_robotiq_env):
-            # pad-body separation 0.040 m at 0 -> 0.127 m at 0.7; the ~1.6 cm bottle
-            # neck maps to ~0.09; squeeze a little under, seat a little over.
-            # calibrated (probe_rq_scene LIPGRIP, scale-0.62 bottle): pads KISS the
-            # neck at 0.19 during the warmup teleport, squeeze to 0.08 after; the
-            # bottle origin (its NECK) seats 0.22 below robotiq_base_link at the
-            # PAD-FACE midpoint xy (2.4 cm off the base_link axis!).
-            self._rq_close  = 0.08  # the statically-held squeeze (full close ejects the cone)
-            self._rq_seat   = 0.19
-            self._rq_open   = 0.45
-            self._rq_seat_dz = 0.22
+            # Robotiq finger_joint targets (rad; 0 = OPEN, 0.785 = full close — the
+            # STANDARD convention; the old "inverted" reading was an artifact of the
+            # four-bar assembling in the wrong branch, fixed by the outer_finger lock
+            # baked into the asset — build_franka_robotiq_2f140.py NOTE 3).
+            # Calibrated on the fixed mechanism (probe v50, scale-0.5 bottle, 16 mm
+            # neck): tip gap 59 mm at 0 -> 0 mm at ~0.35; KISS at 0.218 (24 mm gap);
+            # SQUEEZE = full-close command 0.785 — the drive stalls on the neck at its
+            # effort limit (ang ~0.589, bounded pinch), pads parallel throughout.
+            self._rq_close  = 0.785
+            self._rq_seat   = 0.218
+            self._rq_open   = 0.0
             # PD gains for the position-controlled grip (effort = k·(target-pos) - kd·vel).
             # k·overlap sets the squeeze: 1500 N/m · 0.010 m = 15 N grip (friction
             # 1.6·15 = 24 N >> the 0.5 N block weight), penetration sub-mm under rigid contact.
@@ -737,22 +844,47 @@ if ISAAC_AVAILABLE:
                 #    standalone 2F-140 articulation is also in the scene (spawned below).
                 robot_cfg.spawn.usd_path = ("/workspace/assets/isaac51/Robots/"
                                             "FrankaRobotics/FrankaPanda/franka_robotiq_2f140.usd")
+                # BASE MOVE — FARTHER from the rack, dead-ahead of the cell row:
+                # (+0.155, +0.13) spawned the base INSIDE the table corner (table
+                # x>=0.15) and the unfolding arm collided (smoke 10: j1 shoved 48
+                # deg off its zero target). At (-0.15, +0.12) the base clears the
+                # table by 30 cm, the hand-off dest (~0.31, 0.11) sits ~0.46 m
+                # dead-ahead (franka-like reach, approach exactly +x), and the
+                # predrive SERVO (j1 yaw / j4 reach / j2 height / j6 pitch) closes
+                # the remaining error on the stiff drives.
+                robot_cfg.init_state.pos = (-0.15, 0.12, 0.0)
                 _jp = {k: v for k, v in robot_cfg.init_state.joint_pos.items()
                        if not k.startswith("panda_finger")}
                 _jp.update({"finger_joint": 0.0, ".*_inner_finger_joint": 0.0,
                             ".*_inner_finger_pad_joint": 0.0, ".*_outer_.*_joint": 0.0})
+                # Match the GRASP-READY spawn pose baked into the asset (build
+                # script NOTE 4): the arm spawns at the probe-approved side-grip
+                # pose (hand horizontal +x by the rack), not the factory fold.
+                _jp.update({"panda_joint1": 0.0, "panda_joint2": -1.4082,
+                            "panda_joint3": 0.0, "panda_joint4": -2.678,
+                            "panda_joint5": 0.0, "panda_joint6": 2.8968,
+                            "panda_joint7": 0.7204})
                 robot_cfg.init_state.joint_pos = _jp
                 # Actuators: isaaclab's UR10e+2F-140 template. Drive the finger_joint;
                 # the pad springs adapt; the rest is loop-/mimic-owned (passive).
                 from isaaclab.actuators import ImplicitActuatorCfg
                 robot_cfg.actuators.pop("panda_hand", None)
                 robot_cfg.actuators["gripper_drive"] = ImplicitActuatorCfg(
-                    joint_names_expr=["finger_joint"], effort_limit_sim=10.0,
+                    # effort 30 (was 10): the pinch's AXIAL slip limit scales with
+                    # the drive effort — at 10 the bottle slides up through the
+                    # pads above ~5 N of insertion press (smokes 33/34), below the
+                    # ~13 N the jam force-signature needs. 30 gives ~15 N of
+                    # sustained axial capacity; still a bounded, velocity-limited
+                    # squeeze on the neck.
+                    joint_names_expr=["finger_joint"], effort_limit_sim=30.0,
                     velocity_limit_sim=1.0, stiffness=11.25, damping=0.1,
                     friction=0.0, armature=0.0)
+                # Follower joints must be (near-)undriven: the LIVE four-bar loop
+                # owns their kinematics (inner_finger = -finger_joint exactly, pads
+                # parallel). Any real stiffness here fights the loop (probe v48-50).
                 robot_cfg.actuators["gripper_finger"] = ImplicitActuatorCfg(
-                    joint_names_expr=[".*_inner_finger_joint"], effort_limit_sim=1.0,
-                    velocity_limit_sim=1.0, stiffness=0.2, damping=0.001,
+                    joint_names_expr=[".*_inner_finger_joint"], effort_limit_sim=0.01,
+                    velocity_limit_sim=1.0, stiffness=0.0, damping=0.001,
                     friction=0.0, armature=0.0)
                 robot_cfg.actuators["gripper_passive"] = ImplicitActuatorCfg(
                     joint_names_expr=[".*_inner_finger_pad_joint", ".*_outer_finger_joint",
@@ -818,11 +950,10 @@ if ISAAC_AVAILABLE:
                         # FRICTION grasp holds it through the carry (a round mug body can't).
                         # Origin is at the base; the seat offsets by mug_grip_z to grip the neck.
                         usd_path="/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd",
-                        # robotiq: a ~24% larger bottle instance (closer to a real wine
-                        # bottle) — its fatter, longer cylindrical neck is what the
-                        # 40 mm 2F-140 pads grip reliably (LIPGRIP calibration).
-                        scale=(0.62, 0.62, 0.62) if self.cfg.gripper == "robotiq_2f140"
-                        else (0.5, 0.5, 0.5),
+                        # Same scale-0.5 bottle for BOTH grippers (franka-video parity;
+                        # the fixed parallel-pad 2F-140 pinches the 16 mm neck directly —
+                        # probe v50 held it; the 0.62 upsize was a wrong-branch workaround).
+                        scale=(0.5, 0.5, 0.5),
                         mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
                         # DYNAMIC — real physics: held by the friction grip, carried, released.
                         rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -1092,17 +1223,78 @@ if ISAAC_AVAILABLE:
             # height. NO base-aim — so the bottle's base starts ~6 cm off (the lean),
             # and the LEARNED policy must correct that alignment itself + descend + force.
             stage1 = self._setup_ctr > (c.forge_setup_steps // 2)
+            if self.cfg.gripper == "robotiq_2f140":
+                # ARRIVAL-gated descent: drop from the carry altitude only once
+                # the EE is over the cell xy — the time-based split descended
+                # 7 cm short and drove the carried bottle into the rack wall at
+                # 26 N (smoke 19). The impedance-limited carry is ~2 cm/s, so
+                # time-based scheduling can't know when the xy leg is done.
+                _dxy = torch.stack(
+                    [orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx,
+                     orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1)
+                _dist = (ee_pos_w[:, :2] - _dxy).norm(dim=-1)
+                # PERMANENT latch: engage the descent at 2 cm and never release —
+                # a release bound (smoke 22: 6 cm) re-commanded the +20 cm climb
+                # mid-descent when xy drifted, and the up-target is what triggers
+                # every float-away. If xy drifts during the descent, the P pulls
+                # it back at the LOW altitude (over the open cell — benign).
+                self._rq_desc = self._rq_desc | (_dist < 0.02)
+                stage1 = (stage1 | (_dist > 0.03)) & (~self._rq_desc)
+                # CONTACT-TERMINATED descent: stop at first rim touch (~3 N) —
+                # the franka's trained hand-off state is bottle-PRESSED-ON-RIM.
+                # A fixed altitude either leaves free space (policy flees, smoke
+                # 27) or lets the bottle slide into the hole under SCRIPT (smoke
+                # 28's disallowed "success"). On touch: freeze the altitude and
+                # fast-forward the setup so the LEARNED policy takes over.
+                _hit = self._rq_desc & (self._cf_filt > 3.0) & (self._rq_rimz < 0)
+                # freeze 5 mm ABOVE the touch point: the descent's momentum
+                # carries the press to ~12 N, which exceeds the pinch's AXIAL
+                # SLIP limit — the bottle slides up through the pads and the
+                # contact unloads to zero (smoke 33). Backing off settles the
+                # press at ~3-5 N: sustained, in the policy's trained band.
+                # (Freezing 1.2 cm BELOW pushed the base off the divider into
+                # the hole — smoke 31; AT the point overpressed — smoke 33.)
+                self._rq_rimz = torch.where(_hit, ee_pos_w[:, 2] + 0.005, self._rq_rimz)
+                self._setup_ctr = torch.where(
+                    _hit, torch.minimum(self._setup_ctr,
+                                        torch.full_like(self._setup_ctr, 60)),
+                    self._setup_ctr)
+                if bool(_hit[0]):
+                    import os as _os6
+                    if _os6.environ.get("RQ_TRACE") == "1":
+                        print(f"      [rq-rim] contact at ee_z="
+                              f"{float(ee_pos_w[0, 2] - orig[0, 2]):.3f} "
+                              f"cf={float(self._cf_filt[0]):.1f} -> policy in 60",
+                              flush=True)
             appr = ee_pos_w.clone()
-            appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0]
+            appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
             # _tcp_dz shifts the HAND heights for longer grippers (robotiq) so the
             # BOTTLE traverses/hands-off at the same altitudes as with the panda hand.
-            appr[:, 2] = orig[:, 2] + torch.where(stage1, c.transport_z, c.forge_approach_z) + self._tcp_dz
+            _tz = c.transport_z + (self._rq_carry_dz if self.cfg.gripper == "robotiq_2f140" else 0.0)
+            appr[:, 2] = orig[:, 2] + torch.where(stage1, torch.full_like(appr[:, 2], _tz),
+                                                  torch.full_like(appr[:, 2], c.forge_approach_z)) \
+                         + self._tcp_dz
+            if self.cfg.gripper == "robotiq_2f140":
+                if self._rq_centered:
+                    # centered (post-recovery) descent: 6 cm deeper than the
+                    # entrance — the funnel ride is contact-free in the middle
+                    # and the burst must carry the bottle to the SEAT (smoke 45:
+                    # stopped at the entrance altitude with the bottle mid-mouth,
+                    # and the free-space policy lifted it back out). The 3 N
+                    # contact gate still halts this instantly on any resistance.
+                    appr[:, 2] = appr[:, 2] - 0.06
+                # rim-contact altitude freeze (set below on first ~3 N touch)
+                appr[:, 2] = torch.where(self._rq_rimz > 0,
+                                         self._rq_rimz, appr[:, 2])
             pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
             raw = torch.where(in_setup, appr, pol)
             # Fast traverse during setup, SLOW (low-impulse) approach during the learned
             # insertion so the bottle never hits the cell with breaking momentum.
-            _setup_lam = 0.015 if self.cfg.gripper == "robotiq_2f140" else c.lam
+            # 0.025 (not 0.015): the rate-limited target caps the P restoring
+            # force at lam*kpos per axis — 6 N couldn't recover a floating arm
+            # once the lift feedforward overshot (smoke 20); 10 N/axis can.
+            _setup_lam = 0.025 if self.cfg.gripper == "robotiq_2f140" else c.lam
             lam = torch.where(in_setup, torch.full_like(appr[:, :1], _setup_lam),
                               torch.full_like(appr[:, :1], c.forge_lam))
             # After the policy releases, the bottle is placed — the hand no longer needs the
@@ -1125,6 +1317,37 @@ if ISAAC_AVAILABLE:
                 over = over & (~self._released)   # after release, never freeze z — let the hand lift away
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
+            if self.cfg.gripper == "robotiq_2f140":
+                # WORKSPACE FENCE (LEARNED phase): clamp the policy's target to a
+                # box around the cell. In free space the policy's action mean
+                # saturates away from the task (trained in-contact only) and one
+                # contact loss used to end the episode in a cross-room swing
+                # (smokes 26-38). Inside the box the policy has full authority;
+                # the fence only stops runaways so every attempt stays
+                # recoverable. Not motion scripting — a work-envelope limit.
+                _fc = torch.stack([orig[:, 0] + c.rack_x - self._grasp_tcp_d
+                                   + self._start_off[:, 0],
+                                   orig[:, 1] + c.rack_y + self._start_off[:, 1],
+                                   orig[:, 2] + c.forge_approach_z + self._tcp_dz], dim=-1)
+                # lateral half-width: 0.10 pre-jam (room for the seeded wedge at
+                # +0.08), 0.04 once the recovery has centered the approach — a
+                # chimney over the goal cell, so every contact burst the policy
+                # gets lands within the funnel's capture radius (at ±0.10 it
+                # parked on the +y corner over a neighbor divider, smoke 41).
+                _lat = 0.04 if self._rq_centered else 0.10
+                _flo = _fc + torch.tensor([-_lat, -_lat, -0.25], device=self.device)
+                # INSERTION-MODE ceiling: once rim contact is established, the
+                # policy may not retreat more than 1 cm above it — its free-space
+                # habit is to lift out of engagement and wander (smoke 40, att 1).
+                # Lateral + downward authority (the actual insertion work) stays
+                # full; the recovery maneuver overrides the fence when a real
+                # retreat is commanded (its target is applied after this clamp).
+                _zhi = torch.where(self._rq_rimz > 0, self._rq_rimz + 0.010,
+                                   _fc[:, 2] + 0.05)
+                _fhi = torch.cat([_fc[:, :2] + _lat, _zhi.unsqueeze(-1)], dim=-1)
+                _live = (self._setup_ctr == 0).unsqueeze(-1)
+                target = torch.where(_live, torch.max(torch.min(target, _fhi), _flo),
+                                     target)
 
             # ══ Force-signature recovery hooks on the LEARNED insertion ═══════════
             # Active only in the recovery demo: either a jam is configured OR a recovery maneuver
@@ -1153,7 +1376,8 @@ if ISAAC_AVAILABLE:
                         wig[:, 0] = torch.sin(self._rec_phase.float() * 0.5) * c.rec_lat
                         rec = torch.where(self._rec_wiggle.unsqueeze(-1), rec + wig, rec)
                     clear = ee_pos_w.clone()
-                    clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0]
+                    clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0] \
+                                  + self._rq_dest_dx
                     clear[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1] + rec[:, 1]
                     clear[:, 2] = orig[:, 2] + c.forge_approach_z + self._tcp_dz
                     step = (clear - ee_pos_w).clamp(-c.lam, c.lam)
@@ -1181,9 +1405,15 @@ if ISAAC_AVAILABLE:
             # Wrist orientation stiffness: firm (400) during the scripted setup, MODERATE (110)
             # during the learned descent so the bottle stays UPRIGHT as it's pushed into the cell
             # (the old 40 let it lean ~40 deg over the longer descent from the entrance hand-off).
+            _ok_ins = 300.0 if self.cfg.gripper == "robotiq_2f140" else 110.0
+            # robotiq: 300 (not the franka-tuned 110) — the long gripper levers
+            # the wrist down as the arm reaches into the cell and the rigidly
+            # pinched bottle tilts with it (snap 4: bottle leaning ~40 deg in
+            # the cell); a firm wrist keeps the bottle upright through the
+            # learned insertion.
             ori_k = torch.where(self._setup_ctr > 0,
                                 torch.full((self.num_envs,), 400.0, device=self.device),
-                                torch.full((self.num_envs,), 110.0, device=self.device))
+                                torch.full((self.num_envs,), _ok_ins, device=self.device))
             # Once the policy has LEARNED-released, HOLD the arm still at its release pose. The
             # policy (trained to insert) otherwise keeps driving the EE down and pushes on the
             # just-freed bottle (~47 N); freezing the arm lets the bottle settle cleanly with the
@@ -1214,14 +1444,90 @@ if ISAAC_AVAILABLE:
                 ori_k = torch.where(rel,
                                     torch.full((self.num_envs,), 200.0, device=self.device), ori_k)
             if self.cfg.gripper == "robotiq_2f140":
-                # hold the ARM STILL through the warmup seat AND the squeeze (the
-                # _rq_static window outlasts warmup by ~50 substeps); a moving pad
-                # frame or squeeze-under-acceleration ejects the bottle. The setup
-                # countdown pauses so no traverse time is lost.
-                warmhold = self._rq_static > 0
-                self._rq_static = (self._rq_static - 1).clamp(min=0)
-                target = torch.where(warmhold.unsqueeze(-1), ee_pos_w, target)
-                self._setup_ctr = torch.where(warmhold, self._setup_ctr,
+                # ARRIVAL-ARMED SEAT: when the EE reaches the stage-2 hand-off pose
+                # (or setup is about to expire — fallback so the seat never skips),
+                # start the seat counter. While it runs the ARM FREEZES and the
+                # setup countdown PAUSES (a moving pad frame or squeeze-under-
+                # acceleration ejects the bottle; the probe always kissed+squeezed
+                # on a static arm). Setup resumes afterwards to hold the hand-off
+                # until the policy goes live.
+                # POST-RECOVERY RE-CONTACT: when a recovery maneuver completes,
+                # re-run the contact-terminated approach descent (aimed at the
+                # TRUE cell center — the first recovery clears the seeded fault)
+                # so the policy always re-engages FROM CONTACT, the only regime
+                # it behaves in. Scripted approach positioning, honestly labeled
+                # — the in-contact manipulation stays the policy's.
+                _rec_end = (self._rq_rec_prev > 0) & (self._rec_steps == 0)
+                if bool(_rec_end[0]):
+                    self._rq_rimz[:] = -1.0
+                    self._rq_dest_dx = 0.0 - float(self._grasp_tcp_d[0])
+                    self._jam_on[:] = False
+                    if not self._rq_centered:
+                        # ONCE: counter the persistent push biases the P cannot
+                        # hold against (realized-vs-commanded offsets, measured):
+                        # +y ~+5-7 cm (smoke 42, re-contacts north on a divider)
+                        # and -x ~-6 cm (smoke 44, attempt 2 descended into the
+                        # NEIGHBOR cell at x 0.35). Bias the centered aim so the
+                        # REALIZED position sits over the goal cell.
+                        self._start_off[:, 1] -= 0.075
+                        self._start_off[:, 0] += 0.055
+                    self._rq_centered = True
+                    self._setup_ctr = torch.maximum(
+                        self._setup_ctr, torch.full_like(self._setup_ctr, 500))
+                    import os as _os7
+                    if _os7.environ.get("RQ_TRACE") == "1":
+                        print("      [rq-recontact] recovery done -> centered "
+                              "approach re-descent (500)", flush=True)
+                self._rq_rec_prev = self._rec_steps.clone()
+                dest = torch.stack([orig[:, 0] + c.rack_x + self._start_off[:, 0]
+                                    + self._rq_dest_dx,
+                                    orig[:, 1] + c.rack_y + self._start_off[:, 1],
+                                    orig[:, 2] + c.forge_approach_z + self._tcp_dz], dim=-1)
+                near = (ee_pos_w - dest).norm(dim=-1) < 0.03
+                self._rq_des_z = appr[:, 2].clone()   # unclamped altitude (z integrator)
+                # HOVER-LIFT gate: after the OSC handoff, hold xy AT the grasp
+                # spot until the z integrator has learned the missing lift (z
+                # within 2 cm for 30 substeps). Carrying before convergence sank
+                # the bottle into the rack wall at 25-30 N (smokes 15/16).
+                if (not self._rq_drive_mode) and (not self._rq_lift_ok) \
+                        and self._setup_ctr[0] > 0:
+                    _step_xy = (self._rq_hover_xy - ee_pos_w[:, :2]).clamp(-0.015, 0.015)
+                    target = torch.cat([ee_pos_w[:, :2] + _step_xy, target[:, 2:3]], dim=-1)
+                    if abs(float(appr[0, 2] - ee_pos_w[0, 2])) < 0.02:
+                        self._rq_liftctr += 1
+                    else:
+                        self._rq_liftctr = 0
+                    if self._rq_liftctr >= 90:   # 0.75 s settled — outlives the
+                        self._rq_lift_ok = True  # P-transient that fooled smoke 17
+                        import os as _os4
+                        if _os4.environ.get("RQ_TRACE") == "1":
+                            print(f"      [rq-lift ok] ag={float(self._rq_ag[0]):+.3f} "
+                                  f"ee={[round(float(v),3) for v in ee_pos_w[0]-orig[0]]}",
+                                  flush=True)
+                # The seat arms the moment the PRE-DRIVE completes: the servoed
+                # drive pose IS the hand-off (base move), and the whole window
+                # runs on the stiff joint drives — no arrival/fallback gating.
+                arm_seat = (self._rq_seatctr < 0) & (self._setup_ctr > 0) \
+                           & (self._rq_predrive == 0)
+                if bool(arm_seat[0]):
+                    import os as _os
+                    if _os.environ.get("RQ_TRACE") == "1":
+                        from isaaclab.utils.math import quat_apply as _qa
+                        _hq = self._robot.data.body_quat_w[:1, self._ee_idx]
+                        _ax = _qa(_hq, torch.tensor([[0.0, 0.0, 1.0]],
+                                                    device=self.device))[0]
+                        print(f"      [rq-arm] via={'PREDRIVE(near)' if bool(near[0]) else 'PREDRIVE(off-dest)'} "
+                              f"setup={int(self._setup_ctr[0])} "
+                              f"ee={[round(float(v),3) for v in ee_pos_w[0]-orig[0]]} "
+                              f"dest={[round(float(v),3) for v in dest[0]-orig[0]]} "
+                              f"hand_axis={[round(float(v),3) for v in _ax]}", flush=True)
+                self._rq_seatctr = torch.where(arm_seat,
+                                               torch.full_like(self._rq_seatctr, self._RQ_SEAT_HI),
+                                               self._rq_seatctr)
+                seat_on = self._rq_seatctr > 0
+                target = torch.where(seat_on.unsqueeze(-1), ee_pos_w, target)
+                self._rq_seatctr = torch.where(seat_on, self._rq_seatctr - 1, self._rq_seatctr)
+                self._setup_ctr = torch.where(seat_on, self._setup_ctr,
                                               (self._setup_ctr - 1).clamp(min=0))
             else:
                 self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
@@ -1233,6 +1539,26 @@ if ISAAC_AVAILABLE:
             jv = r.data.joint_vel[:, self._arm_ids]
             ee_p = r.data.body_pos_w[:, self._ee_idx] - self.scene.env_origins
             ee_q = r.data.body_quat_w[:, self._ee_idx]
+            if self.cfg.gripper == "robotiq_2f140":
+                # CROSS-EMBODIMENT OBSERVATION SHIM (policy unchanged): the policy
+                # was trained on the franka's proprioception; the robotiq's joint
+                # pose / EE frame are far off that manifold and the policy reacts
+                # with an up-and-away retreat (smoke 26 vs the franka reference).
+                # Present the FRANKA-equivalent view of the same physical state:
+                #  * ee_p -> the VIRTUAL franka hand (grasp point - 0.067 along
+                #    the approach axis; the robotiq hand sits 0.214 behind it),
+                #  * ee_q / jp / jv -> the franka hand-off reference (constant;
+                #    the franka's own values barely move during the insertion).
+                # base_to_goal / obj_up / ft stay PHYSICAL — the task features.
+                from isaaclab.utils.math import quat_apply as _qa5
+                _appr = _qa5(ee_q, torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
+                             .expand(self.num_envs, 3))
+                ee_p = ee_p + 0.147 * _appr
+                ee_q = torch.tensor([0.004, 0.861, 0.082, 0.501], device=self.device) \
+                    .expand(self.num_envs, 4)
+                jp = torch.tensor([0.05, -0.57, 0.07, -2.38, -0.01, 2.86, 0.74],
+                                  device=self.device).expand(self.num_envs, 7)
+                jv = torch.zeros_like(jv)
             ft = self._contact_wrench_6d()
             base_w = self._obj.data.root_pose_w[:, :3]
             base_to_goal = self._forge_goal_w() - base_w                 # (N,3) relative goal
@@ -1401,7 +1727,14 @@ if ISAAC_AVAILABLE:
 
         @property
         def max_steps_per_attempt(self) -> int:
-            return 240
+            # franka: flat 240 (the committed demo's calibration — do not change).
+            # robotiq: 240 insertion steps ON TOP of the scripted setup traverse +
+            # the seat window that pauses it — the FIRST attempt spends all of that
+            # in-window (a flat 240 made attempt 0 time out INSIDE the setup and
+            # cascade into pointless recoveries).
+            if self.cfg.gripper != "robotiq_2f140":
+                return 240
+            return 240 + (self.cfg.forge_setup_steps + self._RQ_SEAT_HI) // self.cfg.decimation
 
         def subphase(self) -> str:
             return "insertion"
@@ -1563,7 +1896,12 @@ if ISAAC_AVAILABLE:
                 self._rec_off[0, 2] = 0.4 * c.rec_lift
             elif action == "regrasp":
                 # re-seat the bottle in the gripper (reuse the warmup seat) + lift
-                self._warmup[0] = self.cfg.warmup_substeps
+                if self.cfg.gripper == "robotiq_2f140":
+                    # re-run the seat window at the current hand pose (the pin
+                    # holds the bottle while the pads reopen, then kiss+squeeze)
+                    self._rq_seatctr[0] = self._RQ_SEAT_HI
+                else:
+                    self._warmup[0] = self.cfg.warmup_substeps
                 self._rec_off[0, 2] = 0.4 * c.rec_lift
 
         # ── Phase waypoint helpers ────────────────────────────────────────────
@@ -1650,22 +1988,29 @@ if ISAAC_AVAILABLE:
             # thin stem/neck near the top so the COM hangs below (pendulum -> self-rights
             # upright and resists tilting through the carry).
             carry = warm
+            if self.cfg.gripper == "robotiq_2f140":
+                # Probe-v50 sequence AT THE HAND-OFF: park the bottle out of the
+                # arm's path during the setup traverse, then pin it UPRIGHT with its
+                # neck at the grasp point (EE + 0.214 along local +z — the same
+                # perpendicular side grip as the franka, longer hand) while the pads
+                # kiss FROM OPEN and the SQUEEZE to full-close completes WHILE STILL
+                # PINNED (kiss leaves 24-16=8 mm clearance; an unpinned bottle would
+                # fall during the close travel).
+                park = self._rq_seatctr < 0
+                seat = self._rq_seatctr > self._RQ_PIN_LO
+                carry = park | seat
             if carry.any() and self.cfg.gripper == "robotiq_2f140":
-                # TWO-PHASE warmup (the pads spawn closed and need ~25 substeps to
-                # open — pinning the bottle into still-closed pads ejects it):
-                #   phase A (first half): pads opening; PARK the bottle above the hand
-                #   phase B (second half): pads at the kiss angle; PIN at the pads —
-                #     PAD-FACE midpoint xy (~2.4 cm off the base_link axis) with the
-                #     bottle origin (its neck) _rq_seat_dz below base_link (LIPGRIP).
-                phase_a = warm & (self._warmup > self.cfg.warmup_substeps // 2)
-                pm = 0.5 * (r.data.body_pos_w[:, self._lf_idx] + r.data.body_pos_w[:, self._rf_idx])
+                R_ee = matrix_from_quat(r.data.body_quat_w[:, self._ee_idx])
+                off  = torch.zeros(self.num_envs, 3, device=self.device)
+                off[:, 2] = self._grasp_tcp_d
+                grasp_c = r.data.body_pos_w[:, self._ee_idx] + torch.bmm(R_ee, off.unsqueeze(-1)).squeeze(-1)
                 pose = self._obj.data.root_pose_w.clone()
-                pose[carry, 0] = pm[carry, 0]
-                pose[carry, 1] = pm[carry, 1]
-                pose[carry, 2] = torch.where(
-                    phase_a[carry],
-                    r.data.body_pos_w[carry, self._ee_idx, 2] + 0.35,   # park high above
-                    r.data.body_pos_w[carry, self._ee_idx, 2] - self._rq_seat_dz)
+                pose[carry, 0:3] = grasp_c[carry]
+                pose[carry, 2] = grasp_c[carry, 2] - self._rq_grip_h
+                # traverse: hold the bottle high above the cell, clear of the arm
+                pose[park, 0] = self.scene.env_origins[park, 0] + self.cfg.rack_x
+                pose[park, 1] = self.scene.env_origins[park, 1] + self.cfg.rack_y
+                pose[park, 2] = self.scene.env_origins[park, 2] + self.cfg.transport_z + 0.45
                 pose[carry, 3] = 1.0; pose[carry, 4:7] = 0.0
                 self._obj.write_root_pose_to_sim(pose)
                 vel = self._obj.data.root_vel_w.clone()
@@ -1719,6 +2064,19 @@ if ISAAC_AVAILABLE:
                     ).expand(self.num_envs, 4).clone()
                 else:
                     self._ee_quat_des = ee_quat_w.clone()   # hold the initial grasp orientation
+                if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode:
+                    # TELEPORT CONTRACT: the robotiq spawns at the folded USD default
+                    # pose (no reset teleport), so the "natural" orientation captured
+                    # here is NOT a grasp pose. The hand must end at the probe-approved
+                    # PERPENDICULAR side grip: approach = world +x (horizontal), finger
+                    # spread = world y (probe_rq_scene QUATONLY dump, servo-converged;
+                    # the seat angles 0.218/0.589-stall were calibrated at this pose).
+                    # Commanded via a RATE-LIMITED trajectory (below) — a fixed distant
+                    # target torque-fights the folded arm sideways off the traverse.
+                    self._rq_quat_tgt = torch.tensor(
+                        [0.023174, 0.686601, 0.021952, 0.726333],
+                        device=self.device).expand(self.num_envs, 4).clone()
+                    self._rq_q_des = ee_quat_w.clone()
                 self._osc_init = True
 
             # ── Placement strategy: orientation stiffness + ee_quat_des ───────────
@@ -1756,6 +2114,23 @@ if ISAAC_AVAILABLE:
                 ori_k = torch.where(near, torch.full_like(base_z, self.cfg.ori_k_insert),
                                     torch.full_like(base_z, self.cfg.ori_k_carry))
                 self._ee_quat_des = self._ee_quat_natural
+                if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode:
+                    # Rate-limited re-orientation from the folded spawn quat to the
+                    # side-grip target (~0.17 deg/substep -> the flip completes early
+                    # in setup stage 1, no torque standoff with the traverse).
+                    q_t = self._rq_quat_tgt
+                    dot = (self._rq_q_des * q_t).sum(-1, keepdim=True)
+                    q_t = torch.where(dot < 0, -q_t, q_t)
+                    q_err = quat_mul(q_t, quat_inv(self._rq_q_des))
+                    w_c  = q_err[:, 0].clamp(-1.0, 1.0)
+                    ang  = 2.0 * torch.acos(w_c.abs())
+                    axis = q_err[:, 1:]
+                    nrm  = axis.norm(dim=-1, keepdim=True).clamp(min=1e-9)
+                    axis = (axis / nrm) * torch.sign(w_c).unsqueeze(-1)
+                    q_step = quat_from_angle_axis(ang.clamp(max=0.003), axis)
+                    self._rq_q_des = quat_mul(q_step, self._rq_q_des)
+                    self._rq_q_des = self._rq_q_des / self._rq_q_des.norm(dim=-1, keepdim=True)
+                    self._ee_quat_des = self._rq_q_des
                 lam_eff = torch.where(near, torch.full_like(base_z, self.cfg.lam_place),
                                       torch.full_like(base_z, self.cfg.lam))
 
@@ -1805,6 +2180,15 @@ if ISAAC_AVAILABLE:
                 target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
             _kpos = torch.full_like(ori_k, 400.0)   # stiff positioning (matches the trained robust policy)
+            if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode:
+                # 600 (the OSC's variable-kp ceiling) for the WHOLE robotiq
+                # episode: it shrinks the gravity-deficit sag 1.5x, gives the
+                # rate-limited P 15 N/axis during setup, and — critically —
+                # keeps the plant IDENTICAL across the scripted->learned
+                # boundary, so the adapted gravity scale stays in equilibrium
+                # (dropping to the franka-trained 400 at the boundary shifted
+                # the balance and the arm floated away — smoke 23/snap 3).
+                _kpos = torch.full_like(_kpos, 600.0)
             stiffness = torch.stack([_kpos, _kpos, _kpos, ori_k, ori_k, ori_k], dim=-1)   # (N, 6)
             command  = torch.cat([tgt_pos_b, tgt_quat_b, stiffness], dim=-1)  # variable_kp: pose(7)+stiffness(6)
 
@@ -1822,6 +2206,51 @@ if ISAAC_AVAILABLE:
                 nullspace_joint_pos_target=self._joint_centers,
             )
             jt = jt.clamp(-self._eff_lim, self._eff_lim)
+            if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode \
+                    and not self._rq_drive_mode:
+                # Integral z feedforward (see init): learn the missing lift while
+                # the SCRIPTED setup owns the arm; hold it frozen afterwards.
+                # ADAPTIVE GRAVITY SCALING (supersedes the J-row z feedforward):
+                # PhysX's gravity comp is short for this loop-jointed articulation;
+                # tau += alpha*grav adds lift in EXACTLY the anti-gravity joint
+                # direction — no frame ambiguity, no parasitic lateral push (the
+                # J-row wrench dragged xy proportional to the lift force; smokes
+                # 21-23 mystery drift). alpha adapts: fast in the anchored hover,
+                # slow in the carry, contact-gated trickle in the LEARNED phase
+                # (so it never fights an intentional insertion press).
+                _in_setup = self._setup_ctr > 0
+                if bool(_in_setup[0]):
+                    _ref = self._rq_des_z
+                    # stop adapting once the rim press is latched — the contact
+                    # "error" is intentional, not sag (smoke 30: the integrator
+                    # lifted the bottle back off the rim).
+                    _gate = self._rq_rimz < 0
+                    _ki, _ec = (0.15, 0.08) if not self._rq_lift_ok else (0.05, 0.03)
+                else:
+                    # LEARNED phase: ag frozen (the absolute-z reference is gone —
+                    # the policy's targets are EE-relative); the 3-axis residual
+                    # estimator below owns the fine correction.
+                    _ref = ee_pos_w[:, 2]
+                    _gate = torch.zeros_like(self._rq_ag, dtype=torch.bool)
+                    _ki, _ec = 0.0, 0.01
+                _zerr_i = (_ref - ee_pos_w[:, 2]).clamp(-_ec, _ec)
+                self._rq_ag = torch.where(
+                    _gate, (self._rq_ag + _ki * _zerr_i).clamp(-0.3, 1.2),
+                    self._rq_ag)
+                jt = (jt + self._rq_ag.unsqueeze(-1) * grav) \
+                    .clamp(-self._eff_lim, self._eff_lim)
+                # NO closed-loop force estimator through jac_b: applying forces
+                # via those rows is POSITIVE feedback for this articulation
+                # (smoke 25: saturated +25 N on all axes in 240 substeps and
+                # rocket-assisted the drift). The LEARNED phase instead keeps
+                # the SAME plant as the scripted phase (kpos 600, frozen ag) —
+                # no boundary, so the ag equilibrium simply carries over.
+                import os as _os3
+                if _os3.environ.get("RQ_TRACE") == "1" \
+                        and int(self._setup_ctr[0]) % 200 == 100:
+                    print(f"      [rq-ag] setup={int(self._setup_ctr[0])} "
+                          f"ag={float(self._rq_ag[0]):+.3f} zerr={float(_zerr_i[0]):+.3f}",
+                          flush=True)
 
             # Gripper closes while carrying (TRANSPORT/PLACE_DESCEND) and at GRASP;
             # opens at RELEASE to drop the block onto the rack. The block is DYNAMIC,
@@ -1854,18 +2283,130 @@ if ISAAC_AVAILABLE:
                 ang_t = torch.where(close_mask,
                                     torch.full((self.num_envs,), self._rq_close, device=_d),
                                     torch.full((self.num_envs,), self._rq_open, device=_d))
-                # two-phase warm targets (probe-proven sequence): phase A opens WIDE
-                # while the bottle parks; phase B closes to the KISS angle onto the
-                # pinned bottle FROM OPEN (slight preload — arriving from closed
-                # leaves a gap and the squeeze races the falling bottle).
-                _wa = self._warmup > (self.cfg.warmup_substeps // 2)
-                ang_t = torch.where(warm, torch.where(
-                    _wa, torch.full((self.num_envs,), self._rq_open, device=_d),
-                    torch.full((self.num_envs,), self._rq_seat, device=_d)), ang_t)
+                # seat-window targets (probe-v50 sequence at the hand-off): pads stay
+                # OPEN through the traverse (pending) and the pin-settle beat, KISS
+                # onto the pinned bottle, then the full-close squeeze (still pinned
+                # until _RQ_PIN_LO — the drive stalls on the neck). Once the window
+                # completes (ctr==0) the live close_mask/release logic rules.
+                _ctr = self._rq_seatctr
+                _scripted = _ctr != 0
+                _s_ang = torch.full((self.num_envs,), self._rq_open, device=_d)
+                _s_ang = torch.where((_ctr <= self._RQ_KISS_HI) & (_ctr > self._RQ_KISS_LO),
+                                     torch.full((self.num_envs,), self._rq_seat, device=_d), _s_ang)
+                _s_ang = torch.where((_ctr <= self._RQ_KISS_LO) & (_ctr > 0),
+                                     torch.full((self.num_envs,), self._rq_close, device=_d), _s_ang)
+                ang_t = torch.where(_scripted, _s_ang, ang_t)
                 if self.cfg.forge_release_mode:
                     ang_t = torch.where(self._released,
                                         torch.full((self.num_envs,), self._rq_open, device=_d), ang_t)
+                import os as _os
+                if _os.environ.get("RQ_TRACE") == "1" and int(self._rq_seatctr[0]) > 0:
+                    print(f"      [rqw] sc={int(self._rq_seatctr[0])} "
+                          f"ang={float(r.data.joint_pos[0, self._grip_ids[0]]):+.3f} "
+                          f"tgt={float(ang_t[0]):.3f} objz={float(self._obj.data.root_pose_w[0,2]):.3f} "
+                          f"sep={float((r.data.body_pos_w[0,self._lf_idx]-r.data.body_pos_w[0,self._rf_idx]).norm()):.4f}",
+                          flush=True)
                 r.set_joint_position_target(ang_t.unsqueeze(-1), joint_ids=self._grip_ids)
+                if self._rq_drive_mode:
+                    # DRIVE MODE (no OSC efforts — they'd fight the drives): the
+                    # holding-gain joint drives own the arm from the folded spawn,
+                    # through the servoed side-grip pose, through the ENTIRE seat
+                    # window (probe regime: stiff, zero sag, level pads).
+                    import os as _os2
+                    _pd = int(self._rq_predrive.max())
+                    if _pd > 0:
+                        if _pd % 120 == 0 and _pd < self._RQ_PREDRIVE \
+                                and self._rq_servo_on:
+                            # probe servo on the settled state (measured on env 0;
+                            # demo N=1): yaw err -> j1, x-reach err -> j4 (elbow),
+                            # z err -> j2, pitch err -> j6.
+                            from isaaclab.utils.math import quat_apply as _qa2
+                            import math as _m
+                            _bq = r.data.body_quat_w[0:1, self._ee_idx]
+                            _ap = _qa2(_bq, torch.tensor([[0.0, 0.0, 1.0]], device=_d))[0]
+                            _eep = r.data.body_pos_w[0, self._ee_idx] - self.scene.env_origins[0]
+                            _perr = _m.asin(max(-1.0, min(1.0, float(-_ap[2]))))
+                            _yerr = _m.atan2(float(_ap[1]), float(_ap[0]))
+                            _zerr = float(_eep[2]) - (self.cfg.forge_approach_z + self._tcp_dz)
+                            _xerr = float(_eep[0]) - (self.cfg.rack_x
+                                                      + float(self._start_off[0, 0])
+                                                      + self._rq_dest_dx)
+                            def _cl(v, lo, hi):
+                                return max(lo, min(hi, v))
+                            # per-window correction clamps kill the overshoot the
+                            # big initial errors caused (smoke 11: x overshot 13 cm
+                            # and never pulled back); joint clamps keep the pose
+                            # family out of degenerate corners (j2 -> 0, j6 limit).
+                            # JOINT CLAMPS keep the servo in the shoulder-back pose
+                            # family (probe-like, j2 <= -0.95): chasing z into the
+                            # j2->0 vertical-shoulder family lands the OSC near a
+                            # singularity of its inertia decoupling and the arm
+                            # runs away after handoff (smoke 13 vertical runaway).
+                            self._rq_arm_cmd[0] = float(self._rq_arm_cmd[0]) - _cl(0.8 * _yerr, -0.15, 0.15)
+                            self._rq_arm_cmd[1] = _cl(float(self._rq_arm_cmd[1])
+                                                      + _cl(0.7 * _zerr, -0.15, 0.15), -1.7, -0.95)
+                            self._rq_arm_cmd[3] = _cl(float(self._rq_arm_cmd[3])
+                                                      - _cl(0.6 * _xerr, -0.12, 0.12), -2.9, -1.55)
+                            self._rq_arm_cmd[5] = _cl(float(self._rq_arm_cmd[5])
+                                                      + _cl(0.8 * _perr, -0.15, 0.15), 1.8, 3.6)
+                            if _os2.environ.get("RQ_TRACE") == "1":
+                                print(f"      [rq-servo pd={_pd}] ee={[round(float(v),3) for v in _eep]} "
+                                      f"xerr={_xerr:+.3f} zerr={_zerr:+.3f} yaw={_yerr:+.3f} "
+                                      f"pitch={_perr:+.3f} cmd={[round(float(v),3) for v in self._rq_arm_cmd]}",
+                                      flush=True)
+                            # tolerance gate on the LAST window: extend the servo
+                            # instead of grasping from a not-converged pose.
+                            # pose tolerances: LEVEL pads matter most (taper-wedge);
+                            # a few cm of xy/z hand-off offset is fine — the pin is
+                            # EE-relative and the policy corrects small leans.
+                            if _pd == 120 and self._rq_pd_ext < 4 and (
+                                    abs(_perr) > 0.04 or abs(_zerr) > 0.05
+                                    or abs(_xerr) > 0.06 or abs(_yerr) > 0.04):
+                                self._rq_predrive += 240
+                                self._rq_pd_ext += 1
+                                if _os2.environ.get("RQ_TRACE") == "1":
+                                    print(f"      [rq-servo] tolerance unmet -> extend "
+                                          f"(#{self._rq_pd_ext})", flush=True)
+                        self._rq_predrive -= 1
+                        if int(self._rq_predrive.max()) == 0 \
+                                and _os2.environ.get("RQ_TRACE") == "1":
+                            _ee0 = r.data.body_pos_w[0, self._ee_idx] - self.scene.env_origins[0]
+                            print(f"      [rq-predrive done] ee={[round(float(v),3) for v in _ee0]} "
+                                  f"jpos={[round(float(v),3) for v in r.data.joint_pos[0,:7]]}",
+                                  flush=True)
+                    r.set_joint_position_target(
+                        self._rq_arm_cmd.unsqueeze(0).expand(self.num_envs, 7),
+                        joint_ids=self._arm_ids)
+                    if _pd == 0 and int(self._rq_seatctr.max()) == 0 \
+                            and int(self._rq_seatctr.min()) == 0:
+                        # Seat complete, grip established -> hand the arm to the
+                        # OSC: zero the gains (parameter write, no body motion),
+                        # anchor the nullspace and the rate-limited orientation
+                        # command at the REACHED state (a lagging command makes
+                        # the OSC yank the wrist backward — smoke-8 collapse).
+                        _z = torch.zeros(self.num_envs, 7, device=_d)
+                        r.write_joint_stiffness_to_sim(_z, joint_ids=self._arm_ids)
+                        r.write_joint_damping_to_sim(_z + 80.0, joint_ids=self._arm_ids)
+                        self._joint_centers = r.data.joint_pos[:, self._arm_ids].clone()
+                        self._rq_q_des = r.data.body_quat_w[:, self._ee_idx].clone()
+                        # FREEZE the orientation target at the reached quat: the
+                        # servo already delivered the level +x side grip, and the
+                        # probe quat belongs to a DIFFERENT arm pose family — the
+                        # slerp resuming toward it saturates j6 and the growing
+                        # error swings the whole arm away (smoke 12, ~300 substeps
+                        # after handoff). Hold-what-you-reached is the OSC regime
+                        # proven stable since smoke 4.
+                        self._rq_quat_tgt = self._rq_q_des.clone()
+                        self._rq_drive_mode = False
+                        self._rq_lift_ok = False
+                        self._rq_liftctr = 0
+                        self._rq_hover_xy = r.data.body_pos_w[:, self._ee_idx, :2].clone()
+                        if _os2.environ.get("RQ_TRACE") == "1":
+                            _ee0 = r.data.body_pos_w[0, self._ee_idx] - self.scene.env_origins[0]
+                            print(f"      [rq-osc handoff] ee={[round(float(v),3) for v in _ee0]} "
+                                  f"grip_ang={float(r.data.joint_pos[0, self._grip_ids[0]]):+.3f}",
+                                  flush=True)
+                    return
                 eff = torch.zeros(self.num_envs, r.num_joints, device=_d)
                 eff[:, :7] = jt
                 r.set_joint_effort_target(eff)
@@ -2124,12 +2665,14 @@ if ISAAC_AVAILABLE:
                     self._rf_idx = bn.index("right_inner_finger")
                     jn = list(self._robot.data.joint_names)
                     self._grip_ids = [jn.index("finger_joint")]
-                    # Hand the arm to the OSC NOW (parameter write, no body motion):
-                    # spawn kept the holding gains so the init sag couldn't tear the
-                    # gripper four-bar; from here the OSC owns the arm every step.
-                    _z = torch.zeros(self.num_envs, 7, device=self.device)
-                    self._robot.write_joint_stiffness_to_sim(_z, joint_ids=self._arm_ids)
-                    self._robot.write_joint_damping_to_sim(_z + 80.0, joint_ids=self._arm_ids)
+                    # Keep the HOLDING gains and arm the PRE-DRIVE + DRIVE MODE:
+                    # the joint drives take the arm to the side-grip pose (servoed
+                    # level at the hand-off height) and HOLD it through the whole
+                    # seat window (probe regime — zero sag). The gains are zeroed
+                    # and the OSC takes over only once the grip is established.
+                    self._rq_predrive[:] = self._RQ_PREDRIVE
+                    self._rq_arm_cmd = self._rq_arm_pose.clone()
+                    self._rq_drive_mode = True
                 else:
                     self._lf_idx = bn.index("panda_leftfinger")
                     self._rf_idx = bn.index("panda_rightfinger")
@@ -2166,12 +2709,19 @@ if ISAAC_AVAILABLE:
             self._set_reset[env_ids]   = True
             self._cf_filt[env_ids]     = 0.0
             self._cf_insert[env_ids]   = 0.0
-            self._warmup[env_ids]      = self.cfg.warmup_substeps
-            # robotiq: keep the arm static an extra beat past warmup so the SQUEEZE
-            # completes before the traverse accelerates (squeeze-under-acceleration
-            # ejects the bottle; the probe always squeezed on a static arm)
-            self._rq_static[env_ids]   = (self.cfg.warmup_substeps + 50
-                                          if self.cfg.gripper == "robotiq_2f140" else 0)
+            # robotiq: NO reset-time warmup — the seat is armed by ARRIVAL at the
+            # hand-off during setup (_rq_seatctr: -1 pending). The franka teleports
+            # to its anchor at reset, so its warmup seat can run immediately.
+            self._warmup[env_ids]      = (0 if self.cfg.gripper == "robotiq_2f140"
+                                          else self.cfg.warmup_substeps)
+            self._rq_seatctr[env_ids]  = (-1 if self.cfg.gripper == "robotiq_2f140" else 0)
+            self._rq_desc[env_ids]     = False
+            self._rq_rimz[env_ids]     = -1.0
+            if self.cfg.gripper == "robotiq_2f140":
+                # deterministic wedge staging: the random start offset moved the
+                # jam aim in/out of the funnel's capture radius per episode
+                # (smoke 43: a -1 cm draw turned the wedge into a slide-in).
+                self._start_off[env_ids] = 0.0
             self._az_filt[env_ids]     = -1.0
             # Gripper closed when starting in carry/place mode (holding the object).
             self._gripper_cmd[env_ids] = -1.0 if self.cfg.place_only else 1.0
@@ -2195,6 +2745,10 @@ if ISAAC_AVAILABLE:
                 n = len(env_ids)
                 lat = self.cfg.forge_start_lat
                 self._start_off[env_ids] = (torch.rand(n, 2, device=self.device) * 2 - 1) * lat
+                if self.cfg.gripper == "robotiq_2f140":
+                    # deterministic wedge staging (see the robotiq reset block —
+                    # this write must come AFTER the randomization above).
+                    self._start_off[env_ids] = 0.0
                 self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
                 self._settle_ctr[env_ids] = 0
                 self._best_dist[env_ids] = 9.9
