@@ -139,6 +139,23 @@ def main() -> None:
         cfg.forge_hybrid_retract = True  # env retracts the hand after release (scripted clearing) so
                                          # the hand_clear success can fire; policy learns insert + release
         act_dim = 8
+    if args.gripper == "robotiq_2f140" and cfg.forge_mode:
+        # The robotiq episode is scripted-staging-heavy (TELEPORT CONTRACT: no
+        # joint-state reset writes, so every episode DRIVES from wherever the arm
+        # is to the grasp, then carries to the hand-off). Without these the setup
+        # window (default 80) expires mid-air and every env times out untouched.
+        cfg.forge_setup_steps = 4000   # predrive 600 + seat 270 + hover-lift + ~2 cm/s carry
+        cfg.warmup_substeps   = 100    # 2F-140 drive needs ~30 env steps to reach kiss angle
+        # Four-bar loop joints only survive a RAW parse — the physics-replicated
+        # clone path drops them and the fingers can never close (Fins == 0).
+        cfg.scene.replicate_physics = False
+        # The staging state machine is GLOBAL (python bools, servo on env 0), so
+        # envs must stay synchronized: no per-env early resets. Truncation is the
+        # only done — all envs reset together and the staging re-arms globally.
+        cfg.forge_no_term = True
+        # staging ~2000 env steps + seat 135 + policy window ~550. The demo's
+        # 120 s here would idle ~4500 steps/episode after the drop.
+        cfg.episode_length_s = 45.0
     print(f"[train] forge_mode={cfg.forge_mode} release={cfg.forge_release_mode} place_strategy={cfg.place_strategy} obs={obs_dim} act={act_dim}", flush=True)
     env = FrankaPickPlaceEnv(cfg)
     N   = env.num_envs

@@ -84,7 +84,11 @@ cfg.scene.num_envs   = 1
 cfg.gripper          = GRIPPER
 cfg.place_strategy   = "insert"
 cfg.settle_steps     = 400
-cfg.episode_length_s = 120.0   # the loop owns the timeline — no auto-reset mid-demo
+cfg.episode_length_s = 360.0   # the loop owns the timeline — no auto-reset mid-demo.
+                               # 360 s: robotiq attempts cost up to 2375 steps EACH,
+                               # so k_max 6 ≈ 14,250 steps ≈ 240 s; 120 s truncated
+                               # MID-RENDER (bottle teleported back to the shelf —
+                               # a silent contributor to the loop 3–15 no-seat takes)
 cfg.jam_dx           = JAM
 cfg.forge_mode          = True
 cfg.forge_release_mode  = True    # the trained policy is 8-dim (arm + release)
@@ -318,8 +322,10 @@ def _draw_frame(attempt, step):
     # ── force gauge (F_max = budget marker, F_brk = break marker) ──
     fmx, fbk, gmax = gauge["f_max"], gauge["f_brk"], gauge["max"]
     dr.rectangle([GX-10, GY-26, GX+GW+150, GY+GH+12], fill=(0, 0, 0, 140))
-    dr.text((GX-4, GY-24), "contact force   (peak %.1f N — under break)" % hud["peak_n"],
-            font=F_SM, fill=(220, 220, 220))
+    _pk_ok = hud["peak_n"] < (gauge["f_brk"] or 22.0)
+    dr.text((GX-4, GY-24), "contact force   (peak %.1f N — %s)"
+            % (hud["peak_n"], "under break" if _pk_ok else "OVER BREAK"),
+            font=F_SM, fill=(220, 220, 220) if _pk_ok else (255, 90, 90))
     dr.rectangle([GX, GY, GX+GW, GY+GH], outline=(160, 160, 160), width=1, fill=(35, 35, 35, 200))
     frac   = max(0.0, min(1.0, cf_val / gmax))
     over   = cf_val >= fmx
@@ -415,8 +421,13 @@ if seat_valid:
 broke = bool(env._broke[0].item())
 peak  = hud["peak_n"]
 # A good take = recovery seated it (validated, still held) AND the finale placed it
-# (learned release fired + retract cleared).
-ok = seat_valid and (placed_at is not None) and not broke
+# (learned release fired + retract cleared). ALSO require the gauge peak under
+# the sampled F_break: env._broke is disarmed during setup, so a setup-phase
+# over-press doesn't set it — but the HUD gauge would honestly read OVER BREAK
+# and the take is undeliverable (the original delivered take failed exactly
+# this way). Reject so the loop re-rolls.
+under_brk = hud["peak_n"] < (gauge["f_brk"] or 22.0)
+ok = seat_valid and (placed_at is not None) and not broke and under_brk
 print("RESULT %s saved=%d peak=%.1fN break=%s attempts=%d seat_valid=%s placed=%s"
       % ("SUCCESS" if ok else "FAIL", hud["saved"], peak, broke, result.attempts,
          seat_valid, placed_at is not None), flush=True)

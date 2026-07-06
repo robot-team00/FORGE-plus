@@ -641,6 +641,9 @@ if ISAAC_AVAILABLE:
             self._rq_predrive = torch.full((N,), -1, dtype=torch.long, device=d)
             self._RQ_PREDRIVE = 600   # substeps; open-loop drive to the probe pose
             self._rq_pd_ext = 0       # tolerance-gated extensions used (max 4 x 240)
+            self._rq_drive_kp = None  # holding-gain snapshot, taken just before the
+            self._rq_drive_kd = None  # OSC handoff zeroes the arm drives (restored
+                                      # at each full reset so ep-2+ predrive works)
             # The closed-loop pose servo is OFF: chasing the hand-off pose walks
             # the arm into OSC-hostile pose families (smoke 13 vertical-shoulder
             # runaway, smoke 14 reared-up clamp corner). The open-loop command
@@ -656,6 +659,8 @@ if ISAAC_AVAILABLE:
             # live (so it never fights the intentional insertion contact).
             self._rq_fup = torch.zeros(N, device=d)   # (legacy J-row lift — unused)
             self._rq_ag  = torch.zeros(N, device=d)   # adaptive gravity-comp scale (tau += ag*grav)
+            self._rq_ag_cap = None    # post-recovery ag ceiling (rec_end snapshot;
+                                      # downward-only adaptation while centered)
             self._rq_f   = torch.zeros(N, 3, device=d)  # LEARNED-phase residual EE force (N)
             self._rq_prev_ee: torch.Tensor | None = None   # realized-vs-commanded step memory
             self._rq_prev_cmd = torch.zeros(N, 3, device=d)
@@ -681,7 +686,34 @@ if ISAAC_AVAILABLE:
             # interlock against axial slip.
             self._rq_grip_h = 0.14
             self._rq_rimz = torch.full((N,), -1.0, device=d)  # rim-contact altitude (-1 unset)
+            self._rq_pressctr = torch.zeros(N, dtype=torch.long, device=d)  # sustained-press
+                                      # substeps > 1.5 N during a centered descent (stall
+                                      # detector for the rim gate — see the gate comment)
+            self._rq_aim = torch.zeros(N, 2, device=d)  # FROZEN post-recovery ee aim
+                                      # (see the rec_end block: live base-aim feedback
+                                      # pumps the held bottle's pendulum swing)
             self._rq_rec_prev = torch.zeros(N, dtype=torch.long, device=d)  # recovery edge detect
+            self._rq_calmctr = torch.zeros(N, dtype=torch.long, device=d)  # swing-settle gate:
+                                      # consecutive substeps with the held bottle's
+                                      # |v_xy| calm; the post-recovery re-descent
+                                      # WAITS for the maneuver's pendulum swing to
+                                      # decay (descending while swinging PUMPS it
+                                      # under render tracking — take 98/99 flings)
+            self._rq_need_settle = torch.zeros(N, dtype=torch.bool, device=d)
+                                      # settle REQUEST latch, set at every rec_end.
+                                      # (The gate cannot key off ~_rq_desc: the descent
+                                      # latch deliberately stays True through recovery —
+                                      # see the rec_end block — so a ~_rq_desc term made
+                                      # the gate structurally dead post-recovery, take 97.)
+            self._rq_settle_pos = torch.zeros(N, 3, device=d)
+                                      # FIXED hold point while settling (snapshotted at
+                                      # rec_end). Holding at the LIVE ee gives zero
+                                      # restoring force — the maneuver's residual arm
+                                      # momentum dragged the held bottle 30+ cm (take 97).
+            self._rq_settlewait = torch.zeros(N, dtype=torch.long, device=d)
+                                      # total substeps spent settling this recovery —
+                                      # hard cap so a bottle that never reads calm under
+                                      # render physics can't hold the demo to timeout
             self._rq_centered = False  # True after the first recovery centers the approach
             self._rq_desc = torch.zeros(N, dtype=torch.bool, device=d)  # LATCHED descent:
                                       # a hysteresis-free arrival gate chattered the z
@@ -760,6 +792,11 @@ if ISAAC_AVAILABLE:
             # SQUEEZE = full-close command 0.785 — the drive stalls on the neck at its
             # effort limit (ang ~0.589, bounded pinch), pads parallel throughout.
             self._rq_close  = 0.785
+            # NOTE (smokes 51/52): do NOT overdrive the hold target past 0.785 to
+            # strengthen the pinch — the four-bar pads tilt under the higher squeeze
+            # and axially SQUIRT the bottle out (stepped 1.2: instant ejection at
+            # handoff; ramped 0.95: ejection as the ramp deepened the stall to ~0.727).
+            # The 0.785 hold at the ~0.705 neck stall is the calibrated stable grip.
             self._rq_seat   = 0.218
             self._rq_open   = 0.0
             # PD gains for the position-controlled grip (effort = k·(target-pos) - kd·vel).
@@ -1232,13 +1269,59 @@ if ISAAC_AVAILABLE:
                 _dxy = torch.stack(
                     [orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx,
                      orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1)
+                if self._rq_centered:
+                    # POST-RECOVERY: base-aim — steer the EE so the bottle
+                    # base lands on the cell center. Replaces the static bias
+                    # counters (+x 0.055 / -y 0.075): the arm's persistent
+                    # P-push differs per maneuver (rotate_align vs retract), so
+                    # open-loop offsets calibrated on one flow re-hit the rim on
+                    # the other — and each rim press ratchets the neck through
+                    # the pads until the bottle drops (render loop 2, 6/6).
+                    # FROZEN at the recovery falling edge, NOT live (loop 12:
+                    # live feedback pumps the bottle pendulum — see rec_end).
+                    # An alpha=0.01 low-pass refresh was tried (take 90) to
+                    # track the ori_k-110 wrist-twist drift that displaces
+                    # the hanging bottle ~5 cm (take 91's attempt-1 divider
+                    # grind): it chased the LEAN and delivered the insertion
+                    # tilted — the bottle seated +4 cm off-center against the
+                    # cell wall and TOPPLED on release. The frozen aim seats
+                    # clean and vertical (take 91 attempt 2); a twist-induced
+                    # miss just costs one extra recovery cycle, which k_max
+                    # absorbs and the jam detector handles honestly.
+                    _dxy = self._rq_aim
+                # SWING-SETTLE GATE (post-recovery only): the retract maneuver
+                # leaves the held bottle swinging ±8 cm; starting the re-descent
+                # (or even chasing the aim xy) while it swings PUMPS the pendulum
+                # under render tracking until the bottle flings out of the pinch
+                # (takes 98/99 — smoke sag damps the same swing, so smokes pass).
+                # Hold the EE still (zero commanded xy motion = zero energy in)
+                # until |v_xy| stays calm for 30 substeps, then descend normally.
+                _swv = self._obj.data.root_vel_w[:, :2].norm(dim=-1)
+                self._rq_calmctr = torch.where(
+                    _swv < 0.08, self._rq_calmctr + 1,
+                    torch.zeros_like(self._rq_calmctr))
+                # release the settle request when the bottle has been calm for
+                # 30 consecutive substeps, OR unconditionally after 600 substeps
+                # (livelock guard: a bottle that never reads calm under render
+                # physics must not hold the attempt to its 2375-step timeout)
+                self._rq_settlewait = torch.where(
+                    self._rq_need_settle, self._rq_settlewait + 1,
+                    torch.zeros_like(self._rq_settlewait))
+                self._rq_need_settle = (self._rq_need_settle
+                                        & (self._rq_calmctr < 30)
+                                        & (self._rq_settlewait < 600))
+                _settling = (torch.full_like(self._rq_desc, self._rq_centered)
+                             & self._rq_need_settle & (self._setup_ctr > 0))
+                _dxy = torch.where(_settling.unsqueeze(-1),
+                                   self._rq_settle_pos[:, :2], _dxy)
+                self._rq_settling = _settling
                 _dist = (ee_pos_w[:, :2] - _dxy).norm(dim=-1)
                 # PERMANENT latch: engage the descent at 2 cm and never release —
                 # a release bound (smoke 22: 6 cm) re-commanded the +20 cm climb
                 # mid-descent when xy drifted, and the up-target is what triggers
                 # every float-away. If xy drifts during the descent, the P pulls
                 # it back at the LOW altitude (over the open cell — benign).
-                self._rq_desc = self._rq_desc | (_dist < 0.02)
+                self._rq_desc = self._rq_desc | ((_dist < 0.02) & ~_settling)
                 stage1 = (stage1 | (_dist > 0.03)) & (~self._rq_desc)
                 # CONTACT-TERMINATED descent: stop at first rim touch (~3 N) —
                 # the franka's trained hand-off state is bottle-PRESSED-ON-RIM.
@@ -1246,7 +1329,42 @@ if ISAAC_AVAILABLE:
                 # 27) or lets the bottle slide into the hole under SCRIPT (smoke
                 # 28's disallowed "success"). On touch: freeze the altitude and
                 # fast-forward the setup so the LEARNED policy takes over.
-                _hit = self._rq_desc & (self._cf_filt > 3.0) & (self._rq_rimz < 0)
+                # INSTANTANEOUS force (not _cf_filt): the filter lag let the
+                # crawling descent keep digging for dozens of substeps after
+                # true contact — at kpos 600 that's a 35-39 N impact spike on a
+                # 21 N-break glass (smoke 47). The raw signal trips the freeze
+                # within a couple of substeps of first touch.
+                # gate threshold: 1.5 N on the first (wedge) descent — freeze at
+                # the faintest rim kiss. 3.0 N once centered: the funnel ride
+                # brushes the wall at 1-2 N while self-centering, and freezing on
+                # a brush strands the bottle mid-mouth (the policy then presses
+                # a false 6-7 N jam — smoke 50 attempt 1 — spawning extra
+                # recovery cycles that ratchet the bottle out of the pinch).
+                # PLUS a sustained-press latch when centered: render loop 4 sat
+                # at a constant 2.85 N — under the 3.0 N gate, under the jam
+                # threshold — for 2400 substeps and timed out three takes in a
+                # row. Amplitude alone can't split brush from stall at render
+                # impedance; DURATION can — a funnel brush is transient while
+                # the bottle keeps descending, a stall holds contact steadily.
+                # 60 consecutive substeps > 1.5 N ==> latched contact.
+                _thr = 3.0 if self._rq_centered else 1.5
+                # NEAR-FUNNEL guard on both latches: contact only counts as
+                # "rim" if the bottle base is within 12 cm of the cell center
+                # (covers the deliberate 8 cm wedge; excludes rack-EDGE
+                # grazes — render loop 9 latched rimz on a 2 N graze 19 cm
+                # off and the policy took over stranded on the outer wall).
+                # (A/B'd out in smoke 77: not the attempt-1 regression.)
+                _bnear = (self._obj.data.root_pose_w[:, :2]
+                          - torch.stack([orig[:, 0] + c.rack_x,
+                                         orig[:, 1] + c.rack_y], dim=-1)
+                          ).norm(dim=-1) < 0.12
+                _press = (self._rq_desc & (self._rq_rimz < 0) & _bnear
+                          & (self._cf_insert > 1.5))
+                self._rq_pressctr = torch.where(
+                    _press, self._rq_pressctr + 1,
+                    torch.zeros_like(self._rq_pressctr))
+                _hit = self._rq_desc & (self._rq_rimz < 0) & _bnear & (
+                    (self._cf_insert > _thr) | (self._rq_pressctr >= 60))
                 # freeze 5 mm ABOVE the touch point: the descent's momentum
                 # carries the press to ~12 N, which exceeds the pinch's AXIAL
                 # SLIP limit — the bottle slides up through the pads and the
@@ -1255,9 +1373,18 @@ if ISAAC_AVAILABLE:
                 # (Freezing 1.2 cm BELOW pushed the base off the divider into
                 # the hole — smoke 31; AT the point overpressed — smoke 33.)
                 self._rq_rimz = torch.where(_hit, ee_pos_w[:, 2] + 0.005, self._rq_rimz)
+                # hand off FAST (12 substeps, was 60): the RQ_TRACE2 render
+                # trace showed the whole over-press builds INSIDE this
+                # countdown — cf 3.9 -> 29 N while the pads slid 2 cm along
+                # the bottle (squeeze-extrusion feedback: deeper slip ->
+                # thicker neck in the pinch -> harder squeeze -> more press).
+                # The lam-clamped setup impedance can only pull up 4.8 N and
+                # cannot stop it; the LEARNED policy can and does — at
+                # setup==0 it unloaded 27.5 -> 6.5 N in ~10 substeps. So give
+                # it control while the press is still ~10 N.
                 self._setup_ctr = torch.where(
                     _hit, torch.minimum(self._setup_ctr,
-                                        torch.full_like(self._setup_ctr, 60)),
+                                        torch.full_like(self._setup_ctr, 12)),
                     self._setup_ctr)
                 if bool(_hit[0]):
                     import os as _os6
@@ -1266,9 +1393,36 @@ if ISAAC_AVAILABLE:
                               f"{float(ee_pos_w[0, 2] - orig[0, 2]):.3f} "
                               f"cf={float(self._cf_filt[0]):.1f} -> policy in 60",
                               flush=True)
+                import os as _os6b
+                self._t2ct = getattr(self, "_t2ct", 0) + 1
+                if (_os6b.environ.get("RQ_TRACE2") == "1"
+                        and bool(self._rq_desc[0])
+                        and (float(ee_pos_w[0, 2] - orig[0, 2]) < 0.72
+                             or self._rq_centered)
+                        and (self._t2ct % 10 == 0
+                             or float(self._cf_insert[0]) > 0.5)):
+                    # DEBUG per-substep contact trace (render diagnosis only)
+                    _bp = self._obj.data.root_pose_w[0, :3]
+                    _gp = float(self._robot.data.joint_pos[0, self._grip_ids[0]])
+                    print(f"      [rq-c] ee=({float(ee_pos_w[0,0]-orig[0,0]):.3f},"
+                          f"{float(ee_pos_w[0,1]-orig[0,1]):.3f},"
+                          f"{float(ee_pos_w[0,2]-orig[0,2]):.4f})"
+                          f" cf={float(self._cf_insert[0]):6.2f}"
+                          f" b=({float(_bp[0]-orig[0,0]):.3f},"
+                          f"{float(_bp[1]-orig[0,1]):.3f},"
+                          f"{float(_bp[2]-orig[0,2]):.4f})"
+                          f" grip={_gp:.4f}"
+                          f" rimz={float(self._rq_rimz[0]):.3f}"
+                          f" setup={int(self._setup_ctr[0])}"
+                          f" ctr={int(self._rq_centered)}"
+                          f" stl={int(self._rq_need_settle[0])}"
+                          f"/{int(self._rq_calmctr[0])}", flush=True)
             appr = ee_pos_w.clone()
             appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
+            if self.cfg.gripper == "robotiq_2f140" and self._rq_centered:
+                # frozen base-aim carrot (see the _dxy / rec_end notes)
+                appr[:, :2] = self._rq_aim
             # _tcp_dz shifts the HAND heights for longer grippers (robotiq) so the
             # BOTTLE traverses/hands-off at the same altitudes as with the panda hand.
             _tz = c.transport_z + (self._rq_carry_dz if self.cfg.gripper == "robotiq_2f140" else 0.0)
@@ -1277,13 +1431,19 @@ if ISAAC_AVAILABLE:
                          + self._tcp_dz
             if self.cfg.gripper == "robotiq_2f140":
                 if self._rq_centered:
-                    # centered (post-recovery) descent: 6 cm deeper than the
-                    # entrance — the funnel ride is contact-free in the middle
-                    # and the burst must carry the bottle to the SEAT (smoke 45:
-                    # stopped at the entrance altitude with the bottle mid-mouth,
-                    # and the free-space policy lifted it back out). The 3 N
-                    # contact gate still halts this instantly on any resistance.
-                    appr[:, 2] = appr[:, 2] - 0.06
+                    # centered (post-recovery) descent: DEEPER than the entrance
+                    # — the funnel ride is contact-free in the middle and the
+                    # burst must carry the bottle to the SEAT (smoke 45: stopped
+                    # at the entrance altitude with the bottle mid-mouth, and
+                    # the free-space policy lifted it back out). The 3 N contact
+                    # gate still halts this instantly on any resistance.
+                    # -0.10, not -0.06: the seat is ~6 cm of bottle travel, so a
+                    # -0.06 carrot has ZERO slack — under the render pipeline's
+                    # extra per-capture physics stepping the impedance realizes
+                    # a couple cm high and the bottle dangles at 0.25 N above
+                    # the seat, too light for the gate OR the jam detector:
+                    # every post-recovery attempt timed out (render loop 3).
+                    appr[:, 2] = appr[:, 2] - 0.10
                 # rim-contact altitude freeze (set below on first ~3 N touch)
                 appr[:, 2] = torch.where(self._rq_rimz > 0,
                                          self._rq_rimz, appr[:, 2])
@@ -1297,6 +1457,21 @@ if ISAAC_AVAILABLE:
             _setup_lam = 0.025 if self.cfg.gripper == "robotiq_2f140" else c.lam
             lam = torch.where(in_setup, torch.full_like(appr[:, :1], _setup_lam),
                               torch.full_like(appr[:, :1], c.forge_lam))
+            if self.cfg.gripper == "robotiq_2f140":
+                # GENTLE TOUCHDOWN: once the arrival latch engages the descent,
+                # crawl (P cap 0.008*600 = 4.8 N/axis) — full-speed scripted
+                # touchdowns hit the rim/bottle at 22-35 N, past the glass
+                # F_break 21 N (breakage is disarmed during setup, so the take
+                # showed an over-break gauge with nothing breaking). The gentle
+                # contact still trips the 3 N rim gate; the fragile-force story
+                # stays consistent end to end.
+                lam = torch.where((in_setup.squeeze(-1) & self._rq_desc).unsqueeze(-1),
+                                  torch.full_like(lam, 0.008), lam)
+                # (contact slow zone: applied BELOW as an asymmetric z clamp on
+                # `delta` — NOT via lam. Slowing lam throttles the restoring
+                # force too (the cap is symmetric): at 0.003 the upward P
+                # authority fell to 1.8 N and the arm sank 2 cm through the
+                # frozen rim altitude pressing 26.5 N — smoke 60.)
             # After the policy releases, the bottle is placed — the hand no longer needs the
             # slow gentle-insertion motion cap, so retract at a MODERATE speed (the full setup
             # lam yanks the arm and spikes joint forces; 1.5 cm/step pulls clear smoothly).
@@ -1304,7 +1479,57 @@ if ISAAC_AVAILABLE:
                 lam = torch.where(self._released.unsqueeze(-1),
                                   torch.full_like(lam, 0.015), lam)
             delta = torch.maximum(torch.minimum(raw - ee_pos_w, lam), -lam)
+            if self.cfg.gripper == "robotiq_2f140" and not self._rq_centered:
+                # CONTACT SLOW ZONE (render loops 4-6): the wedge touchdown
+                # impact is delivered INSIDE a render capture interval — the
+                # pipeline steps physics between env substeps, so the spike
+                # (17.7 / 31.8 / 28.8 N across takes, all past the pinch's
+                # axial slip limit; 28.8 flung the bottle off the table) is
+                # over before any per-substep guard can react. The only knob
+                # that reaches inside the interval is approach VELOCITY: cap
+                # the DOWNWARD z step at 0.003 for the last ~2 cm above the
+                # wedge contact (contact at _zref + 0.053; zone opens at
+                # + 0.075). Asymmetric on purpose — upward steps keep the
+                # 0.008 gentle-lam authority (4.8 N), which is what holds the
+                # arm against gravity sag once the rim altitude freezes
+                # (a symmetric 0.003 lam sank 2 cm / 26.5 N — smoke 60).
+                # Wedge descent only: slowing the centered funnel ride let
+                # the sustained-press counter latch mid-mouth and strand the
+                # bottle on the slope at 30.9 N (smoke 59).
+                _zref = orig[:, 2] + c.forge_approach_z + self._tcp_dz
+                _zone = (in_setup.squeeze(-1) & self._rq_desc
+                         & ((ee_pos_w[:, 2] - _zref) < 0.075))
+                delta[:, 2] = torch.where(
+                    _zone, delta[:, 2].clamp(min=-0.003), delta[:, 2])
             target = ee_pos_w + delta
+            if self.cfg.gripper == "robotiq_2f140":
+                # SWING-SETTLE HOLD: while settling, the target IS the fixed
+                # snapshot — all three axes. The _dxy override alone still let
+                # the z descent crawl (desc stays latched through recovery) and
+                # dragged the swinging bottle down toward the rim (take 97).
+                _st = getattr(self, "_rq_settling", None)
+                if _st is not None:
+                    target = torch.where(_st.unsqueeze(-1),
+                                         self._rq_settle_pos, target)
+                import os as _os6c
+                if (_os6c.environ.get("RQ_TRACE2") == "1"
+                        and self._rq_centered
+                        and getattr(self, "_t2ct", 0) % 10 == 0):
+                    # DEBUG: the ACTUAL commanded carrot (render diagnosis —
+                    # take 96's EE spiraled +y away from the frozen aim)
+                    print(f"      [rq-t] tgt=({float(target[0,0]-orig[0,0]):.3f},"
+                          f"{float(target[0,1]-orig[0,1]):.3f},"
+                          f"{float(target[0,2]-orig[0,2]):.4f})"
+                          f" raw=({float(raw[0,0]-orig[0,0]):.3f},"
+                          f"{float(raw[0,1]-orig[0,1]):.3f},"
+                          f"{float(raw[0,2]-orig[0,2]):.4f})"
+                          f" aim=({float(self._rq_aim[0,0]-orig[0,0]):.3f},"
+                          f"{float(self._rq_aim[0,1]-orig[0,1]):.3f})"
+                          f" desc={int(self._rq_desc[0])}"
+                          f" st1={int(stage1[0])}"
+                          f" stl={int(_st[0]) if _st is not None else -1}"
+                          f" oerr={float(2.0 * torch.acos((self._robot.data.body_quat_w[0, self._ee_idx] * self._ee_quat_des[0]).sum().abs().clamp(max=1.0))):.3f}",
+                          flush=True)
             # ── FORGE force authority (safety, NOT the policy): when axial contact
             # reaches the per-object budget, FREEZE the descent (don't push the EE
             # lower) — but leave xy free so the policy can still slide/align, and
@@ -1317,6 +1542,25 @@ if ISAAC_AVAILABLE:
                 over = over & (~self._released)   # after release, never freeze z — let the hand lift away
             frozen_z = torch.maximum(target[:, 2], ee_pos_w[:, 2])
             target[:, 2] = torch.where(over, frozen_z, target[:, 2])
+            # HARD fragile ceiling (render loops 4/5): the freeze above never
+            # RETREATS — it re-baselines at the current ee each substep, so the
+            # render pipeline's capture-interleaved physics digs a few mm per
+            # capture and the press ratchets 8.8 -> 17.7 N, past the pinch's
+            # axial slip limit: the bottle slid out of the pads at the attempt-0
+            # jam and every later attempt ran with an empty gripper over a
+            # resting bottle (constant cf = weight 2.85 N -> timeout). Above
+            # 1.5x budget, retreat at least 2 mm/substep. torch.maximum, NOT a
+            # replacement (render loop 6/7 lesson): overwriting the target with
+            # ee+0.002 CUT the up-pull to 1.2 N whenever the normal path
+            # already commanded higher (the lam-clamped rimz freeze = 4.8 N up)
+            # and the press ran away to 29 N. Armed in ALL phases. Jam
+            # detection is unaffected: thresh = max(6.0, 0.18*F_max) N.
+            _hard = self._cf_insert > 1.5 * budget
+            if self.cfg.forge_release_mode:
+                _hard = _hard & (~self._released)
+            target[:, 2] = torch.where(
+                _hard, torch.maximum(target[:, 2], ee_pos_w[:, 2] + 0.008),
+                target[:, 2])
             if self.cfg.gripper == "robotiq_2f140":
                 # WORKSPACE FENCE (LEARNED phase): clamp the policy's target to a
                 # box around the cell. In free space the policy's action mean
@@ -1329,6 +1573,14 @@ if ISAAC_AVAILABLE:
                                    + self._start_off[:, 0],
                                    orig[:, 1] + c.rack_y + self._start_off[:, 1],
                                    orig[:, 2] + c.forge_approach_z + self._tcp_dz], dim=-1)
+                # (fence stays NOMINAL-centered. An aim-following chimney —
+                # tried after render loop 11 parked at the fence's y edge —
+                # was present in every configuration that lost the direct
+                # attempt-1 seat (smokes 65-75): with a live aim the clamp
+                # box sways with the bottle pendulum and the policy phase
+                # hovers sub-gate. The direct-seat configs (smokes 61-63)
+                # all ran the nominal fence; loop 11's edge-park was the
+                # 0.015 maneuver slow-down's misalignment, not the fence.)
                 # lateral half-width: 0.10 pre-jam (room for the seeded wedge at
                 # +0.08), 0.04 once the recovery has centered the approach — a
                 # chimney over the goal cell, so every contact burst the policy
@@ -1379,7 +1631,19 @@ if ISAAC_AVAILABLE:
                     clear[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + rec[:, 0] \
                                   + self._rq_dest_dx
                     clear[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1] + rec[:, 1]
-                    clear[:, 2] = orig[:, 2] + c.forge_approach_z + self._tcp_dz
+                    # robotiq: +5 cm — the maneuver's fast drive at the entrance
+                    # altitude pressed the low-hanging jammed bottle into the
+                    # rack at ~35 N (over glass break; smokes 47/48). Hover
+                    # clear; the gentle post-recovery burst does the touchdown.
+                    _rc_dz = 0.05 if self.cfg.gripper == "robotiq_2f140" else 0.0
+                    clear[:, 2] = orig[:, 2] + c.forge_approach_z + self._tcp_dz + _rc_dz
+                    # keep the c.lam carrot. A 0.015 slow-down (tried against a
+                    # branch-flip theory after loop 10's fling) BROKE the
+                    # direct attempt-1 seat: smokes 61-63 (c.lam) seated on
+                    # the first post-recovery attempt every time; smokes 64+
+                    # (0.015) never did — the maneuver no longer completes its
+                    # correction within its duration. The loop-10 fling was
+                    # the staged re-approach (reverted separately), not this.
                     step = (clear - ee_pos_w).clamp(-c.lam, c.lam)
                     target = torch.where(rec_active.unsqueeze(-1), ee_pos_w + step, target)
                 # (b) INDUCED JAM (only when not recovering): base-aim the bottle at an OFF-CENTER
@@ -1411,8 +1675,26 @@ if ISAAC_AVAILABLE:
             # pinched bottle tilts with it (snap 4: bottle leaning ~40 deg in
             # the cell); a firm wrist keeps the bottle upright through the
             # learned insertion.
+            _ok_setup = 400.0
+            if self.cfg.gripper == "robotiq_2f140" and self._rq_centered:
+                # POST-RECOVERY setup runs at the LEARNED-phase stiffness, not
+                # 400: with the maneuver-exit twist seeding a nonzero error,
+                # ori_k 400 under the render pipeline's held-torque stepping is
+                # closed-loop UNSTABLE in the orientation channel — take 93's
+                # oerr diverged 0.013 -> 1.58 rad with a perfectly anchored
+                # static command (both q_des and quat_tgt re-anchored at
+                # rec_end), and the saturated wrist wrench escaped through the
+                # shoulders as the climbing spiral. 300 (take 92) still
+                # diverged — slower, as a wrist-PITCH mode (the 0.214 m TCP
+                # lever turns pitch into bottle rise) — though xy then tracked
+                # the aim cleanly. 110 is the franka-proven render stiffness;
+                # the 40-deg-lean concern behind the robotiq 300 applies to
+                # the LEVERED in-cell insertion, not this free-hanging
+                # descent. The pre-recovery setup traverse (error ~0) keeps
+                # 400.
+                _ok_setup = 110.0
             ori_k = torch.where(self._setup_ctr > 0,
-                                torch.full((self.num_envs,), 400.0, device=self.device),
+                                torch.full((self.num_envs,), _ok_setup, device=self.device),
                                 torch.full((self.num_envs,), _ok_ins, device=self.device))
             # Once the policy has LEARNED-released, HOLD the arm still at its release pose. The
             # policy (trained to insert) otherwise keeps driving the EE down and pushes on the
@@ -1460,17 +1742,88 @@ if ISAAC_AVAILABLE:
                 _rec_end = (self._rq_rec_prev > 0) & (self._rec_steps == 0)
                 if bool(_rec_end[0]):
                     self._rq_rimz[:] = -1.0
+                    self._rq_pressctr[:] = 0
+                    self._rq_calmctr[:] = 0   # swing-settle: re-settle after every maneuver
+                    self._rq_need_settle[:] = True
+                    self._rq_settlewait[:] = 0
+                    # RE-SNAPSHOT the null-space posture target at the CURRENT
+                    # joints: apply_recovery pins the elbow branch at p_gain 80
+                    # toward _joint_centers (the OSC-handoff posture). Under the
+                    # render pipeline, physics steps run BETWEEN control updates,
+                    # so the held posture torque decorrelates from the evolving
+                    # configuration and the projection leaks into task space —
+                    # dragging the arm across joint space toward the handoff
+                    # posture traced the takes-96/97 outward spiral (EE moved +y
+                    # from the first post-release substep while the aim carrot
+                    # demanded -y, and z tracked its 8 mm/substep command at
+                    # 0.2 mm/substep — the pull out-torqued the 15 N task P).
+                    # Pinning the posture we are IN keeps the branch-holding
+                    # benefit (smoke 79/80's calibrated 80) with ZERO initial
+                    # pull; the closed-loop base-aim absorbs any branch offset.
+                    if self._joint_centers is not None:
+                        self._joint_centers = self._robot.data.joint_pos[
+                            :, self._arm_ids].clone()
+                    # RE-ANCHOR the orientation command at the REACHED quat —
+                    # the same rule this file already applies at the other two
+                    # regime handoffs (OSC-init flip, seat->OSC handoff). The
+                    # maneuver exits with the live wrist ~0.1 rad off the static
+                    # q_des; at ori_k 400 anything past 12/400 = 0.03 rad
+                    # SATURATES the 12 Nm wrist joints, and under the render
+                    # pipeline's held-torque stepping the saturated wrist loses
+                    # ground every interval — oerr ratcheted 0.095 -> 2.25 rad
+                    # (take 95) and the OSC pushed the growing orientation
+                    # wrench through the SHOULDERS: the takes-95/96/97 outward
+                    # spiral that flung the bottle. Re-anchoring zeroes the
+                    # error — and re-anchor the slerp DESTINATION too (take 94:
+                    # re-anchoring q_des alone woke the previously-inert slerp,
+                    # which marched the command back toward the handoff quat at
+                    # 0.003 rad/substep — faster than the wrist can physically
+                    # slew against the 80-damping drives at its 12 Nm effort
+                    # clamp (~0.0025 rad/substep), so the error ratcheted 0.027
+                    # -> 1.36 rad and the spiral returned). Hold-what-you-
+                    # reached, BOTH halves, exactly like the seat->OSC handoff:
+                    # the ~0.03-0.1 rad maneuver-exit twist is within what the
+                    # funnel ride and the policy (trained at ori_k 110) absorb.
+                    self._rq_q_des = self._robot.data.body_quat_w[
+                        :, self._ee_idx].clone()
+                    self._rq_quat_tgt = self._rq_q_des.clone()
+                    # gravity-integrator ceiling for the re-descent (see the
+                    # downward-only clamp in the ag block)
+                    self._rq_ag_cap = self._rq_ag.clone()
+                    # hold point = the maneuver's exit pose, snapshotted ONCE —
+                    # a fixed target gives the OSC real restoring stiffness
+                    # against the maneuver's residual arm momentum (holding at
+                    # the live ee is zero-error = zero force, take 97 drift)
+                    self._rq_settle_pos = ee_pos_w.clone()
+                    # (do NOT release _rq_desc here to re-run the staged
+                    # up-over-down approach: the full-speed transport swing
+                    # with the bottle in the marginal pinch FLUNG it off the
+                    # table under render tracking — loop 10. The re-approach
+                    # stays the short hover-descend from the maneuver's
+                    # entrance hover.)
+                    # FREEZE the base-aim HERE, once per recovery (render loop
+                    # 12): recomputing `ee + (rack - bottle)` from the LIVE
+                    # bottle every substep closes a feedback loop through the
+                    # held bottle's pendulum swing — swing -x, carrot +x —
+                    # which PUMPS the swing at resonance under render tracking
+                    # (smoke sag damps it). The offset is constant while the
+                    # bottle is held, so the falling-edge snapshot is the same
+                    # aim without the loop.
+                    self._rq_freeze_aim(ee_pos_w, orig)
+                    # ARM the centered re-approach ON THE FALLING EDGE (this
+                    # arming lived under `if self._rq_centered:` for render
+                    # loops 3-15 — a dead gate, since only this code ever sets
+                    # it True. The whole centered machinery — aim override,
+                    # ±0.04 fence, 3.0 N rim gate, the 500-substep re-descent —
+                    # silently never engaged in ANY of those takes.)
                     self._rq_dest_dx = 0.0 - float(self._grasp_tcp_d[0])
                     self._jam_on[:] = False
-                    if not self._rq_centered:
-                        # ONCE: counter the persistent push biases the P cannot
-                        # hold against (realized-vs-commanded offsets, measured):
-                        # +y ~+5-7 cm (smoke 42, re-contacts north on a divider)
-                        # and -x ~-6 cm (smoke 44, attempt 2 descended into the
-                        # NEIGHBOR cell at x 0.35). Bias the centered aim so the
-                        # REALIZED position sits over the goal cell.
-                        self._start_off[:, 1] -= 0.075
-                        self._start_off[:, 0] += 0.055
+                    # (no static bias counters here anymore — the centered
+                    # re-approach below base-aims CLOSED-LOOP on the measured
+                    # bottle position, which absorbs the persistent P-push the
+                    # old +x/-y offsets only approximated for the rotate_align
+                    # flow; the retract flow drifts differently and kept
+                    # re-hitting the rim, ratcheting the bottle out of the pinch)
                     self._rq_centered = True
                     self._setup_ctr = torch.maximum(
                         self._setup_ctr, torch.full_like(self._setup_ctr, 500))
@@ -1478,11 +1831,35 @@ if ISAAC_AVAILABLE:
                     if _os7.environ.get("RQ_TRACE") == "1":
                         print("      [rq-recontact] recovery done -> centered "
                               "approach re-descent (500)", flush=True)
+                # NO live per-substep aim refresh. The old justification ("live
+                # aim ran through render loops 4-9 without the loop-12 pendulum
+                # pumping") was VOID — the dead centered-arming gate meant loops
+                # 4-15 never engaged this code path at all. The first real render
+                # test of the live refresh (take 99, 2026-07-06) reproduced the
+                # loop-12 fling exactly: ee + (rack − bottle) recomputed every
+                # substep closes a feedback loop through the held bottle's
+                # pendulum swing under render tracking (smoke sag damps it, so
+                # smokes pass either way) and pumped the arm across the room
+                # (ee x +0.31 → −0.61, bottle flung through the floor). The
+                # falling-edge snapshot in the rec_end block above is the aim.
                 self._rq_rec_prev = self._rec_steps.clone()
                 dest = torch.stack([orig[:, 0] + c.rack_x + self._start_off[:, 0]
                                     + self._rq_dest_dx,
                                     orig[:, 1] + c.rack_y + self._start_off[:, 1],
                                     orig[:, 2] + c.forge_approach_z + self._tcp_dz], dim=-1)
+                if self._rq_centered:
+                    # POST-RECOVERY centered re-approach: base-aim — put the EE
+                    # where the bottle base lands on the cell center (same
+                    # base-aim as the wedge staging). Replaces the static bias
+                    # counters: the arm's persistent P-push differs per
+                    # maneuver (rotate_align vs retract), so open-loop offsets
+                    # calibrated on one flow re-hit the rim on the other —
+                    # each rim press ratchets the neck through the pads until
+                    # the bottle drops (render loop 2). FROZEN at the recovery
+                    # falling edge (rec_end): the per-substep live version
+                    # closed a feedback loop through the held bottle's
+                    # pendulum swing and pumped it to a fling (loop 12).
+                    dest[:, :2] = self._rq_aim
                 near = (ee_pos_w - dest).norm(dim=-1) < 0.03
                 self._rq_des_z = appr[:, 2].clone()   # unclamped altitude (z integrator)
                 # HOVER-LIFT gate: after the OSC handoff, hold xy AT the grasp
@@ -1527,7 +1904,11 @@ if ISAAC_AVAILABLE:
                 seat_on = self._rq_seatctr > 0
                 target = torch.where(seat_on.unsqueeze(-1), ee_pos_w, target)
                 self._rq_seatctr = torch.where(seat_on, self._rq_seatctr - 1, self._rq_seatctr)
-                self._setup_ctr = torch.where(seat_on, self._setup_ctr,
+                # settle gate pauses the countdown too — the re-descent window
+                # must not be consumed while waiting out the pendulum swing
+                _hold = seat_on | getattr(self, "_rq_settling",
+                                          torch.zeros_like(seat_on))
+                self._setup_ctr = torch.where(_hold, self._setup_ctr,
                                               (self._setup_ctr - 1).clamp(min=0))
             else:
                 self._setup_ctr = (self._setup_ctr - 1).clamp(min=0)
@@ -1566,6 +1947,14 @@ if ISAAC_AVAILABLE:
                                torch.tensor([0., 0., 1.], device=self.device).view(1, 3, 1)
                                .expand(self.num_envs, 3, 1)).squeeze(-1)
             fcmd = self.f_cmd_norm()
+            # BOUNDED obs: with forge_no_term a blown-up env (OSC runaway, void-
+            # falling bottle) keeps feeding the nets until truncation — unclamped
+            # ee_p/ft/base_to_goal reached 300 m / 2e7 N in the 256-env run and
+            # would NaN the policy. Bounds are transparent for nominal episodes
+            # (ee_p ~0-1.2 m, ft < 30 N, |base_to_goal| < 1 m).
+            ee_p = ee_p.clamp(-2.0, 2.0)
+            ft = ft.clamp(-100.0, 100.0)
+            base_to_goal = base_to_goal.clamp(-2.0, 2.0)
             # 7+7+3+4+6+3+3+1 = 34
             return {"policy": torch.cat([jp, jv, ee_p, ee_q, ft, base_to_goal, obj_up, fcmd], dim=-1)}
 
@@ -1575,7 +1964,10 @@ if ISAAC_AVAILABLE:
             base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
             goal = self._forge_goal_w() - self.scene.env_origins
             d = base - goal
-            dist = d.norm(dim=-1)
+            # clamp: beyond 2 m the bottle is gone either way; an unclamped dist
+            # follows a void-falling bottle to -300 m (forge_no_term keeps it
+            # falling all episode) and wrecks the value targets.
+            dist = d.norm(dim=-1).clamp(max=2.0)
             live = self._setup_ctr == 0
             # PURE PROGRESS shaping: F = prev_dist − dist (NO discount factor).
             # Telescopes to (dist_0 − dist_final): only NET progress toward the seat
@@ -1630,7 +2022,11 @@ if ISAAC_AVAILABLE:
                 r = r + 10.0 * self._newly_released.float() * low.float()
             # no learning signal during the (non-skill) setup window
             r = torch.where(self._setup_ctr > 0, torch.zeros_like(r), r)
-            return r
+            # bounded per-step reward: a blown-up env's jvel/force penalties hit
+            # -300/step (256-env run, it 65) and wreck the value targets. Nominal
+            # steps live in [-3, +52] (success cliff +50); the clamp only bites
+            # on physics-explosion garbage.
+            return r.clamp(-25.0, 60.0)
 
         def _forge_get_dones(self):
             c = self.cfg
@@ -1652,8 +2048,14 @@ if ISAAC_AVAILABLE:
                 eo_dist  = (self._robot.data.body_pos_w[:, self._ee_idx]
                             - self._obj.data.root_pose_w[:, :3]).norm(dim=-1)
                 hand_clear = eo_dist > c.release_clear_dist
-                # dense retract progress (reward moving the hand away after release)
-                self._retract_prog = self._released.float() * (eo_dist - self._prev_eod).clamp(-0.1, 0.1)
+                # dense retract progress (reward moving the hand away after release).
+                # Gated on the bottle still being IN THE CELL (xy): with forge_no_term
+                # a flung bottle free-falls for the rest of the episode and "hand to
+                # bottle distance grows" pays the +0.1 clamp every step — a fling-farm
+                # the 256-env run discovered by it 50 (badrel 38->139, bottles at
+                # -300 m). Termination used to cut this off; the gate replaces it.
+                self._retract_prog = (self._released & in_cell).float() \
+                    * (eo_dist - self._prev_eod).clamp(-0.1, 0.1)
                 self._prev_eod = eo_dist
                 seated   = in_cell & at_floor & upright & settled & self._released
                 # Only require the hand to be RETRACTED clear when the hybrid retract is enabled.
@@ -1871,6 +2273,27 @@ if ISAAC_AVAILABLE:
             dur = int(params.get("duration_steps", c.rec_dur_steps))
             self._jam_cooldown[0] = dur + c.jam_window
             self._rec_steps[0] = dur
+            if self.cfg.gripper == "robotiq_2f140":
+                # PIN THE ELBOW BRANCH from the first recovery onward: the
+                # render pipeline's faster tracking lets the maneuver swing
+                # settle the redundant arm in a posture branch the smoke
+                # never visits, and every post-recovery descent then drifts
+                # +6-12 cm in y (bottle hovers on the funnel edge below all
+                # force gates — 0 seats in ~60 rendered post-recovery
+                # attempts across loops 3-14). The construction-time
+                # null-space stiffness (15) is too weak to hold the posture;
+                # 80 shrank the attempt-1 landing miss from a 0.36 N graze to
+                # a 3.36 N press (smoke 79). NON-MONOTONIC: 200 regressed to
+                # 0.74 N (smoke 80) — past ~100 the posture torque distorts
+                # the task-space landing instead of helping. 80 is the
+                # calibrated value. Gains are plain tensor attrs on the
+                # controller — safe to retune here.
+                _np = torch.tensor(80.0, dtype=torch.float, device=self.device)
+                self._osc._nullspace_p_gain = _np
+                self._osc._nullspace_d_gain = (
+                    2.0 * torch.sqrt(_np)
+                    * torch.tensor(self._osc.cfg.nullspace_damping_ratio,
+                                   dtype=torch.float, device=self.device))
             self._rec_wiggle[0] = False
             self._rec_off[0] = 0.0
             # The recovery maneuver corrects the misaligned approach: clear the
@@ -1903,6 +2326,44 @@ if ISAAC_AVAILABLE:
                 else:
                     self._warmup[0] = self.cfg.warmup_substeps
                 self._rec_off[0, 2] = 0.4 * c.rec_lift
+
+        def _rq_freeze_aim(self, ee_pos_w, orig, alpha=1.0):
+            """Update the post-recovery base-aim (see the rec_end block).
+
+            ee + (rack - bottle) is an absolute ee-target that puts the HELD
+            bottle over the cell. alpha=1 snapshots it (recovery falling
+            edge); alpha<<1 low-pass tracks it while free-hanging — never
+            live per-substep: that closes a feedback loop through the held
+            bottle's pendulum swing and pumps it to a fling under render
+            tracking (render loop 12). Falls back to the nominal chimney
+            center when the pinch is empty (grip joint at free-close) or the
+            bottle is off the rack area — chasing a dropped bottle dragged
+            the arm across the room (render loop 13).
+            """
+            c = self.cfg
+            _bwf = self._obj.data.root_pose_w[:, :3]
+            aim = ee_pos_w[:, :2] + torch.stack(
+                [orig[:, 0] + c.rack_x - _bwf[:, 0],
+                 orig[:, 1] + c.rack_y - _bwf[:, 1]], dim=-1)
+            _rc = torch.stack([orig[:, 0] + c.rack_x,
+                               orig[:, 1] + c.rack_y], dim=-1)
+            # held-check by bottle-to-EE DISTANCE, not the grip joint: the
+            # four-bar drive joint flutters past 0.75 transiently during
+            # maneuver swings while still holding (smokes 67-69 aborted on a
+            # joint threshold). Distance thresholds must clear the DYNAMIC
+            # range too: held base-to-EE is ~0.25 m static and grazes 0.30 in
+            # a swing — a 0.30 cut fired at the attempt-2 falling edge and
+            # sent the aim to nominal (smokes 71/72). A truly dropped bottle
+            # measures >1 m from the wandered arm (loop 13); use 0.45.
+            _lost = (((_bwf[:, :2] - _rc).norm(dim=-1) > 0.45)
+                     | ((_bwf[:, 2] - orig[:, 2]) < 0.25)
+                     | ((_bwf - ee_pos_w).norm(dim=-1) > 0.45))
+            _nom = torch.stack(
+                [orig[:, 0] + c.rack_x - self._grasp_tcp_d
+                 + self._start_off[:, 0],
+                 orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1)
+            cand = torch.where(_lost.unsqueeze(-1), _nom, aim)
+            self._rq_aim = (1.0 - alpha) * self._rq_aim + alpha * cand
 
         # ── Phase waypoint helpers ────────────────────────────────────────────
         def _phase_waypoint_world(self) -> torch.Tensor:
@@ -2237,6 +2698,18 @@ if ISAAC_AVAILABLE:
                 self._rq_ag = torch.where(
                     _gate, (self._rq_ag + _ki * _zerr_i).clamp(-0.3, 1.2),
                     self._rq_ag)
+                if self._rq_centered and self._rq_ag_cap is not None:
+                    # POST-RECOVERY: adaptation allowed DOWNWARD only (capped
+                    # at the rec_end snapshot). Both prior variants failed one
+                    # regime each: free adaptation WOUND UP to +1.2 (2.2x
+                    # gravity comp) in take 92's disturbed attempts and pinned
+                    # the arm at the ceiling; a full FREEZE (take 91) locked
+                    # the smoke's staging-inflated +0.40 in as permanent over-
+                    # lift and the re-descent floated above the rim to a 0.0 N
+                    # timeout (smokes 90/91). Shedding excess lift is the
+                    # integrator's healthy direction in a descent; winding up
+                    # is the pathology — allow the former, cap the latter.
+                    self._rq_ag = torch.min(self._rq_ag, self._rq_ag_cap)
                 jt = (jt + self._rq_ag.unsqueeze(-1) * grav) \
                     .clamp(-self._eff_lim, self._eff_lim)
                 # NO closed-loop force estimator through jac_b: applying forces
@@ -2385,6 +2858,11 @@ if ISAAC_AVAILABLE:
                         # command at the REACHED state (a lagging command makes
                         # the OSC yank the wrist backward — smoke-8 collapse).
                         _z = torch.zeros(self.num_envs, 7, device=_d)
+                        if self._rq_drive_kp is None:
+                            # one-time snapshot of the holding gains so the reset
+                            # re-arm can undo this zeroing for episode 2+
+                            self._rq_drive_kp = r.data.joint_stiffness[:, self._arm_ids].clone()
+                            self._rq_drive_kd = r.data.joint_damping[:, self._arm_ids].clone()
                         r.write_joint_stiffness_to_sim(_z, joint_ids=self._arm_ids)
                         r.write_joint_damping_to_sim(_z + 80.0, joint_ids=self._arm_ids)
                         self._joint_centers = r.data.joint_pos[:, self._arm_ids].clone()
@@ -2665,14 +3143,6 @@ if ISAAC_AVAILABLE:
                     self._rf_idx = bn.index("right_inner_finger")
                     jn = list(self._robot.data.joint_names)
                     self._grip_ids = [jn.index("finger_joint")]
-                    # Keep the HOLDING gains and arm the PRE-DRIVE + DRIVE MODE:
-                    # the joint drives take the arm to the side-grip pose (servoed
-                    # level at the hand-off height) and HOLD it through the whole
-                    # seat window (probe regime — zero sag). The gains are zeroed
-                    # and the OSC takes over only once the grip is established.
-                    self._rq_predrive[:] = self._RQ_PREDRIVE
-                    self._rq_arm_cmd = self._rq_arm_pose.clone()
-                    self._rq_drive_mode = True
                 else:
                     self._lf_idx = bn.index("panda_leftfinger")
                     self._rf_idx = bn.index("panda_rightfinger")
@@ -2683,6 +3153,67 @@ if ISAAC_AVAILABLE:
                 # do not survive them. The demo flow only resets while the arm is still
                 # at the (default) spawn pose, and the FORGE setup drive re-poses it.
                 jp = self._robot.data.joint_pos[env_ids].clone()
+                if len(env_ids) == self.num_envs:
+                    # ARM-ONLY teleport to the spawn pose. The teleport contract's
+                    # four-bar breakage comes from writing GRIPPER DOFs (the loop-
+                    # closure joints don't follow); writing just the 7 arm DOFs
+                    # moves the gripper subtree rigidly and the loop stays closed.
+                    # Without this, ep-2+ starts from wherever the policy wrecked
+                    # the arm — run-4 ep-2 drove j5 past its ±2.9 limit and ep-3's
+                    # drives-vs-limit fight exploded the solver (Farm 2e8) with
+                    # staging dead for the rest of the run. Teleporting makes every
+                    # episode's staging bit-identical for every env.
+                    _arm_def = self._robot.data.default_joint_pos[env_ids][:, self._arm_ids]
+                    self._robot.write_joint_state_to_sim(
+                        _arm_def, torch.zeros_like(_arm_def),
+                        joint_ids=self._arm_ids, env_ids=env_ids)
+                    jp[:, self._arm_ids] = _arm_def
+                # Re-arm the PRE-DRIVE + DRIVE MODE staging state machine. This
+                # state is GLOBAL (python bools + an env-0-servoed arm command),
+                # so it is only correct when every env resets together — training
+                # guarantees that with forge_no_term (truncation-only dones); the
+                # demo resets once at t=0. A partial reset would corrupt the
+                # staging of the still-live envs, hence the guard.
+                if len(env_ids) == self.num_envs:
+                    self._rq_predrive[:] = self._RQ_PREDRIVE
+                    self._rq_arm_cmd = self._rq_arm_pose.clone()
+                    self._rq_drive_mode = True
+                    self._rq_pd_ext = 0
+                    # Restore the HOLDING-gain arm drives that the OSC handoff
+                    # zeroed — with kp=0 the ep-2+ predrive position targets are
+                    # inert and the arm drifts into an alien joint branch (2-ep
+                    # smoke: jpos [-0.73,-0.39,0.54,...] vs probe [0,-1.39,0,...],
+                    # seat armed 13 cm low, lift integrator railed at +1.2).
+                    if self._rq_drive_kp is not None:
+                        self._robot.write_joint_stiffness_to_sim(
+                            self._rq_drive_kp, joint_ids=self._arm_ids)
+                        self._robot.write_joint_damping_to_sim(
+                            self._rq_drive_kd, joint_ids=self._arm_ids)
+                    # Zero the joint EFFORT targets: the OSC writes them every
+                    # step, drive mode never does — so ep-1's final torque command
+                    # (arm + gripper squeeze) would keep applying through all of
+                    # ep-2's staging (smoke3: arm dragged to j1=-2.6, finger
+                    # overdriven to 2.81 rad — four-bar squirt).
+                    self._robot.set_joint_effort_target(
+                        torch.zeros_like(self._robot.data.joint_pos))
+                    self._rq_lift_ok = True
+                    self._rq_liftctr = 0
+                    self._rq_centered = False
+                    self._rq_dest_dx = self.cfg.jam_dx - float(self._grasp_tcp_d[0])
+                    self._rq_ag[:] = 0.0
+                    self._rq_ag_cap = None
+                    self._rq_fup[:] = 0.0
+                    self._rq_f[:] = 0.0
+                    self._rq_des_z[:] = 0.0
+                    self._rq_prev_ee = None
+                    self._rq_prev_cmd[:] = 0.0
+                    self._rq_hover_xy[:] = 0.0
+                    self._rq_aim[:] = 0.0
+                    self._rq_rec_prev[:] = 0
+                elif self.cfg.forge_mode:
+                    print(f"[rq-reset] WARNING: partial reset ({len(env_ids)}/"
+                          f"{self.num_envs}) — global staging state NOT re-armed",
+                          flush=True)
             else:
                 jp = self._robot.data.default_joint_pos[env_ids].clone()
                 # Pre-close the gripper fingers onto the object's half-width so it starts
@@ -2717,7 +3248,11 @@ if ISAAC_AVAILABLE:
             self._rq_seatctr[env_ids]  = (-1 if self.cfg.gripper == "robotiq_2f140" else 0)
             self._rq_desc[env_ids]     = False
             self._rq_rimz[env_ids]     = -1.0
+            self._rq_pressctr[env_ids] = 0
+            self._rq_calmctr[env_ids]  = 0
             if self.cfg.gripper == "robotiq_2f140":
+                self._rq_need_settle[env_ids] = False
+                self._rq_settlewait[env_ids]  = 0
                 # deterministic wedge staging: the random start offset moved the
                 # jam aim in/out of the funnel's capture radius per episode
                 # (smoke 43: a -1 cm draw turned the wedge into a slide-in).

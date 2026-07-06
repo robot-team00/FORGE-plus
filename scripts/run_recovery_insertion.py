@@ -70,7 +70,11 @@ def main() -> None:
     cfg.place_strategy   = "insert"
     cfg.jam_dx           = args.jam
     # Keep the episode from auto-resetting mid-demo so the loop owns the timeline.
-    cfg.episode_length_s = 120.0
+    # 360 s: the robotiq's attempts cost up to 2375 steps EACH (staging traverse
+    # included), so k_max 6 needs ~14,250 steps ≈ 240 s — the old 120 s truncated
+    # at 7200 steps MID-DEMO, teleporting the bottle back to the shelf (the
+    # "attempt N: 0.0 N timeout" ghosts in old smokes/renders).
+    cfg.episode_length_s = 360.0
     cfg.settle_steps     = 400
     # Drive the recovery on the LEARNED FORGE policy (not the scripted base-aim). The env's
     # step_skill runs env._skill_policy when set; forge_mode routes the EE through _forge_targets.
@@ -126,6 +130,16 @@ def main() -> None:
         client = HeuristicLLMClient()
     else:
         client = build_client({"backend": args.backend})
+    if os.environ.get("RQ_FORCE_REC"):
+        # DEBUG SMOKE ONLY: pin the recovery maneuver to reproduce a specific
+        # selector branch (e.g. the render's retract_and_reapproach path).
+        # Never set for renders/evals — those must use the real selector.
+        _forced = os.environ["RQ_FORCE_REC"]
+        client._select_recovery = lambda payload, _a=_forced: {
+            "action": _a, "params": {},
+            "keep_F_max_N": payload.get("F_max_N", 0.0),
+            "rationale": "FORCED (debug smoke)"}
+        print(f"  [debug] RQ_FORCE_REC={_forced} — recovery selector pinned", flush=True)
     selector = RecoverySelector(client=client)
     loop = RecoveryLoop(selector=selector, k_max=args.k_max)
 
