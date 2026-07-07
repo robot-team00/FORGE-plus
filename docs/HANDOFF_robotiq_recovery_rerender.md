@@ -284,15 +284,21 @@ stepping physics, making the render regime IDENTICAL to the smoke:
 1. `/app/player/playSimulations=False` around the capture `app.update()`s (the carb
    setting Isaac's replay tools use). NOT `timeline.pause()` — play() is processed on
    a later update, so the next `env.step()` livelocked at 109% CPU (take 98, killed).
-2. **Rigid objects stop render-syncing while paused** (articulations keep syncing via
-   fabric during `env.step`'s sim.step; rigid-object transforms sync only in the
-   update-loop physics pass that pausing skips). Take 99 passed every physics gate
-   while the RENDERED bottle floated frozen at its stale pose.
+2. **NOTHING render-syncs while paused — rigid objects AND articulation links** (all
+   render transforms sync in the update-loop physics pass that pausing skips). Take 99
+   passed every physics gate while the RENDERED bottle floated frozen at its stale
+   pose; take 101 (bottle-only flush) shipped a frozen-statue ARM with a self-flying
+   bottle — the earlier claim that "articulations keep syncing during env.step" was
+   WRONG (an artifact of the old physics-stepping capture).
    `physx update_transformations(updateToUsd/FastCache)` does NOT fix it (renderer
-   reads Fabric; probes v2-v4). The fix is a direct **usdrt Fabric write** of the
-   bottle's world pose from `env._obj.data.root_pose_w` before each capture
-   (`Rt.Xformable` world attrs; probe v4/v5: pixel centroid matches the unpaused
-   calibration sub-pixel; scale correctly inited from USD by SetWorldXformFromUsd).
+   reads Fabric; probes v2-v4). The fix is a direct **usdrt Fabric write** of EVERY
+   dynamic prim in shot before each capture: the bottle from
+   `env._obj.data.root_pose_w` AND all robot links (paths from
+   `root_physx_view.link_paths[0]`, name-matched to `data.body_names`, poses from
+   `data.body_link_pos_w/quat_w` — w,x,y,z actor frame) via `Rt.Xformable` world
+   attrs (probe v4/v5: pixel centroid matches the unpaused calibration sub-pixel;
+   scale correctly inited from USD by SetWorldXformFromUsd; take 102: bottle + 17
+   links, 0 unmatched).
 3. Beware the ghost: with pause-cap on, ANY un-flushed rigid prim renders at a stale
    pose. Take 99's frame-0 "parked bottle" was itself the spawn-pose ghost; in a
    correct take the parked bottle is OCCLUDED behind the rack early on — do not
@@ -300,10 +306,12 @@ stepping physics, making the render regime IDENTICAL to the smoke:
    surviving frames f_0150/f_0275 show the bottle correctly in-grip and seated).
 
 **Results with the fixed pipeline** (same checkpoint task3_forge_robotiq.pt, same
-committed gains): takes 99/100/101 all reproduce the smoke pattern — wedge jam ->
+committed gains): takes 99/100/101/102 all reproduce the smoke pattern — wedge jam ->
 rotate_align -> attempt-2 seat, max oerr 0.099 rad (vs 0.26-0.37 take 91), peak force
 ~14 N, NO timeout attempts, ~13.5 s of video instead of 96 s with an 80 s dead middle.
-Seat gap 0.7064/0.7063 across takes — near-deterministic. The old detuned gains
+Seat gap 0.7058-0.7064 across takes — near-deterministic. **Take 102 (all-links
+flush) is the first take whose VISUALS are fully correct** and is the shipped
+docs/videos/task3/forge_recovery_robotiq.mp4. The old detuned gains
 (ori_k 110 post-recovery, settle gate, ag cap) are KEPT: the smoke validates them and
 the render now IS the smoke; no retrain needed (the policy is no longer OOD at render
 time). The "five mechanisms" above remain documented history — they were compensations

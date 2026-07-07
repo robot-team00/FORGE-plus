@@ -214,38 +214,57 @@ CYAN   = (120, 220, 255)
 PAUSE_CAP = os.environ.get("PAUSE_CAP", "1") == "1"
 _pc_chk = {"n": 0}
 
-# With playSimulations=False the ARTICULATION still renders live (fabric
-# syncs its links during env.step's sim.step), but RIGID OBJECTS do not:
-# their render transform is synced only by the update-loop physics pass
-# that pausing skips — take 99 passed every physics gate while the RENDERED
-# bottle floated frozen at its early-carry pose. PhysX's
+# With playSimulations=False NOTHING syncs to the renderer — neither rigid
+# objects NOR the articulation links (take 99's frozen bottle, take 101's
+# frozen ARM: the whole robot rendered as a parked statue while the flushed
+# bottle "flew itself" into the rack). All render transforms are synced by
+# the update-loop physics pass that pausing skips. PhysX's
 # update_transformations flush does NOT fix it (probe v4: updateToUsd and
 # updateToFastCache both left the visual frozen — the renderer reads
-# Fabric). The fix is a direct usdrt Fabric world-pose write of the bottle
-# from its physics pose before each capture (probe v4 P2: pixel centroid
-# matched the unpaused calibration sub-pixel).
-_rtxf = None
-def _rt_flush_bottle():
-    global _rtxf
+# Fabric). The fix is a direct usdrt Fabric world-pose write of EVERY
+# dynamic prim in shot — the bottle from its root pose AND each robot link
+# from body_link_pos/quat_w — before each capture (probe v4 P2: pixel
+# centroid matched the unpaused calibration sub-pixel).
+_rtf = {"xfs": None}
+def _rt_flush_dynamics():
     from usdrt import Usd as RtUsd, Gf as RtGf, Rt
-    if _rtxf is None:
+    if _rtf["xfs"] is None:
         _rtstage = RtUsd.Stage.Attach(omni.usd.get_context().get_stage_id())
-        _rtprim = _rtstage.GetPrimAtPath(
-            env._obj.cfg.prim_path.replace("env_.*", "env_0"))
-        _rtxf = Rt.Xformable(_rtprim)
-    p = env._obj.data.root_pose_w[0].tolist()
-    if not _rtxf.HasWorldXform():
-        _rtxf.SetWorldXformFromUsd()
-    _rtxf.GetWorldPositionAttr().Set(RtGf.Vec3d(p[0], p[1], p[2]))
-    _rtxf.GetWorldOrientationAttr().Set(
-        RtGf.Quatf(p[3], RtGf.Vec3f(p[4], p[5], p[6])))
+        xfs = [(Rt.Xformable(_rtstage.GetPrimAtPath(
+            env._obj.cfg.prim_path.replace("env_.*", "env_0"))), None)]
+        body_names = list(env._robot.data.body_names)
+        n_links, n_miss = 0, 0
+        for lp in env._robot.root_physx_view.link_paths[0]:
+            prim = _rtstage.GetPrimAtPath(lp)
+            tail = lp.rsplit("/", 1)[-1]
+            if prim.IsValid() and tail in body_names:
+                xfs.append((Rt.Xformable(prim), body_names.index(tail)))
+                n_links += 1
+            else:
+                n_miss += 1
+        _rtf["xfs"] = xfs
+        print("pause-cap flush set: bottle + %d robot links (%d unmatched)"
+              % (n_links, n_miss), flush=True)
+    d = env._robot.data
+    lp = getattr(d, "body_link_pos_w", None)
+    lq = getattr(d, "body_link_quat_w", None)
+    if lp is None:
+        lp, lq = d.body_pos_w, d.body_quat_w
+    bp = env._obj.data.root_pose_w[0].tolist()
+    for xf, li in _rtf["xfs"]:
+        p = bp if li is None else (lp[0, li].tolist() + lq[0, li].tolist())
+        if not xf.HasWorldXform():
+            xf.SetWorldXformFromUsd()
+        xf.GetWorldPositionAttr().Set(RtGf.Vec3d(p[0], p[1], p[2]))
+        xf.GetWorldOrientationAttr().Set(
+            RtGf.Quatf(p[3], RtGf.Vec3f(p[4], p[5], p[6])))
 
 def _grab():
     if PAUSE_CAP:
         _q0 = float(env._robot.root_physx_view.get_dof_positions()[0, 4].item())
         S.set_bool("/app/player/playSimulations", False)
         try:
-            _rt_flush_bottle()
+            _rt_flush_dynamics()
         except Exception as _fx:
             if _pc_chk["n"] < 8:
                 print("rt-flush FAILED: %r" % (_fx,), flush=True)
