@@ -260,3 +260,55 @@ command string contains the plain script name — check the python pid with `kil
 FAIL takes do NOT encode an mp4 (frames persist in /workspace/frames_recovery until the
 next run). F_break is sampled per-take (28 N take 91, 19 N take 90). `[rq-t]` trace
 line (RQ_TRACE2=1) prints the ACTUAL commanded carrot: tgt/raw/aim/desc/st1/stl/oerr.
+
+---
+
+## UPDATE 2026-07-07 — ROOT CAUSE FOUND AND FIXED: the render-vs-smoke divergence itself
+
+The "known residual" above is now RESOLVED — and the diagnosis was wrong in an
+instructive way. The wrist saturation was NOT static payload gravity:
+
+- **Payload measurement** (RQ_TRACE3 wrench fit, `[rq-pc]`): the 2F-140 subtree is
+  0.70 kg and the bottle 0.30 kg — the un-modeled static wrench is ~3 N / ~0.7 Nm,
+  nowhere near the 12 Nm wrist clamp. In the SMOKE no arm joint ever saturates and
+  oerr stays <= 0.15 the whole episode. The saturation/lean/grind pathology existed
+  ONLY in renders, i.e. it was the held-torque capture stepping all along.
+- J^T payload compensation IS now implemented (cfg.rq_pc_grip / rq_pc_obj scales,
+  PhysX-measured masses, force+moment rows about the jacobian's own reference,
+  `RQ_TRACE3` diagnostic). It ships OFF (scales 0.0) — correct physics, but not the
+  fix; kept as instrumentation and for future gripper ports.
+
+**THE FIX — pause-capture (render_recovery.py `_grab`)**: capture frames WITHOUT
+stepping physics, making the render regime IDENTICAL to the smoke:
+
+1. `/app/player/playSimulations=False` around the capture `app.update()`s (the carb
+   setting Isaac's replay tools use). NOT `timeline.pause()` — play() is processed on
+   a later update, so the next `env.step()` livelocked at 109% CPU (take 98, killed).
+2. **Rigid objects stop render-syncing while paused** (articulations keep syncing via
+   fabric during `env.step`'s sim.step; rigid-object transforms sync only in the
+   update-loop physics pass that pausing skips). Take 99 passed every physics gate
+   while the RENDERED bottle floated frozen at its stale pose.
+   `physx update_transformations(updateToUsd/FastCache)` does NOT fix it (renderer
+   reads Fabric; probes v2-v4). The fix is a direct **usdrt Fabric write** of the
+   bottle's world pose from `env._obj.data.root_pose_w` before each capture
+   (`Rt.Xformable` world attrs; probe v4/v5: pixel centroid matches the unpaused
+   calibration sub-pixel; scale correctly inited from USD by SetWorldXformFromUsd).
+3. Beware the ghost: with pause-cap on, ANY un-flushed rigid prim renders at a stale
+   pose. Take 99's frame-0 "parked bottle" was itself the spawn-pose ghost; in a
+   correct take the parked bottle is OCCLUDED behind the rack early on — do not
+   misread that as a broken visual (take 100 was killed on exactly that misread; its
+   surviving frames f_0150/f_0275 show the bottle correctly in-grip and seated).
+
+**Results with the fixed pipeline** (same checkpoint task3_forge_robotiq.pt, same
+committed gains): takes 99/100/101 all reproduce the smoke pattern — wedge jam ->
+rotate_align -> attempt-2 seat, max oerr 0.099 rad (vs 0.26-0.37 take 91), peak force
+~14 N, NO timeout attempts, ~13.5 s of video instead of 96 s with an 80 s dead middle.
+Seat gap 0.7064/0.7063 across takes — near-deterministic. The old detuned gains
+(ori_k 110 post-recovery, settle gate, ag cap) are KEPT: the smoke validates them and
+the render now IS the smoke; no retrain needed (the policy is no longer OOD at render
+time). The "five mechanisms" above remain documented history — they were compensations
+for the now-removed divergence.
+
+Diagnostic tooling: `scripts/probe_pausecap.py` (boots the RTX pipeline, free-falls
+the bottle, phases through flush candidates against an unpaused pixel-centroid
+calibration). Probe cost ~10 min vs ~40 min per render take.

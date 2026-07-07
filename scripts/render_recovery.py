@@ -199,16 +199,75 @@ ORANGE = (255, 170,  60)   # SCRIPTED
 RED    = (255,  90,  90)
 CYAN   = (120, 220, 255)
 
+# ── PAUSE-CAPTURE (PAUSE_CAP=1, default): render capture frames WITHOUT
+# stepping physics. Without this, every captured frame injects extra physics
+# steps under HELD torques between the env's control substeps — the
+# render-vs-smoke divergence that forced the detuned post-recovery gains
+# (ori_k 110, settle gate, ag cap; see HANDOFF doc "five mechanisms") and
+# made take 91's insertion lean, grind, and hover. With capture-time physics
+# frozen, the render regime is IDENTICAL to the smoke.
+# Mechanism: the /app/player/playSimulations carb setting (the one Isaac's
+# own replay tools toggle) — app.update() then renders but skips simulation.
+# NOT timeline pause(): play() is only processed on a later update, so the
+# first env.step() after a paused capture spun forever at 109% CPU with the
+# GPU idle (take 98 livelock, killed after 42 min).
+PAUSE_CAP = os.environ.get("PAUSE_CAP", "1") == "1"
+_pc_chk = {"n": 0}
+
+# With playSimulations=False the ARTICULATION still renders live (fabric
+# syncs its links during env.step's sim.step), but RIGID OBJECTS do not:
+# their render transform is synced only by the update-loop physics pass
+# that pausing skips — take 99 passed every physics gate while the RENDERED
+# bottle floated frozen at its early-carry pose. PhysX's
+# update_transformations flush does NOT fix it (probe v4: updateToUsd and
+# updateToFastCache both left the visual frozen — the renderer reads
+# Fabric). The fix is a direct usdrt Fabric world-pose write of the bottle
+# from its physics pose before each capture (probe v4 P2: pixel centroid
+# matched the unpaused calibration sub-pixel).
+_rtxf = None
+def _rt_flush_bottle():
+    global _rtxf
+    from usdrt import Usd as RtUsd, Gf as RtGf, Rt
+    if _rtxf is None:
+        _rtstage = RtUsd.Stage.Attach(omni.usd.get_context().get_stage_id())
+        _rtprim = _rtstage.GetPrimAtPath(
+            env._obj.cfg.prim_path.replace("env_.*", "env_0"))
+        _rtxf = Rt.Xformable(_rtprim)
+    p = env._obj.data.root_pose_w[0].tolist()
+    if not _rtxf.HasWorldXform():
+        _rtxf.SetWorldXformFromUsd()
+    _rtxf.GetWorldPositionAttr().Set(RtGf.Vec3d(p[0], p[1], p[2]))
+    _rtxf.GetWorldOrientationAttr().Set(
+        RtGf.Quatf(p[3], RtGf.Vec3f(p[4], p[5], p[6])))
+
 def _grab():
-    app.update(); app.update()
-    d = np.asarray(rgb.get_data())
-    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
-        return d
-    _time.sleep(0.1); app.update()
-    d = np.asarray(rgb.get_data())
-    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
-        return d
-    return None
+    if PAUSE_CAP:
+        _q0 = float(env._robot.root_physx_view.get_dof_positions()[0, 4].item())
+        S.set_bool("/app/player/playSimulations", False)
+        try:
+            _rt_flush_bottle()
+        except Exception as _fx:
+            if _pc_chk["n"] < 8:
+                print("rt-flush FAILED: %r" % (_fx,), flush=True)
+    try:
+        app.update(); app.update()
+        d = np.asarray(rgb.get_data())
+        ok = d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1
+        if not ok:
+            _time.sleep(0.1); app.update()
+            d = np.asarray(rgb.get_data())
+            ok = d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1
+    finally:
+        if PAUSE_CAP:
+            S.set_bool("/app/player/playSimulations", True)
+    if PAUSE_CAP and _pc_chk["n"] < 8:
+        _q1 = float(env._robot.root_physx_view.get_dof_positions()[0, 4].item())
+        print("pause-cap check %d: dq5=%+.2e %s" %
+              (_pc_chk["n"], _q1 - _q0,
+               "FROZEN" if abs(_q1 - _q0) < 1e-9 else "PHYSICS LEAKED"),
+              flush=True)
+        _pc_chk["n"] += 1
+    return d if ok else None
 
 # ── Recovery loop wiring. Wrap the selector + signature so the HUD can show the
 # LLM decision and the force signature it was made from (display only — the loop

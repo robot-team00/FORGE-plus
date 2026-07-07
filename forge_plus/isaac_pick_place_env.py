@@ -317,6 +317,16 @@ class PickPlaceEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: i
                                         # with a fixed retract motion (not a manipulation skill — just
                                         # clearing out so the let-go is visible). Release stays learned.
 
+    # ── Payload compensation (robotiq): feedforward J^T gravity wrench ─────────
+    # PhysX's articulation gravity comp is short for the loop-jointed 2F-140
+    # subtree and knows nothing about the held bottle. The un-modeled gravity
+    # MOMENT of the long loaded tool is what pinned the wrist at its 12 Nm
+    # clamp (the lean/twist/grind in every robotiq take). These scale the
+    # feedforward of the measured subtree/bottle gravity wrench through J^T.
+    # 0.0 = off. Calibrated from the RQ_TRACE3 static-hover wrench fit.
+    rq_pc_grip: float = 0.0   # scale on the robotiq-subtree gravity wrench
+    rq_pc_obj:  float = 0.0   # scale on the held-bottle gravity wrench
+
     forge_no_term:    bool  = False  # render-only: never auto-terminate (so the seated bottle isn't
                                      # reset away before the camera captures the release/retract)
     render_minimal:   bool  = False  # render-only: skip the filtered insert-sensor + compliant-material
@@ -661,6 +671,11 @@ if ISAAC_AVAILABLE:
             self._rq_ag  = torch.zeros(N, device=d)   # adaptive gravity-comp scale (tau += ag*grav)
             self._rq_ag_cap = None    # post-recovery ag ceiling (rec_end snapshot;
                                       # downward-only adaptation while centered)
+            # Payload compensation (cfg.rq_pc_grip / rq_pc_obj): lazily-resolved
+            # gripper-subtree body ids + masses and the object mass (PhysX truth).
+            self._pc_grip_ids: list[int] | None = None
+            self._pc_grip_m: torch.Tensor | None = None
+            self._pc_obj_m: torch.Tensor | None = None
             self._rq_f   = torch.zeros(N, 3, device=d)  # LEARNED-phase residual EE force (N)
             self._rq_prev_ee: torch.Tensor | None = None   # realized-vs-commanded step memory
             self._rq_prev_cmd = torch.zeros(N, 3, device=d)
@@ -2667,8 +2682,66 @@ if ISAAC_AVAILABLE:
                 nullspace_joint_pos_target=self._joint_centers,
             )
             jt = jt.clamp(-self._eff_lim, self._eff_lim)
+            _tau_pc = None
             if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode \
                     and not self._rq_drive_mode:
+                # ── PAYLOAD COMPENSATION (J^T feedforward) ────────────────────
+                # The principled fix the ag integrator approximated in z only:
+                # feed the gravity wrench of the un-modeled load — the 2F-140
+                # subtree PhysX's gravity comp shorts (loop-jointed) plus the
+                # held bottle (not in the articulation at all) — forward
+                # through J^T. The MOMENT rows are the point: the un-modeled
+                # gravity moment of the long loaded tool is what pinned the
+                # wrist at its 12 Nm clamp (the lean/twist/grind + the ori_k
+                # instability in every robotiq take). Pure feedforward from
+                # PhysX-measured masses about the jacobian's own reference
+                # point — NOT a closed-loop estimator (smoke 25: force
+                # FEEDBACK through jac rows is positive feedback here), and
+                # force+moment TOGETHER (the legacy force-only z row missed
+                # its moment half -> the smokes 21-23 parasitic xy drag).
+                import os as _os4
+                _pc_trace = _os4.environ.get("RQ_TRACE3") == "1"
+                _pcg, _pco = float(self.cfg.rq_pc_grip), float(self.cfg.rq_pc_obj)
+                if _pcg != 0.0 or _pco != 0.0 or _pc_trace:
+                    if self._pc_grip_ids is None:
+                        _bn = r.data.body_names
+                        self._pc_grip_ids = [i for i, n in enumerate(_bn)
+                                             if "panda" not in n]
+                        self._pc_grip_m = r.root_physx_view.get_masses() \
+                            .to(self.device)[:, self._pc_grip_ids]
+                        self._pc_obj_m = self._obj.root_physx_view.get_masses() \
+                            .to(self.device).reshape(self.num_envs, -1)[:, 0]
+                        if _pc_trace:
+                            print(f"      [rq-pc] subtree bodies="
+                                  f"{[_bn[i] for i in self._pc_grip_ids]} "
+                                  f"m={self._pc_grip_m[0].tolist()} "
+                                  f"obj_m={float(self._pc_obj_m[0]):.3f}",
+                                  flush=True)
+                    _g = 9.81
+                    _bp  = r.data.body_pos_w[:, self._pc_grip_ids]      # (N,G,3)
+                    _gM  = self._pc_grip_m.sum(-1)                      # (N,)
+                    _gcom = (_bp * self._pc_grip_m.unsqueeze(-1)).sum(1) \
+                        / _gM.unsqueeze(-1).clamp(min=1e-6)
+                    _ow  = self._obj.data.root_pose_w[:, :3]
+                    # held gate mirrors the aim-freeze heuristic: distance, not
+                    # the fluttering grip joint; off before the seat and after
+                    # the learned release.
+                    _held = (((_ow - ee_pos_w).norm(dim=-1) < 0.40)
+                             & ~self._released & (self._rq_seatctr == 0))
+                    # unit-scale wrenches at the EE, world frame (diagnosable)
+                    _Fg1 = torch.zeros(self.num_envs, 3, device=self.device)
+                    _Fg1[:, 2] = _gM * _g
+                    _Fo1 = torch.zeros_like(_Fg1)
+                    _Fo1[:, 2] = self._pc_obj_m * _g * _held.float()
+                    _Mg1 = torch.cross(_gcom - ee_pos_w, _Fg1, dim=-1)
+                    _Mo1 = torch.cross(_ow - ee_pos_w, _Fo1, dim=-1)
+                    _Fw = _pcg * _Fg1 + _pco * _Fo1
+                    _Mw = _pcg * _Mg1 + _pco * _Mo1
+                    _wb = torch.cat([quat_apply_inverse(root_quat_w, _Fw),
+                                     quat_apply_inverse(root_quat_w, _Mw)],
+                                    dim=-1)
+                    _tau_pc = torch.bmm(jac_b.transpose(1, 2),
+                                        _wb.unsqueeze(-1)).squeeze(-1)
                 # Integral z feedforward (see init): learn the missing lift while
                 # the SCRIPTED setup owns the arm; hold it frozen afterwards.
                 # ADAPTIVE GRAVITY SCALING (supersedes the J-row z feedforward):
@@ -2710,8 +2783,41 @@ if ISAAC_AVAILABLE:
                     # integrator's healthy direction in a descent; winding up
                     # is the pathology — allow the former, cap the latter.
                     self._rq_ag = torch.min(self._rq_ag, self._rq_ag_cap)
+                if _tau_pc is not None:
+                    jt = jt + _tau_pc
                 jt = (jt + self._rq_ag.unsqueeze(-1) * grav) \
                     .clamp(-self._eff_lim, self._eff_lim)
+                if _pc_trace:
+                    # Static-hover wrench fit (env 0): at quasi-static, contact-
+                    # free equilibrium the applied torque equals TRUE gravity, so
+                    # (jt - grav) = the un-modeled residual; the least-squares
+                    # J^T fit recovers it as a base-frame wrench. Compare w_hat
+                    # against the unit-scale subtree/bottle predictions to set
+                    # cfg.rq_pc_grip / rq_pc_obj. Only trust prints with low vel.
+                    self._pc_ct = getattr(self, "_pc_ct", 0) + 1
+                    if self._pc_ct % 150 == 5:
+                        _res = (jt[0] - grav[0]).unsqueeze(-1)
+                        try:
+                            _w = torch.linalg.lstsq(
+                                jac_b[0].transpose(0, 1), _res).solution.squeeze(-1)
+                        except Exception:
+                            _w = torch.zeros(6, device=self.device)
+                        _sat = (jt[0].abs() >= self._eff_lim - 1e-3).int().tolist()
+                        _oerr = float(2.0 * torch.acos(
+                            (self._robot.data.body_quat_w[0, self._ee_idx]
+                             * self._ee_quat_des[0]).sum().abs().clamp(max=1.0)))
+                        _vel = float(ee_vel_b[0, :3].norm())
+                        print(f"      [rq-pc] sat={_sat} ag={float(self._rq_ag[0]):+.2f}"
+                              f" oerr={_oerr:.3f} vel={_vel:.3f} held={int(_held[0])}"
+                              f" w_hat=F({float(_w[0]):+.1f},{float(_w[1]):+.1f},"
+                              f"{float(_w[2]):+.1f})M({float(_w[3]):+.2f},"
+                              f"{float(_w[4]):+.2f},{float(_w[5]):+.2f})"
+                              f" grip1=Fz{float(_Fg1[0,2]):+.1f}"
+                              f"M({float(_Mg1[0,0]):+.2f},{float(_Mg1[0,1]):+.2f},"
+                              f"{float(_Mg1[0,2]):+.2f})"
+                              f" obj1=Fz{float(_Fo1[0,2]):+.1f}"
+                              f"M({float(_Mo1[0,0]):+.2f},{float(_Mo1[0,1]):+.2f},"
+                              f"{float(_Mo1[0,2]):+.2f})", flush=True)
                 # NO closed-loop force estimator through jac_b: applying forces
                 # via those rows is POSITIVE feedback for this articulation
                 # (smoke 25: saturated +25 N on all axes in 240 substeps and
