@@ -22,10 +22,14 @@ the pod first.
   contents API (`GET /api/contents/<path>?content=1`); run code by starting a kernel
   (`POST /api/kernels`, pass the `_xsrf` cookie as the `X-XSRFToken` header) and talking to its
   `wss://<pod>-8888.proxy.runpod.net/api/kernels/<id>/channels` websocket.
-- **Git/auth:** the pod can `git fetch`/`pull` without credentials but **cannot push** (no creds
-  stored) — publish by pushing from a machine that has creds, or via the GitHub web UI. And
+- **Git/auth:** the pod CAN push — personal credentials live in `/workspace/.jr_notes`
+  (KEY=value lines: `GITHUB_TOKEN`, `WANDB_API_KEY`) and the `origin` remote embeds the
+  token, so plain `git push origin <branch>` works. Never print or commit the token. And
   **never `git add -A`** in a clone: it sweeps up untracked render mp4s (incl. the protected
   `docs/insertion_success.mp4`). Stage explicit paths.
+- **Replicating the Task 3 work:** read **`docs/REPLICATION_PLAYBOOK.md`** — the end-to-end
+  guide (pod ops, env architecture, PPO training recipes, headless eval gates, the
+  pause-capture RTX render pipeline, gripper-porting lessons, debugging protocol).
 
 
 ## Headless Isaac Sim RTX rendering — live-physics pipeline (working as of 2026-06-23)
