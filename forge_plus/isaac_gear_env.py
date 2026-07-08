@@ -297,7 +297,8 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     jam_dx:        float = 0.0     # induced base-aim x error (m) -> rim wedge
     jam_dy:        float = 0.0     # induced base-aim y error (m)
     rec_lift:      float = 0.11    # retract_and_reapproach: how far to lift the EE (m) — clear the rim
-    rec_lat:       float = 0.02    # wiggle_search lateral amplitude (m)
+    rec_lat:       float = 0.005   # wiggle/align lateral amplitude (m) — gear scale: the
+                                   # bore offset to correct is a few mm (2 cm overshoots 3x)
     rec_dur_steps: int   = 25      # control steps a recovery maneuver runs before clearing
     jam_force_n:   float = 6.0     # contact >= this with no descent => jam (absolute floor)
     jam_force_frac: float = 0.18   # ...or >= this fraction of F_max (whichever is larger). Low
@@ -387,6 +388,16 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     forge_obj_cls:    int   = 1      # fix the training object (1=steel_gear, robust) so breakage does
                                      # not derail learning the SEAT; -1 = randomize. Fragility curriculum
                                      # (transfer to glass) is a follow-up once seating is learned.
+
+    # ── Jam induction: in-grip slip disturbance (issue #26 recovery eval) ────
+    # One-time lateral teleport of the gear INSIDE the pinch once it descends
+    # into the funnel region: models a grip slip. The policy (no vision, ft
+    # only) keeps pressing "aligned" while the bore rim sits on the shaft tip
+    # -> a REAL sustained wedge with an insertion-force signature. (A static
+    # start offset cannot wedge the trained policy: <=13 mm it self-corrects,
+    # >13 mm it wanders off and parks force-free — funnel probe + debug ep0.)
+    slip_disturb_mm: float = 0.0     # 0 = off; sign = +y direction
+    slip_trigger_z:  float = 0.435   # gear origin below this (shaft-tip region) arms the slip
 
     # ── Budget-setter baselines (issue #26 eval) ─────────────────────────────
     budget_mode:    str   = "llm"    # llm | fixed | oracle
@@ -1326,6 +1337,16 @@ if ISAAC_AVAILABLE:
                 return torch.norm(fm.reshape(self.num_envs, -1, 3), dim=-1).sum(dim=1)
             return torch.zeros(self.num_envs, device=self.device)
 
+        def _raw_insertion_vec3(self) -> torch.Tensor:
+            """Pairwise Object↔Rack contact force VECTOR (N,3) — grip-free."""
+            if getattr(self, "_insert_sensor", None) is None:
+                return torch.zeros(self.num_envs, 3, device=self.device)
+            data = getattr(self._insert_sensor, "data", None)
+            fm = getattr(data, "force_matrix_w", None) if data is not None else None
+            if fm is not None and fm.numel() > 0:
+                return fm.reshape(self.num_envs, -1, 3).sum(dim=1)
+            return torch.zeros(self.num_envs, 3, device=self.device)
+
         def _contact_force(self) -> torch.Tensor:
             """Low-pass filtered scalar contact force (whole object+rack surf sensor)."""
             return self._cf_filt
@@ -2217,7 +2238,7 @@ if ISAAC_AVAILABLE:
             c = self.cfg
             cf = self._insertion_force()       # gate breakage on the TRUE bottle↔rack insertion force
             base = self._obj.data.root_pose_w[:, :3] - self.scene.env_origins
-            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.05) & ((base[:, 1] - c.rack_y).abs() < 0.05)
+            in_cell = ((base[:, 0] - c.rack_x).abs() < 0.005) & ((base[:, 1] - c.rack_y).abs() < 0.005)
             live = (self._setup_ctr == 0) & (self._warmup == 0)
             self._broke = (cf > self._f_break) & live
             self._bad_release = torch.zeros_like(self._broke)
@@ -2382,7 +2403,7 @@ if ISAAC_AVAILABLE:
         def is_success(self) -> bool:
             c = self.cfg
             bx, by, bz = self._base_xyz0()
-            in_cell = abs(bx - c.rack_x) < 0.04 and abs(by - c.rack_y) < 0.04
+            in_cell = abs(bx - c.rack_x) < 0.005 and abs(by - c.rack_y) < 0.005
             return bool(in_cell and abs(bz - c.cell_floor_z) < c.insert_depth_tol)
 
         def is_failure(self) -> bool:
@@ -2609,14 +2630,37 @@ if ISAAC_AVAILABLE:
 
             # ── Recovery: force-signature history + maneuver bookkeeping ────────
             base_z_now = self._obj.data.root_pose_w[:, 2] - self.scene.env_origins[:, 2]
-            cvec = self._raw_contact_vec3()                       # (N,3) contact force vector
+            # GEAR PORT: signature history from the INSERTION-ONLY channel — the
+            # whole-body cvec/_cf_filt carries the ~10 N hub squeeze, which made
+            # every stationary near-cell moment read as a jam (grip-polluted).
+            cvec = self._raw_insertion_vec3()                     # (N,3) gear<->base force vector
             _p = self._sig_ptr % self._sig_len
-            self._cf_hist[:, _p]    = self._cf_filt
+            self._cf_hist[:, _p]    = self._cf_insert
             self._basez_hist[:, _p] = base_z_now
             self._latx_hist[:, _p]  = cvec[:, 0]
             self._laty_hist[:, _p]  = cvec[:, 1]
             self._sig_ptr += 1
             self._jam_cooldown = (self._jam_cooldown - 1).clamp(min=0)
+            # ── In-grip slip disturbance (one-shot per episode) ─────────────
+            if self.cfg.slip_disturb_mm != 0.0 and self.cfg.forge_mode:
+                if not hasattr(self, "_slip_done"):
+                    self._slip_done = torch.zeros(self.num_envs, dtype=torch.bool,
+                                                  device=self.device)
+                _gxy = self._obj.data.root_pose_w[:, :2] - torch.stack(
+                    [self.scene.env_origins[:, 0] + self.cfg.rack_x,
+                     self.scene.env_origins[:, 1] + self.cfg.rack_y], dim=-1)
+                _arm = ((~self._slip_done) & (self._setup_ctr == 0)
+                        & (self._warmup == 0)
+                        & (base_z_now < self.cfg.slip_trigger_z)
+                        & (_gxy.norm(dim=-1) < 0.008))
+                if bool(_arm.any()):
+                    pose = self._obj.data.root_pose_w.clone()
+                    pose[_arm, 1] += self.cfg.slip_disturb_mm / 1000.0
+                    self._obj.write_root_pose_to_sim(pose)
+                    self._slip_done = self._slip_done | _arm
+                    if bool(_arm[0]):
+                        print(f"[slip] gear slipped {self.cfg.slip_disturb_mm}mm in-grip "
+                              f"at z={float(base_z_now[0]):.3f}", flush=True)
             _rec_active = self._rec_steps > 0
             self._rec_steps = (self._rec_steps - 1).clamp(min=0)
             _rec_done = _rec_active & (self._rec_steps == 0)
@@ -3566,6 +3610,8 @@ if ISAAC_AVAILABLE:
                     # this write must come AFTER the randomization above).
                     self._start_off[env_ids] = 0.0
                 self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
+                if hasattr(self, "_slip_done"):
+                    self._slip_done[env_ids] = False   # re-arm the slip disturbance
                 self._settle_ctr[env_ids] = 0
                 self._best_dist[env_ids] = 9.9
                 self._prev_dist[env_ids] = 9.9

@@ -66,11 +66,15 @@ def main() -> None:
                    choices=["ours", "heuristic", "vision_llm", "press_harder", "none"])
     p.add_argument("--budget", default="ours", choices=["ours", "no_ceiling"])
     p.add_argument("--obj", type=int, default=0, help="0=abs_gear (fragile), 1=steel_gear")
-    p.add_argument("--offset_mm", type=float, default=8.0)
+    p.add_argument("--offset_mm", type=float, default=2.0)
+    p.add_argument("--slip_mm", type=float, default=5.0,
+                   help="in-grip slip disturbance (mm, +y) once the gear enters the funnel; "
+                        "the honest wedge inducer — see cfg.slip_disturb_mm")
     p.add_argument("--episodes", type=int, default=25)
     p.add_argument("--max_attempts", type=int, default=5)
     p.add_argument("--max_steps", type=int, default=560, help="env steps per episode")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
     args = p.parse_args()
     rng = random.Random(args.seed)
 
@@ -79,6 +83,7 @@ def main() -> None:
     cfg.forge_mode = True
     cfg.forge_obj_cls = args.obj
     cfg.forge_start_fixed_x = args.offset_mm / 1000.0
+    cfg.slip_disturb_mm = args.slip_mm
     if args.budget == "no_ceiling":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 120.0
     env = FrankaGearInsertEnv(cfg)
@@ -92,7 +97,7 @@ def main() -> None:
     selector = RecoverySelector(client=HeuristicLLMClient())
 
     print(f"[jam] recovery={args.recovery} budget={args.budget} obj={args.obj} "
-          f"offset={args.offset_mm}mm episodes={args.episodes}", flush=True)
+          f"offset={args.offset_mm}mm slip={args.slip_mm}mm episodes={args.episodes}", flush=True)
 
     n_succ = n_brk = n_timeout = 0
     attempts_used: list[int] = []
@@ -112,6 +117,12 @@ def main() -> None:
             res = env.step(act)
             obs = res[0]["policy"]
             peak = max(peak, float(env._cf_insert[0]))
+            if args.debug and steps % 25 == 0:
+                o = env.scene.env_origins[0]
+                g = env._obj.data.root_pose_w[0, :3] - o
+                print(f"[dbg] ep{ep} s{steps:3d} gear=({g[0]:.3f},{g[1]:.3f},{g[2]:.3f}) "
+                      f"Fins={float(env._cf_insert[0]):5.2f} rec={int(env._rec_steps[0])} "
+                      f"cool={int(env._jam_cooldown[0])}", flush=True)
             if bool((res[2] | res[3])[0]):
                 succ = bool(res[4].get("succ_mask", torch.zeros(1))[0]) \
                     if "succ_mask" in res[4] else res[4].get("n_succ", 0) > 0
