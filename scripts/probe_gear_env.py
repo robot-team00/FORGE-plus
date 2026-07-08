@@ -95,15 +95,15 @@ def main() -> None:
         ok = False
     else:
         print(f"  hand-off at step {handoff['step']}")
-        print(f"  gear z at hand-off (want 0.42-0.46): {[round(float(z),3) for z in handoff['z']]}")
+        print(f"  gear z at hand-off (want 0.42-0.47): {[round(float(z),3) for z in handoff['z']]}")
         print(f"  gear xy offset from shaft (want <0.03 — the policy corrects the rest): "
               f"{[round(float(d),4) for d in handoff['dxy']]}")
         print(f"  gear level (want >0.98): {[round(float(u),3) for u in handoff['gearup']]}")
         print(f"  grip lost (gear fell below 0.30): "
               f"{'NO' if grip_lost_at < 0 else f'YES at step {grip_lost_at}'}")
         ok = (grip_lost_at < 0
-              and bool((handoff['z'] > 0.42).all()) and bool((handoff['z'] < 0.46).all())
-              and bool((handoff['dxy'] < 0.03).all())
+              and bool((handoff['z'] > 0.42).all()) and bool((handoff['z'] < 0.47).all())
+              and bool((handoff['dxy'] < 0.008).all())
               and bool((handoff['gearup'] > 0.98).all()))
     print(f"  PROBE {'PASS' if ok else 'FAIL'}", flush=True)
 

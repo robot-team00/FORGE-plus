@@ -321,7 +321,7 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
                                      # ee 0.565 -> gear origin ~0.43 = bore mouth just above the
                                      # shaft tip (0.425). The scripted setup stops here; the
                                      # LEARNED policy does the descent + force-guided seating.
-    forge_start_lat:  float = 0.005  # ± random lateral start offset (m) the policy must correct.
+    forge_start_lat:  float = 0.003  # ± random lateral start offset (m) the policy must correct.
                                      # Gear bore/shaft radial clearance is ~0.25 mm (true FORGE
                                      # tolerance) — start EASY (5 mm) so success is discovered;
                                      # widen toward 15 mm in follow-up runs (task3 curriculum rule).
@@ -1384,7 +1384,7 @@ if ISAAC_AVAILABLE:
                     [orig[:, 0] + c.rack_x + self._start_off[:, 0],
                      orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1) - _gv_off
                 _fk_dxy = (ee_pos_w[:, :2] - _dest_xy).norm(dim=-1)
-                stage1 = stage1 | (_fk_dxy > 0.008)  # stay up-&-over until the GEAR is above the shaft
+                stage1 = stage1 | (_fk_dxy > 0.003)  # stay up-&-over until the GEAR is above the shaft
             if self.cfg.gripper == "robotiq_2f140":
                 # ARRIVAL-gated descent: drop from the carry altitude only once
                 # the EE is over the cell xy — the time-based split descended
@@ -2053,7 +2053,17 @@ if ISAAC_AVAILABLE:
                                           orig[:, 1] + c.rack_y + self._start_off[:, 1]],
                                          dim=-1)).norm(dim=-1)
                 _fk_gz = self._obj.data.root_pose_w[:, 2] - orig[:, 2]
-                _fk_arr = (_fk_gxy < 0.008) & (_fk_gz < 0.45)
+                # FORGE-faithful staging noise: the paper initializes insertions
+                # with few-mm pose noise at the entrance. Our 8 mm arrival left the
+                # policy pressing the bore mouth on the shaft tip ~1 cm off — a
+                # pressed gear cannot slide (19 N x mu 1.0 friction vs ~1 N lateral
+                # OSC authority), so alignment was undiscoverable (two plateaus:
+                # dxy 0.017 and 0.011). Funnel capture radius is ~1-1.5 mm; from
+                # 3-4 mm force-guided search finds the bore.
+                # z gate at 0.465: the OSC sag equilibrium parks the gear at
+                # ~0.460 (1 cm above the old 0.45 gate -> arrival never fired);
+                # the LEARNED policy does the remaining descent from there.
+                _fk_arr = (_fk_gxy < 0.003) & (_fk_gz < 0.465)
                 if not hasattr(self, "_fk_setup_age"):
                     self._fk_setup_age = torch.zeros_like(self._setup_ctr)
                 self._fk_setup_age = torch.where(
