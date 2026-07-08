@@ -43,6 +43,7 @@ try:
     from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
     from isaaclab.scene import InteractiveSceneCfg
     from isaaclab.sim import SimulationCfg
+    from isaaclab.sim import PhysxCfg as _PhysxCfg
     from isaaclab.utils import configclass
     from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
     from isaaclab.sensors import ContactSensor, ContactSensorCfg
@@ -184,7 +185,22 @@ def _load_or_query_budgets() -> dict[str, float]:
 @configclass
 class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: ignore[misc]
     # Simulation
-    sim: object = SimulationCfg(dt=1.0 / 120.0, render_interval=4) if ISAAC_AVAILABLE else None
+    # Factory-matched PhysX config (isaaclab factory_env_cfg): the gear SDF
+    # collisions need the big GPU contact/patch buffers and the collision
+    # stack — with the task3 defaults, pad<->hub contacts are silently DROPPED
+    # for ~85% of envs at 512 envs (probe512: fingers close through the hub,
+    # gear falls at warmup; the same envs hold fine at num_envs=4).
+    sim: object = SimulationCfg(
+        dt=1.0 / 120.0, render_interval=4,
+        physx=_PhysxCfg(
+            # ONLY the buffer sizes from factory's cfg: its solver/friction
+            # overrides (solver_type/iters/bounce/friction offsets/partitions)
+            # kill the pad<->hub SDF contact even at 4 envs (probe_n4b).
+            gpu_max_rigid_contact_count=2**23,
+            gpu_max_rigid_patch_count=2**23,
+            gpu_collision_stack_size=2**28,
+        ),
+    ) if ISAAC_AVAILABLE else None
     episode_length_s: float = 30.0   # 600 steps: the lam-clipped OSC moves slowly
                                      # (~80 steps/phase), so the full 7-phase pick-
                                      # transport-place needs ~400+ steps. At 12 s

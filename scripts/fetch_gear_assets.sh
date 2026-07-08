@@ -35,6 +35,100 @@ def Xform "gear_medium" (
     prepend references = @./factory_gear_medium.usd@</factory_gear_medium/factory_gear_medium>
 )
 {
+    # Convex hub ring: 8 guide-purpose box colliders forming an octagon at the
+    # Ø35.5 mm hub band (z 0.015..0.030). The factory SDF mesh handles bore/
+    # teeth/shaft contact, but pad<->hub SDF contacts drop nondeterministically
+    # at >100 parallel envs (10% hold at 512 envs, 100% at 4). Convex-vs-convex
+    # pad contact is scale-proof; the ring's inner radius (13.8 mm) clears the
+    # Ø10 mm bore so the shaft never touches it.
+    def Cube "hub_col_0" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (0.000000, 0.015750, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -0.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (0.011137, 0.011137, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -45.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_2" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (0.015750, 0.000000, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -90.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_3" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (0.011137, -0.011137, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -135.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_4" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (0.000000, -0.015750, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -180.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_5" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (-0.011137, -0.011137, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -225.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_6" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (-0.015750, -0.000000, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -270.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+    def Cube "hub_col_7" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        float3 xformOp:translate = (-0.011137, 0.011137, 0.0225)
+        float3 xformOp:rotateXYZ = (0, 0, -315.0)
+        float3 xformOp:scale = (0.014999, 0.004000, 0.015)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
 }
 EOF
 
