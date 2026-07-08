@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", default=None,
                    help="Explicit checkpoint .pt to load. If omitted, resolves to "
                         "<checkpoint-dir>/<task>_<gripper>.pt.")
-    p.add_argument("--output-dir", default="results")
+    p.add_argument("--output-dir", default=str(Path(__file__).parent.parent / "results"))
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()

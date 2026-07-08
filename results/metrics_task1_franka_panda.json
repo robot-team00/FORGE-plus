@@ -1,0 +1,212 @@
+{
+  "no_ceiling": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 6.271047173305382,
+    "std_safety_margin_n": 89.3324661248817,
+    "over_budget_rate": 0.5,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": -4.247264287785228,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 12.697413444519043,
+    "mean_mean_contact_n": 2.270668725172678,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "fixed_global": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 66.27104717330539,
+    "std_safety_margin_n": 89.33246612488172,
+    "over_budget_rate": 0.5,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 55.75273571221477,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 12.94088363647461,
+    "mean_mean_contact_n": 2.3405303557713832,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "press_harder": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 54.871047173305385,
+    "std_safety_margin_n": 42.13484027370457,
+    "over_budget_rate": 0.0,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 44.35273571221477,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 12.990735530853271,
+    "mean_mean_contact_n": 2.3466087977091465,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "heuristic": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 54.871047173305385,
+    "std_safety_margin_n": 42.13484027370457,
+    "over_budget_rate": 0.0,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 44.35273571221477,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 12.990735530853271,
+    "mean_mean_contact_n": 2.3466087977091465,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "vision_llm": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 54.871047173305385,
+    "std_safety_margin_n": 42.13484027370457,
+    "over_budget_rate": 0.0,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 44.35273571221477,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 12.990735530853271,
+    "mean_mean_contact_n": 2.3466087977091465,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "oracle": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 2.0,
+    "std_safety_margin_n": 0.0,
+    "over_budget_rate": 0.0,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 2.0,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 13.615936708450317,
+    "mean_mean_contact_n": 2.52733254134655,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  },
+  "ours": {
+    "closed_loop_success_rate": 1.0,
+    "mean_attempts_to_success": 1.0,
+    "breakage_rate": 0.0,
+    "fragile_breakage_rate": 0.0,
+    "robust_breakage_rate": 0.0,
+    "mean_safety_margin_n": 96.27104717330539,
+    "std_safety_margin_n": 89.33246612488172,
+    "over_budget_rate": 0.05,
+    "under_budget_rate": 0.0,
+    "median_safety_margin_n": 85.75273571221477,
+    "recovery_invoked_rate": 0.0,
+    "success_given_recovery": NaN,
+    "action_distribution": {},
+    "mean_peak_contact_n": 13.258978843688965,
+    "mean_mean_contact_n": 2.422072013219198,
+    "mean_clamp_overshoot_n": 0.0,
+    "max_clamp_overshoot_n": 0.0,
+    "overshoot_rate": 0.0,
+    "gripper_success_rates": {
+      "franka_panda": 1.0
+    },
+    "gripper_breakage_rates": {
+      "franka_panda": 0.0
+    },
+    "f_max_consistency_n": 0.0,
+    "n_episodes": 20,
+    "n_fragile": 10,
+    "n_robust": 10
+  }
+}
