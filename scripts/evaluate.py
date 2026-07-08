@@ -116,7 +116,7 @@ def build_episode_configs(task: str, gripper: str, n_episodes: int, seed: int):
     from forge_plus.envs.object_configs import OBJECT_REGISTRY
 
     task_objects = {
-        "task1": ["abs_gear", "steel_gear"],
+        "task1": ["abs_round_connector", "steel_peg"],
         "task2": ["resin_planet_gear", "metal_planet_gear"],
         "task3": ["glass_bowl", "ceramic_plate", "metal_plate"],
     }

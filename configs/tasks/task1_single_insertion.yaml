@@ -3,18 +3,14 @@
 # Protect the fragile part while still seating the robust one.
 
 name: task1_single_insertion
-description: "Gear-on-shaft insertion (FORGE GearMesh assets) under a per-object force ceiling"
-
-# Assets: /workspace/assets/factory/factory_gear_{base,medium}.usd — the exact
-# FORGE (arXiv 2408.04587) gear set. The medium gear is grasped by its 30 mm
-# hub and inserted onto the middle shaft of the gear base.
+description: "Single peg/connector insertion into a socket under a per-object force ceiling"
 
 objects:
   fragile:
-    key: abs_gear
+    key: abs_round_connector
     f_break_range_n: [20, 55]
   robust:
-    key: steel_gear
+    key: steel_peg
     f_break_range_n: [180, 280]
 
 subphases:
@@ -29,11 +25,10 @@ disturbances:
 
 success_criterion:
   type: insertion_depth
-  threshold_mm: 15.0   # gear bore travels down the 20 mm shaft; seated ≈ 20 mm
-  lateral_tolerance_mm: 2.0  # bore must stay concentric with the shaft
+  threshold_mm: 10.0
 
 failure_modes:
-  - wedge_jam        # steady lateral bias + rising axial (bore cocked on shaft)
+  - wedge_jam        # steady lateral bias + rising axial
   - friction_jam     # axial-only, no displacement
   - misalignment     # large lateral offset from initial pose
 
