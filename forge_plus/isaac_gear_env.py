@@ -1379,11 +1379,12 @@ if ISAAC_AVAILABLE:
                 # GEAR PORT — ARRIVAL-gated stage split for the franka too: the
                 # time-based half handed off mid-travel on the gear scene's longer
                 # descent leg (probe: EE y 5 cm short of the shaft at setup end).
+                _gv_off = self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2]
                 _dest_xy = torch.stack(
                     [orig[:, 0] + c.rack_x + self._start_off[:, 0],
-                     orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1)
+                     orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1) - _gv_off
                 _fk_dxy = (ee_pos_w[:, :2] - _dest_xy).norm(dim=-1)
-                stage1 = stage1 | (_fk_dxy > 0.02)   # stay up-&-over until above the shaft
+                stage1 = stage1 | (_fk_dxy > 0.008)  # stay up-&-over until the GEAR is above the shaft
             if self.cfg.gripper == "robotiq_2f140":
                 # ARRIVAL-gated descent: drop from the carry altitude only once
                 # the EE is over the cell xy — the time-based split descended
@@ -1544,6 +1545,10 @@ if ISAAC_AVAILABLE:
             appr = ee_pos_w.clone()
             appr[:, 0] = orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
+            if self.cfg.gripper != "robotiq_2f140":
+                # GEAR-AIM: steer the EE so the GEAR (not the hand) is over the
+                # shaft — see _gv_off note above.
+                appr[:, :2] = _dest_xy
             if self.cfg.gripper == "robotiq_2f140" and self._rq_centered:
                 # frozen base-aim carrot (see the _dxy / rec_end notes)
                 appr[:, :2] = self._rq_aim
@@ -2039,7 +2044,16 @@ if ISAAC_AVAILABLE:
                 # has ARRIVED at the approach pose — hand off to the learned
                 # policy from the entrance, not from mid-travel. Hard timeout
                 # (900 substeps) releases a reach-limited arm.
-                _fk_arr = (ee_pos_w - appr).norm(dim=-1) < 0.015
+                # Arrival judged on the GEAR (what the policy inherits), not the
+                # EE: with gear-aim the appr target moves with the grip offset and
+                # OSC gravity sag keeps |ee-appr| ~1 cm forever (probe_aim: setup
+                # never ended). Gear within 8 mm of the shaft, at entrance height.
+                _fk_gxy = (self._obj.data.root_pose_w[:, :2]
+                           - torch.stack([orig[:, 0] + c.rack_x + self._start_off[:, 0],
+                                          orig[:, 1] + c.rack_y + self._start_off[:, 1]],
+                                         dim=-1)).norm(dim=-1)
+                _fk_gz = self._obj.data.root_pose_w[:, 2] - orig[:, 2]
+                _fk_arr = (_fk_gxy < 0.008) & (_fk_gz < 0.45)
                 if not hasattr(self, "_fk_setup_age"):
                     self._fk_setup_age = torch.zeros_like(self._setup_ctr)
                 self._fk_setup_age = torch.where(
