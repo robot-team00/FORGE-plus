@@ -95,7 +95,7 @@ N_OBJ_CLS = len(OBJ_KEYS)
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM budget helper  (Ollama llama3.1:8b, result cached on disk)
 # ─────────────────────────────────────────────────────────────────────────────
-_BUDGET_CACHE = "/workspace/FORGE-plus_task1/llm/budget_cache.json"
+_BUDGET_CACHE = "/workspace/FORGE-plus_task3/llm/budget_cache.json"
 
 _MAT_HINT = {
     "abs_gear":   "ABS plastic (thin-walled)",

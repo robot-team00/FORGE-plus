@@ -7,7 +7,7 @@ over many parallel episodes (task1: FORGE GearMesh, medium gear onto the
 gear-base middle shaft).
 
     export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 \
-           PYTHONPATH=/workspace/FORGE-plus_task1
+           PYTHONPATH=/workspace/FORGE-plus_task3
     /workspace/.venv/bin/python scripts/eval_gear_insert.py --obj 1 --episodes 200
 """
 from __future__ import annotations

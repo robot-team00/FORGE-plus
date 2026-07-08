@@ -15,7 +15,7 @@ Pass criteria (printed at the end):
      (bore mouth over the shaft tip) — the learned policy's starting state
 
     export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 \
-           PYTHONPATH=/workspace/FORGE-plus_task1
+           PYTHONPATH=/workspace/FORGE-plus_task3
     /workspace/.venv/bin/python scripts/probe_gear_env.py --num_envs 4 --steps 260
 """
 from __future__ import annotations
