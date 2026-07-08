@@ -193,12 +193,23 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     sim: object = SimulationCfg(
         dt=1.0 / 120.0, render_interval=4,
         physx=_PhysxCfg(
-            # ONLY the buffer sizes from factory's cfg: its solver/friction
-            # overrides (solver_type/iters/bounce/friction offsets/partitions)
-            # kill the pad<->hub SDF contact even at 4 envs (probe_n4b).
+            # FULL factory PhysX block. History: this block broke the pad<->hub
+            # SDF grip (probe_n4b) — but that was BEFORE the convex hub ring,
+            # which makes the grip solver-independent. And the drop test proved
+            # the bore is COLLISION-IMPOSSIBLE without factory's contact
+            # treatment + SDF fidelity (gear rests flat ON the shaft tip at
+            # 0.5 mm offset; 0-offset drop ejects). Factory runs these assets
+            # with exactly these settings.
+            solver_type=1,
+            max_position_iteration_count=192,
+            max_velocity_iteration_count=1,
+            bounce_threshold_velocity=0.2,
+            friction_offset_threshold=0.01,
+            friction_correlation_distance=0.00625,
             gpu_max_rigid_contact_count=2**23,
             gpu_max_rigid_patch_count=2**23,
             gpu_collision_stack_size=2**28,
+            gpu_max_num_partitions=1,
         ),
     ) if ISAAC_AVAILABLE else None
     episode_length_s: float = 30.0   # 600 steps: the lam-clipped OSC moves slowly
@@ -317,12 +328,14 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     # setup, exactly as FORGE) — the learned skill is everything after that.
     forge_mode:       bool  = False
     # Curriculum (start EASY so success is discovered, then widen via follow-up runs):
-    forge_approach_z: float = 0.565  # EE hand-off height. Rigid hub grip (no bottle lean): gear
-                                     # origin ~= ee_z - 0.135 (grip 0.032 + panda TCP 0.103), so
-                                     # ee 0.565 -> gear origin ~0.43 = bore mouth just above the
-                                     # shaft tip (0.425). The scripted setup stops here; the
-                                     # LEARNED policy does the descent + force-guided seating.
-    forge_start_lat:  float = 0.003  # ± random lateral start offset (m) the policy must correct.
+    forge_approach_z: float = 0.565  # EE hand-off height (nominal; OSC sag delivers the gear
+                                     # ~0.46 and the LEARNED policy descends from there — probes
+                                     # v3/v4 show it reliably reaches the shaft tip. A scripted
+                                     # engagement descent is NOT possible: wrist torque limits
+                                     # cap the setup's downward authority at ~10-15 N and it
+                                     # stalls 3 cm high — guided probes 1-4).
+    forge_start_lat:  float = 0.001  # ± random lateral start offset (m) — sub-mm for the
+                                     # engagement staging (stage B widens this back out).
     forge_start_fixed_x: float = -1.0  # >=0: FORCE start_off=(x, y) instead of sampling — jam
     forge_start_fixed_y: float = 0.0   # staging for the funnel probe / jam-recovery eval. The
                                        # setup delivers the gear accurately to shaft+off, so a
@@ -911,6 +924,7 @@ if ISAAC_AVAILABLE:
             self._start_off  = torch.zeros(N, 2, device=d)                 # random lateral start offset
             self._best_dist  = torch.full((N,), 9.9, device=d)             # best (min) dist-to-goal this episode
             self._prev_dist  = torch.full((N,), 9.9, device=d)             # PBRS: previous-step dist-to-goal
+            self._prev_dxy   = torch.full((N,), 9.9, device=d)             # PBRS: previous-step xy offset
             self._min_dist   = torch.full((N,), 9.9, device=d)             # best (min) dist achieved this episode
             self._rec_phase  = torch.zeros(N, dtype=torch.long, device=d)  # wiggle phase counter
             self._jam_cooldown = torch.zeros(N, dtype=torch.long, device=d)  # suppress jam-detect after a recovery
@@ -1587,6 +1601,16 @@ if ISAAC_AVAILABLE:
                 # GEAR-AIM: steer the EE so the GEAR (not the hand) is over the
                 # shaft — see _gv_off note above.
                 appr[:, :2] = _dest_xy
+                # Setup descent force budget: the FIXED low appr target saturates
+                # the rate limiter (error > lam) so the impedance pulls its full
+                # lam x kpos = 15 N at kpos 600 — a rolling 1 cm crawl target
+                # capped it at 6 N and the descent stalled (probes guided2/3).
+                # Only intervention: FREEZE the pull when insertion contact
+                # reaches 60% of the budget (the post-handoff budget freeze
+                # does not run during setup).
+                _hold = ((~stage1) & (self._setup_ctr > 0)
+                         & (self._cf_insert >= 0.6 * self._budget_env))
+                appr[:, 2] = torch.where(_hold, ee_pos_w[:, 2], appr[:, 2])
             if self.cfg.gripper == "robotiq_2f140" and self._rq_centered:
                 # frozen base-aim carrot (see the _dxy / rec_end notes)
                 appr[:, :2] = self._rq_aim
@@ -2098,9 +2122,6 @@ if ISAAC_AVAILABLE:
                 # OSC authority), so alignment was undiscoverable (two plateaus:
                 # dxy 0.017 and 0.011). Funnel capture radius is ~1-1.5 mm; from
                 # 3-4 mm force-guided search finds the bore.
-                # z gate at 0.465: the OSC sag equilibrium parks the gear at
-                # ~0.460 (1 cm above the old 0.45 gate -> arrival never fired);
-                # the LEARNED policy does the remaining descent from there.
                 _fk_arr = (_fk_gxy < 0.003) & (_fk_gz < 0.465)
                 if not hasattr(self, "_fk_setup_age"):
                     self._fk_setup_age = torch.zeros_like(self._setup_ctr)
@@ -2184,6 +2205,17 @@ if ISAAC_AVAILABLE:
             shape = torch.where(valid, self._prev_dist - dist, torch.zeros_like(dist))
             self._prev_dist = dist.clone()
             r = c.keypoint_k * shape * live.float()
+            # GEAR: ANISOTROPIC alignment shaping — a second PBRS potential on the
+            # xy offset alone (2x keypoint weight, ungated so it telescopes
+            # exploit-free). Escapes the shaft-tip wedge local optimum: under the
+            # isotropic 3D term, pressing at 3-5 mm off pays nearly as well as
+            # aligning, and the strict-criterion run sat there for 290 iterations
+            # (21 N tip press, succ 0). Lateral progress now pays 3x total.
+            dxy_pot = d[:, :2].norm(dim=-1).clamp(max=0.5)
+            valid_xy = self._prev_dxy < 9.0
+            shape_xy = torch.where(valid_xy, self._prev_dxy - dxy_pot, torch.zeros_like(dxy_pot))
+            self._prev_dxy = dxy_pot.clone()
+            r = r + 2.0 * c.keypoint_k * shape_xy * live.float()
             # force-overshoot penalty (FORGE): penalise contact above the budget.
             excess = ((cf - self._f_cmd).clamp(min=0.0) / self._f_cmd.clamp(min=1.0)).clamp(max=3.0)
             r = r - c.force_pen_beta * excess
@@ -2870,6 +2902,16 @@ if ISAAC_AVAILABLE:
                 target_w, ori_k = self._forge_targets(ee_pos_w)
             tgt_pos_b, tgt_quat_b = subtract_frame_transforms(root_pos_w, root_quat_w, target_w, self._ee_quat_des)
             _kpos = torch.full_like(ori_k, 400.0)   # stiff positioning (matches the trained robust policy)
+            if self.cfg.gripper != "robotiq_2f140" and self.cfg.forge_mode:
+                # GEAR PORT: 600 for the whole episode (the robotiq lesson,
+                # same numbers): at 400 the rate-limited P tops out at
+                # lam x kpos = 10 N/axis — exactly the gravity deficit at this
+                # pose, so the setup descent stalls 4 cm above the shaft
+                # (guided probes: gz flat at 0.462 under both a fixed low
+                # target and a rolling crawl). 600 gives 15 N/axis; keeping it
+                # across the scripted->learned boundary keeps the plant
+                # identical for the policy.
+                _kpos = torch.full_like(_kpos, 600.0)
             if self.cfg.gripper == "robotiq_2f140" and self.cfg.forge_mode:
                 # 600 (the OSC's variable-kp ceiling) for the WHOLE robotiq
                 # episode: it shrinks the gravity-deficit sag 1.5x, gives the
@@ -3615,6 +3657,7 @@ if ISAAC_AVAILABLE:
                 self._settle_ctr[env_ids] = 0
                 self._best_dist[env_ids] = 9.9
                 self._prev_dist[env_ids] = 9.9
+                self._prev_dxy[env_ids] = 9.9
                 self._min_dist[env_ids] = 9.9
 
             self._sample_episode(env_ids)
