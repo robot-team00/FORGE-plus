@@ -384,6 +384,11 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
                                      # not derail learning the SEAT; -1 = randomize. Fragility curriculum
                                      # (transfer to glass) is a follow-up once seating is learned.
 
+    # ── Budget-setter baselines (issue #26 eval) ─────────────────────────────
+    budget_mode:    str   = "llm"    # llm | fixed | oracle
+    budget_fixed_n: float = 60.0     # fixed-global F_max (120 = no-ceiling)
+    oracle_margin_n: float = 5.0     # oracle: F_max = F_break - margin
+
     # Gripper
     gripper: str   = "franka_panda"
 
@@ -675,6 +680,7 @@ if ISAAC_AVAILABLE:
             self._best_tilt  = torch.full((N,), 3.1416, device=d)   # extrinsic: best (min) tilt this place
             self._f_cmd      = torch.zeros(N, device=d)
             self._f_break    = torch.zeros(N, device=d)
+            self._budget_env = torch.zeros(N, device=d)   # per-episode F_max (budget_mode)
             self._broke      = torch.zeros(N, dtype=torch.bool, device=d)
             self._bad_release = torch.zeros(N, dtype=torch.bool, device=d)  # released but lost the bottle
             self._drop_quality = torch.zeros(N, device=d)   # dense release-quality shaping signal
@@ -1279,7 +1285,14 @@ if ISAAC_AVAILABLE:
                    + self._obj_fstd[cls] * torch.randn(n, device=self.device))
             fb  = torch.maximum(fb, self._obj_fmin[cls])
             self._f_break[ids] = fb
-            self._f_cmd[ids]   = self._obj_budget[cls]
+            if self.cfg.budget_mode == "fixed":
+                bud = torch.full((n,), self.cfg.budget_fixed_n, device=self.device)
+            elif self.cfg.budget_mode == "oracle":
+                bud = (fb - self.cfg.oracle_margin_n).clamp(1.0, 120.0)
+            else:
+                bud = self._obj_budget[cls]
+            self._budget_env[ids] = bud
+            self._f_cmd[ids]   = bud
             self._obj_cls[ids] = cls
 
         # ── Contact force helpers ─────────────────────────────────────────────
@@ -1665,7 +1678,7 @@ if ISAAC_AVAILABLE:
             # don't retreat (so resting on the cell floor = seated, not undone).
             # Compliant stiffness (forge_pos_k) keeps lateral rams survivable. This
             # bounds the force to ~F_max without preventing the gentle insertion.
-            budget = self._obj_budget[self._obj_cls]
+            budget = self._budget_env
             over = (self._cf_insert > budget) & (self._setup_ctr == 0)   # insertion force only
             if self.cfg.forge_release_mode:
                 over = over & (~self._released)   # after release, never freeze z — let the hand lift away
@@ -2293,7 +2306,7 @@ if ISAAC_AVAILABLE:
         @property
         def f_max_n(self) -> float:
             """The per-object force ceiling (LLM budget) for env 0."""
-            return float(self._obj_budget[self._obj_cls[0]].item())
+            return float(self._budget_env[0].item())
 
         @property
         def max_steps_per_attempt(self) -> int:
@@ -2798,7 +2811,7 @@ if ISAAC_AVAILABLE:
             # loop catches at LOW force. (Retreat, not freeze, so it can never
             # deadlock once a recovery has cleared the misalignment.)
             if self.cfg.place_strategy == "insert":
-                budget = self._obj_budget[self._obj_cls]              # (N,) F_max
+                budget = self._budget_env                             # (N,) F_max
                 over = self._cf_filt > 0.9 * budget
                 back_z = ee_pos_w[:, 2] + 0.004                       # 4 mm up -> relieves contact
                 target_w[:, 2] = torch.where(over, back_z, target_w[:, 2])
