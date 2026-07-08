@@ -2,5 +2,7 @@
   "glass_bowl": 8.8,
   "ceramic_plate": 10.4,
   "metal_plate": 72.0,
-  "sturdy_mug": 64.0
+  "sturdy_mug": 64.0,
+  "abs_gear": 10.0,
+  "steel_gear": 100.0
 }

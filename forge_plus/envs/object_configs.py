@@ -43,8 +43,44 @@ class ObjectConfig:
 
 
 # ---------------------------------------------------------------------------
-# Object registry — Task 1 (single insertion)
+# Object registry — Task 1 (single insertion: gear-on-shaft, FORGE GearMesh)
 # ---------------------------------------------------------------------------
+# The simulated part is the FORGE medium gear (factory_gear_medium.usd,
+# Ø42 mm, 30 mm hub, 30 mm tall) inserted onto the middle shaft of
+# factory_gear_base.usd. Fragile vs robust is a material contrast on the
+# same geometry, keeping the issue-#26 F_break distributions.
+
+ABS_GEAR = ObjectConfig(
+    identity=ObjectIdentity(
+        name="Ø42mm ABS medium spur gear (FORGE)",
+        material="ABS",
+        **{"class": "spur_gear"},
+        nominal_mass_g=12.0,
+        geometry_tags=["tooth_mesh", "shaft_bore", "thin_wall", "clearance_fit"],
+    ),
+    f_break_mean_n=38.0,
+    f_break_std_n=5.0,
+    f_break_min_n=20.0,
+    compatible_tasks=["task1_single_insertion"],
+    grasp_width_mm=30.0,  # FORGE grips the 30 mm hub, not the teeth
+)
+
+STEEL_GEAR = ObjectConfig(
+    identity=ObjectIdentity(
+        name="Ø42mm steel medium spur gear (FORGE)",
+        material="steel",
+        **{"class": "spur_gear"},
+        nominal_mass_g=90.0,
+        geometry_tags=["tooth_mesh", "shaft_bore", "solid", "clearance_fit"],
+    ),
+    f_break_mean_n=230.0,
+    f_break_std_n=20.0,
+    f_break_min_n=180.0,
+    compatible_tasks=["task1_single_insertion"],
+    grasp_width_mm=30.0,
+)
+
+# Legacy task-1 objects (pre-gear peg/connector variant), kept for reference.
 
 ABS_ROUND_CONNECTOR = ObjectConfig(
     identity=ObjectIdentity(
@@ -179,6 +215,8 @@ STURDY_MUG = ObjectConfig(
 # ---------------------------------------------------------------------------
 
 OBJECT_REGISTRY: dict[str, ObjectConfig] = {
+    "abs_gear": ABS_GEAR,
+    "steel_gear": STEEL_GEAR,
     "abs_round_connector": ABS_ROUND_CONNECTOR,
     "steel_peg": STEEL_PEG,
     "resin_planet_gear": RESIN_PLANET_GEAR,
