@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
                         "cannot seat it (force-freeze stalls the descent — the known fragile-insert gap).")
     p.add_argument("--scripted", action="store_true",
                    help="drive the scripted (zero-action base-aim) insertion instead of the learned policy")
+    p.add_argument("--gripper", choices=["franka_panda", "robotiq_2f140"],
+                   default="franka_panda",
+                   help="end-effector; robotiq_2f140 uses the Franka+2F-140 combo asset "
+                        "(doc 08: teleport contract + parse ghost)")
     p.add_argument("--out", default="/workspace/logs/recovery_insertion.json")
     return p.parse_args()
 
@@ -62,10 +66,15 @@ def main() -> None:
 
     cfg = PickPlaceEnvCfg()
     cfg.scene.num_envs   = 1
+    cfg.gripper          = args.gripper
     cfg.place_strategy   = "insert"
     cfg.jam_dx           = args.jam
     # Keep the episode from auto-resetting mid-demo so the loop owns the timeline.
-    cfg.episode_length_s = 120.0
+    # 360 s: the robotiq's attempts cost up to 2375 steps EACH (staging traverse
+    # included), so k_max 6 needs ~14,250 steps ≈ 240 s — the old 120 s truncated
+    # at 7200 steps MID-DEMO, teleporting the bottle back to the shelf (the
+    # "attempt N: 0.0 N timeout" ghosts in old smokes/renders).
+    cfg.episode_length_s = 360.0
     cfg.settle_steps     = 400
     # Drive the recovery on the LEARNED FORGE policy (not the scripted base-aim). The env's
     # step_skill runs env._skill_policy when set; forge_mode routes the EE through _forge_targets.
@@ -80,6 +89,21 @@ def main() -> None:
         cfg.forge_hybrid_retract = True   # post-release retract (matches the rendered demo)
         cfg.forge_no_term       = True    # demo owns the timeline: a drop is an honest FAIL,
                                           # never an auto-reset that fakes a later "success"
+        if args.gripper == "robotiq_2f140":
+            # TELEPORT CONTRACT: the robotiq path starts at the DEFAULT arm pose (no
+            # reset teleport), so the scripted setup needs a longer window to drive
+            # the ~0.5 m from the spawn pose to the cell-entrance hand-off.
+            cfg.forge_setup_steps = 4000  # predrive 600 + seat 270 + hover-lift + ~2 cm/s carry
+                                          # (base at (-0.15,0.12): dest ~0.46 m dead-ahead) +
+                                          # the seat window on the stiff drives + a post-
+                                          # grip settle hold before the policy goes live.
+            # the 2F-140 drive needs ~30 env steps to open from the closed spawn to
+            # the kiss angle before the bottle teleports in (drive vel limit 1 rad/s)
+            cfg.warmup_substeps   = 100
+            # The gripper's four-bar loop joints only survive a RAW parse — the
+            # physics-replicated clone path drops them (single env: nothing to
+            # replicate anyway).
+            cfg.scene.replicate_physics = False
 
     env = FrankaPickPlaceEnv(cfg)
     print(f"\n{'='*64}\n  Force-Budgeted Recovery — Isaac wine-cellar insertion"
@@ -106,11 +130,31 @@ def main() -> None:
         client = HeuristicLLMClient()
     else:
         client = build_client({"backend": args.backend})
+    if os.environ.get("RQ_FORCE_REC"):
+        # DEBUG SMOKE ONLY: pin the recovery maneuver to reproduce a specific
+        # selector branch (e.g. the render's retract_and_reapproach path).
+        # Never set for renders/evals — those must use the real selector.
+        _forced = os.environ["RQ_FORCE_REC"]
+        client._select_recovery = lambda payload, _a=_forced: {
+            "action": _a, "params": {},
+            "keep_F_max_N": payload.get("F_max_N", 0.0),
+            "rationale": "FORCED (debug smoke)"}
+        print(f"  [debug] RQ_FORCE_REC={_forced} — recovery selector pinned", flush=True)
     selector = RecoverySelector(client=client)
     loop = RecoveryLoop(selector=selector, k_max=args.k_max)
 
     print(f"  jam_dx = {args.jam:.3f} m   F_max = {env.f_max_n:.1f} N "
           f"(object budget, LLM)   backend = {client.name()}", flush=True)
+    if args.gripper == "robotiq_2f140":
+        # four-bar health diagnostics (doc 08: teleport contract + parse ghost)
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+        n_ghost = sum(1 for pr in stage.Traverse() if "GhostGripper" in str(pr.GetPath()))
+        bn = list(env._robot.data.body_names)
+        sep0 = float((env._robot.data.body_pos_w[0, bn.index("left_inner_finger")]
+                      - env._robot.data.body_pos_w[0, bn.index("right_inner_finger")]).norm())
+        print(f"  [rq-diag] ghost prims={n_ghost} ghost_init={getattr(env, '_ghost', None) is not None} "
+              f"four-bar sep at spawn={sep0:.4f} (healthy closed ~0.040)", flush=True)
 
     def _on_step(e, attempt, step):
         if step % 10 == 0:
@@ -118,11 +162,27 @@ def main() -> None:
             cf  = float(e._cf_insert[0].item())
             eez = float(e._robot.data.body_pos_w[0, e._ee_idx, 2].item()
                         - e.scene.env_origins[0, 2].item())
-            gap = float((e._robot.data.joint_pos[0, 7] + e._robot.data.joint_pos[0, 8]).item())
+            if e.cfg.gripper == "robotiq_2f140":
+                # finger_joint angle (0=closed..0.785=open) + pad-body separation
+                gap = float(e._robot.data.joint_pos[0, e._grip_ids[0]].item())
+                sep = float((e._robot.data.body_pos_w[0, e._lf_idx]
+                             - e._robot.data.body_pos_w[0, e._rf_idx]).norm().item())
+                gtxt = f"ang={gap:.3f} sep={sep:.4f}"
+            else:
+                gap = float((e._robot.data.joint_pos[0, 7] + e._robot.data.joint_pos[0, 8]).item())
+                gtxt = f"gap={gap:.4f}"
             print(f"    [a{attempt} s{step:3d}] base=({bx:.3f},{by:.3f},{bz:.3f}) eez={eez:.3f} "
-                  f"gap={gap:.4f} cf={cf:5.2f} rec={int(e._rec_steps[0])} "
+                  f"{gtxt} cf={cf:5.2f} rec={int(e._rec_steps[0])} "
                   f"setup={int(e._setup_ctr[0])} rel={int(e._released[0])} "
                   f"fail={e.is_failure()}", flush=True)
+            if os.environ.get("RQ_TRACE") == "1" and step % 40 == 0 \
+                    and int(e._setup_ctr[0]) == 0:
+                q = e._robot.data.body_quat_w[0, e._ee_idx]
+                a = e._actions[0]
+                print(f"      [obs] jp={[round(float(v), 2) for v in e._robot.data.joint_pos[0, :7]]} "
+                      f"quat={[round(float(v), 3) for v in q]} "
+                      f"act={[round(float(v), 2) for v in a[:3]]}"
+                      f"{' m7=%+.2f' % float(a[7]) if a.shape[0] > 7 else ''}", flush=True)
 
     result = loop.run(env, on_step=_on_step)
 
@@ -182,8 +242,7 @@ def main() -> None:
             "log": [a.__dict__ for a in result.log],
         }, fh, indent=2)
     print(f"  wrote {args.out}", flush=True)
-    _app.close()
-    os._exit(0)
+    os._exit(0)   # skip app.close() — it hangs headless and pins GPU memory
 
 
 if __name__ == "__main__":

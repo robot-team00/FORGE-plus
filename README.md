@@ -53,13 +53,13 @@ during the carry.
 > and [`docs/task3/06-recovery.md`](docs/task3/06-recovery.md).
 
 <div align="center">
-  <img src="docs/videos/task3/forge_recovery.png" width="600" alt="Fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
+  <img src="docs/videos/task3/forge_recovery_franka.png" width="600" alt="Fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
   <br><em>The headline moment: the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the system reads the
   <b>text force signature</b> (no vision), the LLM picks <code>rotate_align</code>, and the learned
   policy re-inserts, seats the bottle, releases, and retracts.</em>
 </div>
 
-▶️ **[`docs/videos/task3/forge_recovery.mp4`](docs/videos/task3/forge_recovery.mp4)**
+▶️ **[`docs/videos/task3/forge_recovery_franka.mp4`](docs/videos/task3/forge_recovery_franka.mp4)**
  — the full **fragile recovery episode**: learned insertion → induced jam caught from the force
  signature far below break → LLM recovery → learned re-insertion → seat → **learned release** →
  retract. (The clean insertion + release demo without a jam:

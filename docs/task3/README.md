@@ -69,7 +69,7 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | [`03-rendering.md`](03-rendering.md) | Headless RTX live-physics rendering, the "app.update() steps physics" gotcha, the render↔physics **sync bug** that froze the object, the proven render loop, camera, and HUD. |
 | [`04-libero-objects.md`](04-libero-objects.md) | LIBERO reference, the OBJ→USD→rigid-wrap import pipeline, the **procedural wine-rack USD build**, asset layout, and which object shapes to pick. |
 | [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) | Wine-cellar peg-in-hole scene, asset pipeline, photorealism. **⚠️ The insertion shown there was a SCRIPTED scaffold (zero policy action + base-aim), not a learned policy — being replaced by a learned FORGE PPO policy.** |
-| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop, driving the LEARNED policy.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), force authority (caught well below break), the induced-jam scenario, the verified jam→recover→seat results, and the **rendered fragile-object episode** (`forge_recovery.mp4`) with its honesty take-gate. |
+| [`06-recovery.md`](06-recovery.md) | **Force-signature LLM recovery, closed loop, driving the LEARNED policy.** The task-agnostic `RecoveryLoop`, the env hooks (jam detection, force signature, recovery primitives), force authority (caught well below break), the induced-jam scenario, the verified jam→recover→seat results, and the **rendered fragile-object episode** (`forge_recovery_franka.mp4`) with its honesty take-gate. |
 | [`07-learned-place-release.md`](07-learned-place-release.md) | **✅ The current, LEARNED policy — start here.** FORGE PPO that descends the bottle into the cell (force-guided insertion), learns *when to release* (8-dim action), and safely places it upright before the arm retracts. The algorithm, reward shaping, the finger-open bug, the numpy-1.26 render-killer, the render harness, and the learned-vs-scripted HUD + force gauge. |
 | [`08-robotiq-2f140.md`](08-robotiq-2f140.md) | **🔧 Robotiq 2F-140 port (in progress).** The Franka+2F-140 combined USD (NVIDIA only ships the 2F-85 combo), the S3 asset-mirror trick, and the two PhysX findings: loop-joint teleport fragility (→ the no-teleport contract) and the parse-ghost quirk. Remaining: env branches, zero-shot policy check, `forge_recovery_robotiq.mp4`. |
 
@@ -87,7 +87,7 @@ orientation (clones, shared venv, asset dirs, push/auth). Run all Isaac code wit
 | `checkpoints/task3_wine_bottle.pt` | Trained policy (gitignored — not in the repo; regenerate via training). |
 | `/workspace/assets/libero/wine_bottle/wine_bottle_rigid.usd` | The graspable object (outside the repo; `assets/` is gitignored). |
 | `/workspace/assets/libero/wine_rack/wine_rack.usd` | The procedural 3×3 wine-cellar rack (outside the repo; `assets/` is gitignored). See doc 04 §7. |
-| `docs/videos/task3/forge_recovery.mp4` | **Latest demo render** — the fragile recovery episode (doc 06 §7). |
+| `docs/videos/task3/forge_recovery_franka.mp4` | **Latest demo render** — the fragile recovery episode (doc 06 §7). |
 | `docs/videos/task3/forge_release.mp4` | The clean (no-jam) learned insertion + release demo (doc 07). |
 
 ## Quickstart
@@ -108,7 +108,7 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99 PYTHONPATH=/wor
 RELEASE=1 bash scripts/render_until_success.sh          # -> docs/videos/task3/forge_release.mp4
 
 # Render the fragile RECOVERY episode (doc 06 §7):
-bash scripts/render_recovery_until_success.sh 8         # -> docs/videos/task3/forge_recovery.mp4
+bash scripts/render_recovery_until_success.sh 8         # -> docs/videos/task3/forge_recovery_franka.mp4
 
 # Headless recovery demo (no rendering):
 /workspace/.venv/bin/python scripts/run_recovery_insertion.py --jam 0.05 --obj 0
@@ -145,7 +145,7 @@ bash scripts/render_recovery_until_success.sh 8         # -> docs/videos/task3/f
   envs. **Rendered on the FRAGILE glass object** (break ~23 N): jam caught at **16.1 N**, LLM picks
   `rotate_align`, the learned policy re-inserts and seats it (still held), then **releases (learned)
   and retracts clear** — 9/9 headless seats, breaks 0. Video:
-  [`forge_recovery.mp4`](../videos/task3/forge_recovery.mp4). See [`06-recovery.md`](06-recovery.md).
+  [`forge_recovery_franka.mp4`](../videos/task3/forge_recovery_franka.mp4). See [`06-recovery.md`](06-recovery.md).
 - ⚠️ Learned gentle "extrinsic-dexterity" roll-up was attempted and **never converged**
   (hard-exploration RL) — superseded by the cell-geometry insertion.
 

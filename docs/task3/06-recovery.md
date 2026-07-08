@@ -5,10 +5,10 @@
 > zero-action scaffold. The same task-agnostic loop + LLM recovery selection sit on top. Use
 > `--scripted` to fall back to the zero-action base-aim skill (the original scaffold) for
 > comparison. See §5 for the learned-policy results and §7 for the **rendered fragile-object
-> recovery episode**: [`docs/videos/task3/forge_recovery.mp4`](../videos/task3/forge_recovery.mp4).
+> recovery episode**: [`docs/videos/task3/forge_recovery_franka.mp4`](../videos/task3/forge_recovery_franka.mp4).
 
 <div align="center">
-  <img src="../videos/task3/forge_recovery.png" width="560" alt="RTX render of the fragile recovery episode: the JAM DETECTED card shows the force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
+  <img src="../videos/task3/forge_recovery_franka.png" width="560" alt="RTX render of the fragile recovery episode: the JAM DETECTED card shows the force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
   <br><em>The rendered recovery moment: jam caught from the force signature at 16.1 N (break 23.3 N),
   the LLM picks <code>rotate_align</code>, and the arm — bottle still held — realigns before the
   LEARNED policy re-inserts, seats it, releases, and retracts.</em>
@@ -159,7 +159,7 @@ Backends: `heuristic` (deterministic, force-reasoned, no API), `local` (Ollama),
 
 ## 7. The rendered fragile-object recovery episode
 
-**Video: [`docs/videos/task3/forge_recovery.mp4`](../videos/task3/forge_recovery.mp4)** (~13 s).
+**Video: [`docs/videos/task3/forge_recovery_franka.mp4`](../videos/task3/forge_recovery_franka.mp4)** (~13 s).
 `scripts/render_recovery.py` (retry wrapper `scripts/render_recovery_until_success.sh`) renders
 the closed loop **on the fragile glass object** (`--obj 0`, per-episode sampled `F_break` ≈ 22 N,
 budget `F_max` 8.8 N) with the induced jam, through to the **full place**: after the recovery
@@ -193,7 +193,7 @@ The HUD keeps the honesty rules from doc 07 §6 and adds the recovery story:
 bash scripts/render_recovery_until_success.sh 8
 # knobs (env vars): JAM=0.05 OBJ=0 K_MAX=5 CAP_EVERY=1 TAKE=n CKPT=... OUT=...
 # takes encode to /workspace/render_takes/forge_recovery_take_NNN.mp4; only the approved
-# take is copied over the stable docs/videos/task3/forge_recovery.mp4
+# take is copied over the stable docs/videos/task3/forge_recovery_franka.mp4
 ```
 
 **Take gate (honesty guards, in `render_recovery.py`):**

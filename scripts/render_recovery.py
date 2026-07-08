@@ -66,19 +66,29 @@ for _k in ["/rtx/reflections/enabled", "/rtx/translucency/enabled",
             "/rtx/directLighting/sampledLighting/enabled"]:
     S.set(_k, False)
 
-JAM   = float(os.environ.get("JAM", "0.05"))
+GRIPPER0 = os.environ.get("GRIPPER", "franka_panda")
+# robotiq defaults: the cell funnel forgives ~±3 cm and self-centers a 5 cm
+# fault — the wedge only holds at 8 cm; the episode seats on attempt 3 after
+# three signature->recovery cycles (env smoke 46), so K_MAX 6.
+JAM   = float(os.environ.get("JAM", "0.08" if GRIPPER0 == "robotiq_2f140" else "0.05"))
 OBJ   = int(os.environ.get("OBJ", "0"))       # 0 = glass (fragile, break ~22 N)
-K_MAX = int(os.environ.get("K_MAX", "5"))
+K_MAX = int(os.environ.get("K_MAX", "6" if GRIPPER0 == "robotiq_2f140" else "5"))
 CAP_EVERY = int(os.environ.get("CAP_EVERY", "1"))   # capture every Nth control step
 TAKE  = int(os.environ.get("TAKE", "1"))      # take index — encodes to a VERSIONED take file
                                               # (never clobbers the approved docs/ video)
 
+GRIPPER = os.environ.get("GRIPPER", "franka_panda")   # franka_panda | robotiq_2f140
+
 cfg = PickPlaceEnvCfg()
 cfg.scene.num_envs   = 1
-cfg.gripper          = "franka_panda"
+cfg.gripper          = GRIPPER
 cfg.place_strategy   = "insert"
 cfg.settle_steps     = 400
-cfg.episode_length_s = 120.0   # the loop owns the timeline — no auto-reset mid-demo
+cfg.episode_length_s = 360.0   # the loop owns the timeline — no auto-reset mid-demo.
+                               # 360 s: robotiq attempts cost up to 2375 steps EACH,
+                               # so k_max 6 ≈ 14,250 steps ≈ 240 s; 120 s truncated
+                               # MID-RENDER (bottle teleported back to the shelf —
+                               # a silent contributor to the loop 3–15 no-seat takes)
 cfg.jam_dx           = JAM
 cfg.forge_mode          = True
 cfg.forge_release_mode  = True    # the trained policy is 8-dim (arm + release)
@@ -89,6 +99,12 @@ cfg.rec_dur_steps       = 80      # recovery maneuver: ~40 control steps to re-r
 cfg.grasp_topdown       = False
 cfg.forge_obj_cls       = OBJ
 cfg.render_minimal      = bool(int(os.environ.get("RENDER_MINIMAL", "0")))
+if GRIPPER == "robotiq_2f140":
+    # mirror run_recovery_insertion.py: long setup drive from the spawn pose
+    # (arrival-armed seat), probe-v50 seat cadence, raw parse (loop joints).
+    cfg.forge_setup_steps = 4000
+    cfg.warmup_substeps   = 100
+    cfg.scene.replicate_physics = False
 
 from isaaclab.envs import DirectRLEnv as _DRL
 FrankaPickPlaceEnv.render = _DRL.render
@@ -172,7 +188,8 @@ os.makedirs(FRAMEDIR, exist_ok=True)
 for _f in Path(FRAMEDIR).glob("*.png"): _f.unlink()
 # Takes encode to VERSIONED scratch files (render_takes/forge_recovery_take_NNN.mp4); only an
 # approved take is copied to the stable, README-linked docs/videos/task3/forge_recovery.mp4.
-OUTPUT = os.environ.get("OUT", "/workspace/render_takes/forge_recovery_take_%03d.mp4" % TAKE)
+_gtag = "robotiq" if GRIPPER == "robotiq_2f140" else "franka"
+OUTPUT = os.environ.get("OUT", "/workspace/render_takes/forge_recovery_%s_take_%03d.mp4" % (_gtag, TAKE))
 Path(OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 
 W, H = 960, 540
@@ -182,16 +199,94 @@ ORANGE = (255, 170,  60)   # SCRIPTED
 RED    = (255,  90,  90)
 CYAN   = (120, 220, 255)
 
+# ── PAUSE-CAPTURE (PAUSE_CAP=1, default): render capture frames WITHOUT
+# stepping physics. Without this, every captured frame injects extra physics
+# steps under HELD torques between the env's control substeps — the
+# render-vs-smoke divergence that forced the detuned post-recovery gains
+# (ori_k 110, settle gate, ag cap; see HANDOFF doc "five mechanisms") and
+# made take 91's insertion lean, grind, and hover. With capture-time physics
+# frozen, the render regime is IDENTICAL to the smoke.
+# Mechanism: the /app/player/playSimulations carb setting (the one Isaac's
+# own replay tools toggle) — app.update() then renders but skips simulation.
+# NOT timeline pause(): play() is only processed on a later update, so the
+# first env.step() after a paused capture spun forever at 109% CPU with the
+# GPU idle (take 98 livelock, killed after 42 min).
+PAUSE_CAP = os.environ.get("PAUSE_CAP", "1") == "1"
+_pc_chk = {"n": 0}
+
+# With playSimulations=False NOTHING syncs to the renderer — neither rigid
+# objects NOR the articulation links (take 99's frozen bottle, take 101's
+# frozen ARM: the whole robot rendered as a parked statue while the flushed
+# bottle "flew itself" into the rack). All render transforms are synced by
+# the update-loop physics pass that pausing skips. PhysX's
+# update_transformations flush does NOT fix it (probe v4: updateToUsd and
+# updateToFastCache both left the visual frozen — the renderer reads
+# Fabric). The fix is a direct usdrt Fabric world-pose write of EVERY
+# dynamic prim in shot — the bottle from its root pose AND each robot link
+# from body_link_pos/quat_w — before each capture (probe v4 P2: pixel
+# centroid matched the unpaused calibration sub-pixel).
+_rtf = {"xfs": None}
+def _rt_flush_dynamics():
+    from usdrt import Usd as RtUsd, Gf as RtGf, Rt
+    if _rtf["xfs"] is None:
+        _rtstage = RtUsd.Stage.Attach(omni.usd.get_context().get_stage_id())
+        xfs = [(Rt.Xformable(_rtstage.GetPrimAtPath(
+            env._obj.cfg.prim_path.replace("env_.*", "env_0"))), None)]
+        body_names = list(env._robot.data.body_names)
+        n_links, n_miss = 0, 0
+        for lp in env._robot.root_physx_view.link_paths[0]:
+            prim = _rtstage.GetPrimAtPath(lp)
+            tail = lp.rsplit("/", 1)[-1]
+            if prim.IsValid() and tail in body_names:
+                xfs.append((Rt.Xformable(prim), body_names.index(tail)))
+                n_links += 1
+            else:
+                n_miss += 1
+        _rtf["xfs"] = xfs
+        print("pause-cap flush set: bottle + %d robot links (%d unmatched)"
+              % (n_links, n_miss), flush=True)
+    d = env._robot.data
+    lp = getattr(d, "body_link_pos_w", None)
+    lq = getattr(d, "body_link_quat_w", None)
+    if lp is None:
+        lp, lq = d.body_pos_w, d.body_quat_w
+    bp = env._obj.data.root_pose_w[0].tolist()
+    for xf, li in _rtf["xfs"]:
+        p = bp if li is None else (lp[0, li].tolist() + lq[0, li].tolist())
+        if not xf.HasWorldXform():
+            xf.SetWorldXformFromUsd()
+        xf.GetWorldPositionAttr().Set(RtGf.Vec3d(p[0], p[1], p[2]))
+        xf.GetWorldOrientationAttr().Set(
+            RtGf.Quatf(p[3], RtGf.Vec3f(p[4], p[5], p[6])))
+
 def _grab():
-    app.update(); app.update()
-    d = np.asarray(rgb.get_data())
-    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
-        return d
-    _time.sleep(0.1); app.update()
-    d = np.asarray(rgb.get_data())
-    if d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1:
-        return d
-    return None
+    if PAUSE_CAP:
+        _q0 = float(env._robot.root_physx_view.get_dof_positions()[0, 4].item())
+        S.set_bool("/app/player/playSimulations", False)
+        try:
+            _rt_flush_dynamics()
+        except Exception as _fx:
+            if _pc_chk["n"] < 8:
+                print("rt-flush FAILED: %r" % (_fx,), flush=True)
+    try:
+        app.update(); app.update()
+        d = np.asarray(rgb.get_data())
+        ok = d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1
+        if not ok:
+            _time.sleep(0.1); app.update()
+            d = np.asarray(rgb.get_data())
+            ok = d.ndim >= 3 and d.shape[0] > 1 and d.shape[1] > 1
+    finally:
+        if PAUSE_CAP:
+            S.set_bool("/app/player/playSimulations", True)
+    if PAUSE_CAP and _pc_chk["n"] < 8:
+        _q1 = float(env._robot.root_physx_view.get_dof_positions()[0, 4].item())
+        print("pause-cap check %d: dq5=%+.2e %s" %
+              (_pc_chk["n"], _q1 - _q0,
+               "FROZEN" if abs(_q1 - _q0) < 1e-9 else "PHYSICS LEAKED"),
+              flush=True)
+        _pc_chk["n"] += 1
+    return d if ok else None
 
 # ── Recovery loop wiring. Wrap the selector + signature so the HUD can show the
 # LLM decision and the force signature it was made from (display only — the loop
@@ -305,8 +400,10 @@ def _draw_frame(attempt, step):
     # ── force gauge (F_max = budget marker, F_brk = break marker) ──
     fmx, fbk, gmax = gauge["f_max"], gauge["f_brk"], gauge["max"]
     dr.rectangle([GX-10, GY-26, GX+GW+150, GY+GH+12], fill=(0, 0, 0, 140))
-    dr.text((GX-4, GY-24), "contact force   (peak %.1f N — under break)" % hud["peak_n"],
-            font=F_SM, fill=(220, 220, 220))
+    _pk_ok = hud["peak_n"] < (gauge["f_brk"] or 22.0)
+    dr.text((GX-4, GY-24), "contact force   (peak %.1f N — %s)"
+            % (hud["peak_n"], "under break" if _pk_ok else "OVER BREAK"),
+            font=F_SM, fill=(220, 220, 220) if _pk_ok else (255, 90, 90))
     dr.rectangle([GX, GY, GX+GW, GY+GH], outline=(160, 160, 160), width=1, fill=(35, 35, 35, 200))
     frac   = max(0.0, min(1.0, cf_val / gmax))
     over   = cf_val >= fmx
@@ -328,7 +425,12 @@ def _draw_frame(attempt, step):
 t0 = _time.time()
 def _on_step(e, attempt, step):
     hud["attempt"] = attempt
-    if step % CAP_EVERY != 0:
+    # robotiq: the scripted approach is ~2000 control steps (vs franka's 350) —
+    # capture it sparsely (x6) so the take stays watchable; the LEARNED/recovery
+    # action keeps the full CAP_EVERY density.
+    _ce = CAP_EVERY * (6 if (GRIPPER == "robotiq_2f140"
+                             and int(e._setup_ctr[0].item()) > 0) else 1)
+    if step % _ce != 0:
         return
     ok = _draw_frame(attempt, step)
     if step % 40 == 0:
@@ -348,9 +450,15 @@ for a in result.log:
 # that slipped/fell into the cell is a lucky drop, not a place: the take is rejected.
 seat_valid = False
 if result.outcome == RecoveryOutcome.SUCCESS:
-    gap  = float((env._robot.data.joint_pos[0, 7] + env._robot.data.joint_pos[0, 8]).item())
     rel0 = bool(env._released[0].item())
-    seat_valid = env.is_success() and (0.008 < gap < 0.030) and not rel0
+    if GRIPPER == "robotiq_2f140":
+        # held = finger_joint at the neck stall (~0.70); free-close on air is
+        # ~0.785 and only reachable after a release/drop.
+        gap = float(env._robot.data.joint_pos[0, env._grip_ids[0]].item())
+        seat_valid = env.is_success() and (0.55 < gap < 0.78) and not rel0
+    else:
+        gap  = float((env._robot.data.joint_pos[0, 7] + env._robot.data.joint_pos[0, 8]).item())
+        seat_valid = env.is_success() and (0.008 < gap < 0.030) and not rel0
     print("seat validation: in_cell=%s gap=%.4f rel=%d -> %s"
           % (env.is_success(), gap, int(rel0), "VALID" if seat_valid else "REJECT"), flush=True)
 
@@ -391,8 +499,13 @@ if seat_valid:
 broke = bool(env._broke[0].item())
 peak  = hud["peak_n"]
 # A good take = recovery seated it (validated, still held) AND the finale placed it
-# (learned release fired + retract cleared).
-ok = seat_valid and (placed_at is not None) and not broke
+# (learned release fired + retract cleared). ALSO require the gauge peak under
+# the sampled F_break: env._broke is disarmed during setup, so a setup-phase
+# over-press doesn't set it — but the HUD gauge would honestly read OVER BREAK
+# and the take is undeliverable (the original delivered take failed exactly
+# this way). Reject so the loop re-rolls.
+under_brk = hud["peak_n"] < (gauge["f_brk"] or 22.0)
+ok = seat_valid and (placed_at is not None) and not broke and under_brk
 print("RESULT %s saved=%d peak=%.1fN break=%s attempts=%d seat_valid=%s placed=%s"
       % ("SUCCESS" if ok else "FAIL", hud["saved"], peak, broke, result.attempts,
          seat_valid, placed_at is not None), flush=True)
