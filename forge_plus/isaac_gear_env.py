@@ -322,6 +322,10 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
                                      # shaft tip (0.425). The scripted setup stops here; the
                                      # LEARNED policy does the descent + force-guided seating.
     forge_start_lat:  float = 0.003  # ± random lateral start offset (m) the policy must correct.
+    forge_start_fixed_x: float = -1.0  # >=0: FORCE start_off=(x, y) instead of sampling — jam
+    forge_start_fixed_y: float = 0.0   # staging for the funnel probe / jam-recovery eval. The
+                                       # setup delivers the gear accurately to shaft+off, so a
+                                       # beyond-funnel offset wedges the bore mouth on the shaft.
                                      # Gear bore/shaft radial clearance is ~0.25 mm (true FORGE
                                      # tolerance) — start EASY (5 mm) so success is discovered;
                                      # widen toward 15 mm in follow-up runs (task3 curriculum rule).
@@ -3554,6 +3558,9 @@ if ISAAC_AVAILABLE:
                 n = len(env_ids)
                 lat = self.cfg.forge_start_lat
                 self._start_off[env_ids] = (torch.rand(n, 2, device=self.device) * 2 - 1) * lat
+                if self.cfg.forge_start_fixed_x >= 0.0:
+                    self._start_off[env_ids, 0] = self.cfg.forge_start_fixed_x
+                    self._start_off[env_ids, 1] = self.cfg.forge_start_fixed_y
                 if self.cfg.gripper == "robotiq_2f140":
                     # deterministic wedge staging (see the robotiq reset block —
                     # this write must come AFTER the randomization above).
