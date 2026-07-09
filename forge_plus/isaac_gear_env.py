@@ -412,6 +412,13 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     slip_disturb_mm: float = float(os.environ.get("SLIP_DISTURB_MM", "0.0"))
                                      # 0 = off; sign = +y. Env-var knob so TRAINING can put
                                      # jam states in-distribution without code edits.
+    slip_frac:       float = float(os.environ.get("SLIP_FRAC", "1.0"))
+                                     # fraction of episodes the slip fires in (per-env random
+                                     # arm rolled at reset). Slip-EVERY-episode training failed
+                                     # (275 its, zero seats — the 5 mm kick starves the clean-
+                                     # skill success signal); ~0.3 keeps clean insertions
+                                     # paying while recovery states enter the distribution.
+                                     # Eval keeps 1.0 (every episode jams).
     slip_trigger_z:  float = 0.435   # gear origin below this (shaft-tip region) arms the slip
 
     # ── Budget-setter baselines (issue #26 eval) ─────────────────────────────
@@ -2689,10 +2696,12 @@ if ISAAC_AVAILABLE:
                 if not hasattr(self, "_slip_done"):
                     self._slip_done = torch.zeros(self.num_envs, dtype=torch.bool,
                                                   device=self.device)
+                    self._slip_armed = (torch.rand(self.num_envs, device=self.device)
+                                        < self.cfg.slip_frac)
                 _gxy = self._obj.data.root_pose_w[:, :2] - torch.stack(
                     [self.scene.env_origins[:, 0] + self.cfg.rack_x,
                      self.scene.env_origins[:, 1] + self.cfg.rack_y], dim=-1)
-                _arm = ((~self._slip_done) & (self._setup_ctr == 0)
+                _arm = ((~self._slip_done) & self._slip_armed & (self._setup_ctr == 0)
                         & (self._warmup == 0)
                         & (base_z_now < self.cfg.slip_trigger_z)
                         & (_gxy.norm(dim=-1) < 0.008))
@@ -3678,6 +3687,13 @@ if ISAAC_AVAILABLE:
                 self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
                 if hasattr(self, "_slip_done"):
                     self._slip_done[env_ids] = False   # re-arm the slip disturbance
+                    self._slip_armed[env_ids] = (
+                        torch.rand(len(env_ids), device=self.device)
+                        < self.cfg.slip_frac)         # fractional-slip gate reroll.
+                    # NOTE: the INSTANTANEOUS armed fraction ratchets above
+                    # slip_frac (survivorship: clean episodes finish and re-
+                    # roll fast; slipped ones linger to truncation). Each
+                    # EPISODE is still armed with probability slip_frac.
                 self._fk_aim[env_ids] = 0.0
                 # Recovery state is EPISODE state: an episode that truncates
                 # mid-recovery otherwise leaks its maneuver into every later

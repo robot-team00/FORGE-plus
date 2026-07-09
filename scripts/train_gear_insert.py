@@ -316,6 +316,13 @@ def main() -> None:
                 {"policy_state_dict": policy.state_dict(), "policy_cfg": dict(vars(pcfg))},
                 ckpt,
             )
+        # PPO drift can collapse a converged policy (mixed round-2 lesson);
+        # keep periodic snapshots so a good checkpoint survives later drift.
+        if it > 0 and it % 100 == 0:
+            torch.save(
+                {"policy_state_dict": policy.state_dict(), "policy_cfg": dict(vars(pcfg))},
+                f"{ckpt}.it{it}",
+            )
 
     # Final save
     torch.save(
