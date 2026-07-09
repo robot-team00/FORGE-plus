@@ -412,6 +412,14 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     slip_disturb_mm: float = float(os.environ.get("SLIP_DISTURB_MM", "0.0"))
                                      # 0 = off; sign = +y. Env-var knob so TRAINING can put
                                      # jam states in-distribution without code edits.
+    slip_rand_dir:   bool  = bool(int(os.environ.get("SLIP_RAND_DIR", "0")))
+                                     # randomize the slip direction (uniform xy angle) instead
+                                     # of the fixed +y. TRAINING must set this: with a fixed
+                                     # direction the policy learns to AIM OFF-CENTER in
+                                     # anticipation (slipfrac run: jam eval 6/6 but clean eval
+                                     # 0/256 — the slip "corrected" the learned bias). A zero-
+                                     # mean disturbance leaves reactive recovery as the only
+                                     # winning strategy. Eval keeps the deterministic +y.
     slip_frac:       float = float(os.environ.get("SLIP_FRAC", "1.0"))
                                      # fraction of episodes the slip fires in (per-env random
                                      # arm rolled at reset). Slip-EVERY-episode training failed
@@ -2707,7 +2715,13 @@ if ISAAC_AVAILABLE:
                         & (_gxy.norm(dim=-1) < 0.008))
                 if bool(_arm.any()):
                     pose = self._obj.data.root_pose_w.clone()
-                    pose[_arm, 1] += self.cfg.slip_disturb_mm / 1000.0
+                    if self.cfg.slip_rand_dir:
+                        _th = torch.rand(self.num_envs, device=self.device) * 6.2831853
+                        _mag = self.cfg.slip_disturb_mm / 1000.0
+                        pose[_arm, 0] += _mag * torch.cos(_th[_arm])
+                        pose[_arm, 1] += _mag * torch.sin(_th[_arm])
+                    else:
+                        pose[_arm, 1] += self.cfg.slip_disturb_mm / 1000.0
                     self._obj.write_root_pose_to_sim(pose)
                     self._slip_done = self._slip_done | _arm
                     if bool(_arm[0]):
