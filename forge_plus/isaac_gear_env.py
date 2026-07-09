@@ -409,7 +409,9 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     # -> a REAL sustained wedge with an insertion-force signature. (A static
     # start offset cannot wedge the trained policy: <=13 mm it self-corrects,
     # >13 mm it wanders off and parks force-free — funnel probe + debug ep0.)
-    slip_disturb_mm: float = 0.0     # 0 = off; sign = +y direction
+    slip_disturb_mm: float = float(os.environ.get("SLIP_DISTURB_MM", "0.0"))
+                                     # 0 = off; sign = +y. Env-var knob so TRAINING can put
+                                     # jam states in-distribution without code edits.
     slip_trigger_z:  float = 0.435   # gear origin below this (shaft-tip region) arms the slip
 
     # ── Budget-setter baselines (issue #26 eval) ─────────────────────────────
