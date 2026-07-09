@@ -280,6 +280,12 @@ class HeuristicLLMClient(LLMClient):
 
         if attempt >= 4:
             action, why = "abort", "repeated failures; abort rather than risk the part"
+        elif attempt >= 2 and (lateral_bias != "none" or peak_lat > 2.0):
+            # a wedge that SURVIVES a realign points at an in-hand offset (the
+            # part slipped in the grip), which no arm maneuver fixes — re-seat
+            # the part in the gripper. This is what a reasoning LLM concludes
+            # from "same lateral wedge signature, attempt >= 2".
+            action, why = "regrasp", "recurring wedge after realign -> part slipped in grip; re-seat it"
         elif lateral_bias != "none" or peak_lat > 2.0:
             action, why = "rotate_align", "lateral bias at contact (edge-load) -> realign to surface"
         elif torque_z > 0.3:

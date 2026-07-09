@@ -915,6 +915,7 @@ if ISAAC_AVAILABLE:
             self._rec_steps  = torch.zeros(N, dtype=torch.long, device=d)  # maneuver countdown
             self._rec_wiggle = torch.zeros(N, dtype=torch.bool, device=d)  # lateral search active
             self._rec_open   = torch.zeros(N, dtype=torch.bool, device=d)  # force fingers open (regrasp)
+            self._fk_aim     = torch.zeros(N, 2, device=d)  # franka post-recovery frozen gear-aim
             self._jam_on     = torch.zeros(N, dtype=torch.bool, device=d)  # induced misalignment active
             self._last_rec_action = None     # last recovery primitive applied (HUD)
 
@@ -1639,6 +1640,8 @@ if ISAAC_AVAILABLE:
                 appr[:, 2] = torch.where(self._rq_rimz > 0,
                                          self._rq_rimz, appr[:, 2])
             pol = ee_pos_w + self._actions[:, :3] * c.forge_act_range  # learned EE delta (gentle)
+            if self.cfg.gripper != "robotiq_2f140":
+                pol = torch.cat([pol[:, :2] + self._fk_aim, pol[:, 2:3]], dim=-1)
             raw = torch.where(in_setup, appr, pol)
             # Fast traverse during setup, SLOW (low-impulse) approach during the learned
             # insertion so the bottle never hits the cell with breaking momentum.
@@ -2563,6 +2566,12 @@ if ISAAC_AVAILABLE:
                     self._rq_seatctr[0] = self._RQ_SEAT_HI
                 else:
                     self._warmup[0] = self.cfg.warmup_substeps
+                    # the regrasp REMOVES the in-hand offset the frozen gear-aim
+                    # was compensating — a stale aim then pushes the re-centered
+                    # gear the same distance off the OTHER way (smoke5: persistent
+                    # same-bias wedges after every regrasp). Clear it; the rec_end
+                    # freeze below will re-measure if a NEW jam follows.
+                    self._fk_aim[0] = 0.0
                 self._rec_off[0, 2] = 0.4 * c.rec_lift
 
         def _rq_freeze_aim(self, ee_pos_w, orig, alpha=1.0):
@@ -2699,6 +2708,19 @@ if ISAAC_AVAILABLE:
             if _rec_done.any():
                 self._rec_off[_rec_done] = 0.0
                 self._rec_wiggle[_rec_done] = False
+                if self.cfg.gripper != "robotiq_2f140":
+                    _rec_done = _rec_done & (self._warmup == 0)  # not mid-regrasp-seat
+                    # POST-RECOVERY frozen gear-aim (franka twin of _rq_aim): a
+                    # slipped gear rides mm-off IN THE PINCH, the policy aims the
+                    # hand as trained and re-jams at the same offset forever (jam
+                    # smoke ep4: 3x rotate_align -> abort). Freeze the shaft-minus-
+                    # gear xy error at the maneuver end and bias the policy-phase
+                    # target by it (frozen, not live — task3 loop-12 lesson).
+                    _shaft_w = torch.stack(
+                        [self.scene.env_origins[:, 0] + self.cfg.rack_x,
+                         self.scene.env_origins[:, 1] + self.cfg.rack_y], dim=-1)
+                    _err = _shaft_w - self._obj.data.root_pose_w[:, :2]
+                    self._fk_aim[_rec_done] = _err[_rec_done].clamp(-0.02, 0.02)
 
             # ── Seat the dynamic object in the gripper during warmup ───────────
             # While the grip settles, snap the object to the grasp centre (finger
@@ -3654,6 +3676,16 @@ if ISAAC_AVAILABLE:
                 self._setup_ctr[env_ids] = self.cfg.forge_setup_steps
                 if hasattr(self, "_slip_done"):
                     self._slip_done[env_ids] = False   # re-arm the slip disturbance
+                self._fk_aim[env_ids] = 0.0
+                # Recovery state is EPISODE state: an episode that truncates
+                # mid-recovery otherwise leaks its maneuver into every later
+                # episode (a stale _rec_off lift kept the next episodes
+                # hovering 11 cm high forever — multi-episode jam eval; task3's
+                # single-episode demos never exposed this).
+                self._rec_off[env_ids] = 0.0
+                self._rec_steps[env_ids] = 0
+                self._rec_wiggle[env_ids] = False
+                self._jam_cooldown[env_ids] = 0
                 self._settle_ctr[env_ids] = 0
                 self._best_dist[env_ids] = 9.9
                 self._prev_dist[env_ids] = 9.9

@@ -66,13 +66,16 @@ def main() -> None:
                    choices=["ours", "heuristic", "vision_llm", "press_harder", "none"])
     p.add_argument("--budget", default="ours", choices=["ours", "no_ceiling"])
     p.add_argument("--obj", type=int, default=0, help="0=abs_gear (fragile), 1=steel_gear")
-    p.add_argument("--offset_mm", type=float, default=2.0)
+    p.add_argument("--offset_mm", type=float, default=0.0)
     p.add_argument("--slip_mm", type=float, default=5.0,
                    help="in-grip slip disturbance (mm, +y) once the gear enters the funnel; "
                         "the honest wedge inducer — see cfg.slip_disturb_mm")
     p.add_argument("--episodes", type=int, default=25)
     p.add_argument("--max_attempts", type=int, default=5)
-    p.add_argument("--max_steps", type=int, default=560, help="env steps per episode")
+    p.add_argument("--max_steps", type=int, default=700,
+                   help="safety cap ABOVE the env truncation (600): episode boundaries "
+                        "MUST come from the env done signal; a cap below truncation "
+                        "desyncs the loop from the env (ep N+1 starts mid-episode)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
     args = p.parse_args()
