@@ -73,13 +73,20 @@ def main() -> None:
     p.add_argument("--episodes", type=int, default=25)
     p.add_argument("--max_attempts", type=int, default=5)
     p.add_argument("--max_steps", type=int, default=700,
-                   help="safety cap ABOVE the env truncation (600): episode boundaries "
-                        "MUST come from the env done signal; a cap below truncation "
-                        "desyncs the loop from the env (ep N+1 starts mid-episode)")
+                   help="per-episode step cap. Forge truncation is 1800 (episode_length_s "
+                        "30 / control dt 1/60), so a timeout here does NOT coincide with an "
+                        "env reset — the loop force-resets the env after a timeout so the "
+                        "next episode starts fresh instead of continuing the stale hover")
+    p.add_argument("--stochastic", action="store_true",
+                   help="drive the policy by sampling its action distribution instead of "
+                        "the mean — its true on-policy form, matching the in-env recovery "
+                        "loop and the renderers (the deterministic mean is shy and can "
+                        "stall in a contactless hover after the slip)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
     args = p.parse_args()
     rng = random.Random(args.seed)
+    torch.manual_seed(args.seed)   # makes --stochastic runs reproducible
 
     cfg = GearInsertEnvCfg()
     cfg.scene.num_envs = 1
@@ -115,8 +122,9 @@ def main() -> None:
         done = False
         while not done and steps < args.max_steps:
             with torch.no_grad():
-                mean, _ = policy(obs, env.f_cmd_norm())
-                act = mean.clamp(-1.0, 1.0)
+                mean, std = policy(obs, env.f_cmd_norm())
+                act = (mean + std * torch.randn_like(std)) if args.stochastic else mean
+                act = act.clamp(-1.0, 1.0)
             res = env.step(act)
             obs = res[0]["policy"]
             peak = max(peak, float(env._cf_insert[0]))
@@ -150,6 +158,10 @@ def main() -> None:
             steps += 1
         if not done:
             n_timeout += 1
+            # a timeout does NOT coincide with env truncation (1800) — force a reset so
+            # the next episode starts fresh instead of continuing the stale hover
+            out = env.reset()
+            obs = (out[0] if isinstance(out, tuple) else out)["policy"]
         attempts_used.append(attempts)
         peak_forces.append(peak)
         ep += 1
