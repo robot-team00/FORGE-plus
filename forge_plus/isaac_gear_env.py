@@ -316,6 +316,11 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
                                    # enough to catch a wedge WELL below break (robust F_max 72 ->
                                    # ~13 N, above clean seating transients, below the ~17 N wedge).
     jam_progress_mm: float = 2.0   # net base descent (mm) over the window below which it's "stuck"
+    jam_hover_n:   float = 1.0     # contactless-hover branch: the deterministic action mean can
+                                   # back off a slip and hover NEAR the cell forever with ~zero
+                                   # contact — no force means the wedge branch never sees it, but
+                                   # it is just as stuck. peak BELOW this (with no descent, near
+                                   # the cell, above the seat) is also a failure.
     jam_window:    int   = 40      # steps of SUSTAINED no-progress to declare a jam. Long enough
                                    # that a clean insertion's brief mid-descent stalls (the policy
                                    # pausing against contact, ~15-25 steps) don't false-trip; a real
@@ -2463,6 +2468,7 @@ if ISAAC_AVAILABLE:
             c = self.cfg
             if self._jam_cooldown[0] > 0 or self._rec_steps[0] > 0:
                 return False
+            hover_ok = False
             if c.forge_mode:
                 # forge doesn't advance the phase machine; the "insertion" is active once the
                 # scripted setup is done and the bottle is at/near the cell (not still descending
@@ -2474,6 +2480,9 @@ if ISAAC_AVAILABLE:
                              and bz < c.cell_floor_z + 0.18)
                 if int(self._setup_ctr[0]) > 0 or not near_cell:
                     return False
+                # a hover only counts while the part is still ABOVE the seat (a
+                # seated gear at rest is success-pending, not stuck)
+                hover_ok = bz > c.cell_floor_z + 0.01
             elif int(self._phase[0]) < int(PickPlacePhase.PLACE_DESCEND):
                 return False
             cf_w = self._sig_window(self._cf_hist, c.jam_window)
@@ -2485,7 +2494,16 @@ if ISAAC_AVAILABLE:
             # a wedge = meaningful contact with no descent over the window (caught WELL below
             # break: jam_force_frac keeps the threshold a small fraction of F_max).
             thresh = max(c.jam_force_n, c.jam_force_frac * self.f_max_n)
-            return bool(peak >= thresh and descent_mm < c.jam_progress_mm)
+            if peak >= thresh and descent_mm < c.jam_progress_mm:
+                return True
+            # contactless hover: near the cell, no descent, and essentially NO contact —
+            # the shy action mean backing off a slip and floating (jam smoke: 500+ steps
+            # at z~0.447, 0.00 N). Just as stuck as a wedge, invisible to the force branch.
+            # descent_mm > -10: a window straddling a recovery lift reads strongly
+            # NEGATIVE (rising) — that's maneuver settling, not a hover; firing on it
+            # churned the whole attempt budget before the re-approach could descend.
+            return bool(hover_ok and peak < c.jam_hover_n
+                        and -10.0 < descent_mm < c.jam_progress_mm)
 
         def failure_signature(self):
             from forge_plus.llm.recovery_selector import ForceSignature
@@ -2510,7 +2528,11 @@ if ISAAC_AVAILABLE:
                     bias = "+x steady" if mlx > 0 else "-x steady"
                 else:
                     bias = "+y steady" if mly > 0 else "-y steady"
-            slips = int((lx[1:] * lx[:-1] < 0).sum().item()) if lx.numel() > 1 else 0
+            # count only MEANINGFUL lateral reversals: sub-0.3 N sensor noise flips sign
+            # constantly in free space, and phantom "slip events" would misroute a
+            # contactless hover to regrasp instead of retract_and_reapproach
+            slips = int(((lx[1:] * lx[:-1] < 0) & (lx[1:].abs() > 0.3)).sum().item()) \
+                if lx.numel() > 1 else 0
             persist = float((cf > 0.5).sum().item()) * dt_ms
             return ForceSignature(
                 peak_axial_N=round(peak_axial, 2),
@@ -2589,6 +2611,11 @@ if ISAAC_AVAILABLE:
                     # same-bias wedges after every regrasp). Clear it; the rec_end
                     # freeze below will re-measure if a NEW jam follows.
                     self._fk_aim[0] = 0.0
+                    # the pre-regrasp hover drifts the HAND ~2 cm off the shaft
+                    # and the re-seated gear follows the hand — re-engage the
+                    # arrival-gated setup so the descent restarts over the shaft
+                    self._start_off[0] = 0.0
+                    self._setup_ctr[0] = max(int(self._setup_ctr[0]), 40)
                 self._rec_off[0, 2] = 0.4 * c.rec_lift
 
         def _rq_freeze_aim(self, ee_pos_w, orig, alpha=1.0):
@@ -2741,11 +2768,41 @@ if ISAAC_AVAILABLE:
                     # smoke ep4: 3x rotate_align -> abort). Freeze the shaft-minus-
                     # gear xy error at the maneuver end and bias the policy-phase
                     # target by it (frozen, not live — task3 loop-12 lesson).
-                    _shaft_w = torch.stack(
-                        [self.scene.env_origins[:, 0] + self.cfg.rack_x,
-                         self.scene.env_origins[:, 1] + self.cfg.rack_y], dim=-1)
-                    _err = _shaft_w - self._obj.data.root_pose_w[:, :2]
-                    self._fk_aim[_rec_done] = _err[_rec_done].clamp(-0.02, 0.02)
+                    # fk_aim freeze RETIRED (kept at zero): it existed to counter
+                    # the in-hand offset, which the regrasp routing now removes
+                    # outright — and a residual aim bias DISPLACES the policy's
+                    # force-guided search center by its own magnitude (debug
+                    # trace: a +3 mm aim pinned a healthy 275-step, 12-15 N
+                    # search at x+3-4 mm, outside the 1-1.5 mm capture radius).
+                    # Lesson 3 stands: frozen aims fight the closed-loop policy.
+                    self._fk_aim[_rec_done] = 0.0
+                    # POST-RECOVERY RE-APPROACH (franka twin of the robotiq
+                    # _rq_centered descent): the shy deterministic mean never
+                    # re-contacts from the recovery hover — a full hover-branch
+                    # eval logged 0.00 N peak across 30 recovery attempts. Hand
+                    # the re-approach to the SETUP controller: staging offset
+                    # cleared (re-alignment IS the recovery's job), arrival-gated
+                    # up-over-down to the entrance, budget-frozen on contact —
+                    # then the LEARNED policy resumes in its trained in-contact
+                    # regime, the same setup->policy hand-off the benchmark
+                    # itself uses at episode start. 40 < setup_steps//2 so the
+                    # stage split is purely the arrival gate.
+                    self._start_off[_rec_done] = 0.0
+                    self._setup_ctr[_rec_done] = 40
+                    # NOTE the limits of this re-approach: it re-centers the
+                    # HAND (useful after the post-slip hover drifts ~2 cm) but
+                    # cannot fix the true post-slip anomaly — the slip leaves
+                    # the gear TILTED 7-10 deg IN THE GRIP (probe: tilt jumps
+                    # 4.6->10.1 deg at the kick and never decays; the position
+                    # snaps back, the orientation doesn't). A 7-10 deg bore
+                    # cannot thread the 0.4 mm fit band (~3-4 deg max), so the
+                    # policy rightly refuses to press. The maneuver that FIXES
+                    # it is REGRASP (the warmup seat re-writes the canonical
+                    # upright in-grip pose) — the heuristic selector routes a
+                    # RECURRING contactless hover there at attempt >= 2.
+                    if bool(_rec_done[0]):
+                        print("[rec] re-approach: setup engaged (arrival-gated)",
+                              flush=True)
 
             # ── Seat the dynamic object in the gripper during warmup ───────────
             # While the grip settles, snap the object to the grasp centre (finger

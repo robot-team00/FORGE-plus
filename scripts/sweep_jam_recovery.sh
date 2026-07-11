@@ -7,7 +7,8 @@
 # Cells: ours / heuristic / vision_llm / press_harder / none, all on the
 # fragile abs_gear with the honest in-grip 5 mm slip inducer.
 set -u
-CKPT="${1:-checkpoints/task1_gear_slipfrac.pt}"
+# default: the sliprand snapshot that passes the clean gate (200/200, 0 breaks)
+CKPT="${1:-checkpoints/task1_gear_sliprand.pt.it300}"
 EP="${2:-25}"
 OUT=/workspace/jam_sweep
 mkdir -p "$OUT"

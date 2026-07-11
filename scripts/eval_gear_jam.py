@@ -78,10 +78,12 @@ def main() -> None:
                         "env reset — the loop force-resets the env after a timeout so the "
                         "next episode starts fresh instead of continuing the stale hover")
     p.add_argument("--stochastic", action="store_true",
-                   help="drive the policy by sampling its action distribution instead of "
-                        "the mean — its true on-policy form, matching the in-env recovery "
-                        "loop and the renderers (the deterministic mean is shy and can "
-                        "stall in a contactless hover after the slip)")
+                   help="DIAGNOSTIC ONLY: sample the action distribution instead of the "
+                        "mean. Control eval showed sampling noise alone destroys the "
+                        "insertion at this 0.25 mm clearance (clean slip-0 stochastic "
+                        "0/6 vs deterministic 200/200) — the honest protocol is the "
+                        "deterministic mean plus the jam detector's contactless-hover "
+                        "branch, which lets recovery engage the post-slip shy hover")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
     args = p.parse_args()
@@ -131,9 +133,13 @@ def main() -> None:
             if args.debug and steps % 25 == 0:
                 o = env.scene.env_origins[0]
                 g = env._obj.data.root_pose_w[0, :3] - o
+                qw, qx, qy, qz = env._obj.data.root_pose_w[0, 3:7].tolist()
+                import math as _m
+                tilt = _m.degrees(_m.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (qx*qx + qy*qy)))))
                 print(f"[dbg] ep{ep} s{steps:3d} gear=({g[0]:.3f},{g[1]:.3f},{g[2]:.3f}) "
-                      f"Fins={float(env._cf_insert[0]):5.2f} rec={int(env._rec_steps[0])} "
-                      f"cool={int(env._jam_cooldown[0])}", flush=True)
+                      f"tilt={tilt:4.1f} Fins={float(env._cf_insert[0]):5.2f} "
+                      f"rec={int(env._rec_steps[0])} cool={int(env._jam_cooldown[0])} "
+                      f"setup={int(env._setup_ctr[0])}", flush=True)
             if bool((res[2] | res[3])[0]):
                 succ = bool(res[4].get("succ_mask", torch.zeros(1))[0]) \
                     if "succ_mask" in res[4] else res[4].get("n_succ", 0) > 0
@@ -146,7 +152,8 @@ def main() -> None:
             if args.recovery != "none" and attempts < args.max_attempts and env.is_failure():
                 act_name, params, sig = pick_recovery(args.recovery, env, selector,
                                                       attempts + 1, rng)
-                kind = ("wedge" if sig.lateral_bias != "none" else "friction")
+                kind = ("hover" if sig.peak_axial_N < 1.0
+                        else "wedge" if sig.lateral_bias != "none" else "friction")
                 sig_kinds[kind] = sig_kinds.get(kind, 0) + 1
                 print(f"[jam] ep{ep} attempt{attempts+1}: {kind} sig "
                       f"(peak {sig.peak_axial_N}N lat {sig.lateral_bias} "
@@ -180,7 +187,8 @@ def main() -> None:
     print(f"peak Fins   : mean {pk.mean():.2f} N  max {pk.max():.2f} N")
     print(f"signatures  : {sig_kinds}")
     print("==============================", flush=True)
-    _app.close()
+    # skip _app.close(): it hangs this pod's headless Kit after the summary (every
+    # run needed a manual kill); a hard exit releases the GPU just as well
     os._exit(0)
 
 
