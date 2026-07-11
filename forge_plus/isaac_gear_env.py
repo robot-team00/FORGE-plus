@@ -396,6 +396,10 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
     # clamp (the lean/twist/grind in every robotiq take). These scale the
     # feedforward of the measured subtree/bottle gravity wrench through J^T.
     # 0.0 = off. Calibrated from the RQ_TRACE3 static-hover wrench fit.
+    # (Tried 1.0/1.0 against the abs descent drift: the arm FLOATS — PhysX
+    # already models most of the gripper gravity, so the full subtree wrench
+    # double-compensates ~6 N of lift and contact is never reached. The
+    # missing wrench is only the loop-joint residual; leave pc OFF.)
     rq_pc_grip: float = 0.0   # scale on the robotiq-subtree gravity wrench
     rq_pc_obj:  float = 0.0   # scale on the held-object gravity wrench
 
@@ -1052,13 +1056,20 @@ if ISAAC_AVAILABLE:
                 from isaaclab.actuators import ImplicitActuatorCfg
                 robot_cfg.actuators.pop("panda_hand", None)
                 robot_cfg.actuators["gripper_drive"] = ImplicitActuatorCfg(
-                    # effort 30 (was 10): the pinch's AXIAL slip limit scales with
-                    # the drive effort — at 10 the bottle slides up through the
-                    # pads above ~5 N of insertion press (smokes 33/34), below the
-                    # ~13 N the jam force-signature needs. 30 gives ~15 N of
-                    # sustained axial capacity; still a bounded, velocity-limited
-                    # squeeze on the neck.
-                    joint_names_expr=["finger_joint"], effort_limit_sim=30.0,
+                    # GEAR PORT: effort 60 (bottle: 30 — its axial-slip story,
+                    # smokes 33/34). The pinch's ANTI-TILT moment scales with
+                    # the squeeze: at 30 (~24 N pinch) a ~10 N off-axis rim
+                    # press ROTATES the gear in-grip (abs debug smoke: tilt
+                    # 3.4->6.6 deg while pressing -> wedge -> timeout); a
+                    # tilted bore cannot thread the 0.4 mm fit band. The
+                    # franka's 74 N pinch holds the same press rigid.
+                    # Pinch force = drive STIFFNESS x (close-target - stall)
+                    # (~2.3 Nm -> ~24 N at 11.25; the effort limit never
+                    # binds). 22.5 was tried against the abs press-tilt and
+                    # made contact-keeping WORSE — the tilt driver is the
+                    # WRIST (weak OSC ori channel), not the pinch; keep the
+                    # kiss/stall-calibrated 11.25.
+                    joint_names_expr=["finger_joint"], effort_limit_sim=60.0,
                     velocity_limit_sim=1.0, stiffness=11.25, damping=0.1,
                     friction=0.0, armature=0.0)
                 # Follower joints must be (near-)undriven: the LIVE four-bar loop
@@ -1947,7 +1958,15 @@ if ISAAC_AVAILABLE:
             # Wrist orientation stiffness: firm (400) during the scripted setup, MODERATE (110)
             # during the learned descent so the bottle stays UPRIGHT as it's pushed into the cell
             # (the old 40 let it lean ~40 deg over the longer descent from the entrance hand-off).
-            _ok_ins = 300.0 if self.cfg.gripper == "robotiq_2f140" else 110.0
+            # GEAR PORT: 1200 (bottle: 300). The variable-kp ori stiffness is
+            # an ACCELERATION gain — at 300 it delivers ~1-2 Nm against the
+            # hanging 2F-140's 2-3.6 Nm unmodeled moment, and the wrist slowly
+            # rotates during the low-force abs insertion (debug smoke 3: gear
+            # tilt kept growing 11->25 deg with ZERO contact after the press
+            # broke away — the rigidly held gear follows the wrist). 1200
+            # stopped the drift in the entrance-hold experiments; steel never
+            # showed it because the 100 N press anchors the wrist mechanically.
+            _ok_ins = 1200.0 if self.cfg.gripper == "robotiq_2f140" else 110.0
             # robotiq: 300 (not the franka-tuned 110) — the long gripper levers
             # the wrist down as the arm reaches into the cell and the rigidly
             # pinched bottle tilts with it (snap 4: bottle leaning ~40 deg in
@@ -2916,6 +2935,19 @@ if ISAAC_AVAILABLE:
                 grasp_c = r.data.body_pos_w[:, self._ee_idx] + torch.bmm(R_ee, off.unsqueeze(-1)).squeeze(-1)
                 pose = self._obj.data.root_pose_w.clone()
                 pose[carry, 0:3] = grasp_c[carry]
+                # GEAR PORT: pin the gear ON THE SHAFT AXIS (+ staging noise),
+                # not at the grasp centerline — the residual pose-B droop
+                # leaves the grasp point 1-3 mm off, and the converged policy's
+                # exploration cannot find the 1.5 mm funnel from there (abs
+                # round: min-dist stuck at 2 cm for 105 its). The 1-3 mm
+                # in-hand offset this creates is a real gripped-off-center
+                # part; the franka's gear-aim staging delivers the same state.
+                _sxy = torch.stack(
+                    [self.scene.env_origins[:, 0] + self.cfg.rack_x
+                     + self._start_off[:, 0],
+                     self.scene.env_origins[:, 1] + self.cfg.rack_y
+                     + self._start_off[:, 1]], dim=-1)
+                pose[carry, 0:2] = _sxy[carry]
                 pose[carry, 2] = grasp_c[carry, 2] - self._rq_grip_h
                 # traverse: hold the bottle high above the cell, clear of the arm
                 pose[park, 0] = self.scene.env_origins[park, 0] + self.cfg.rack_x
