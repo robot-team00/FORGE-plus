@@ -122,6 +122,45 @@ tup = Gf.Cross(rgt, fwd).GetNormalized()
 M = Gf.Matrix4d(rgt[0], rgt[1], rgt[2], 0, tup[0], tup[1], tup[2], 0,
                 -fwd[0], -fwd[1], -fwd[2], 0, eye[0], eye[1], eye[2], 1)
 UsdGeom.Xformable(cam).AddTransformOp().Set(M)
+
+# ── RENDER-PROXY gear: the physics gear's visual draws DISPLACED on this pod
+# (user-visible: shaft through the gear body, gear floating off the pinch —
+# the RTX object-sync ghost; physics verified correct via raw-PhysX probes).
+# Hide the broken visual and draw a plain USD proxy at the buffer pose every
+# capture: non-physics prims render from USD reliably (plate/pegs always did).
+PROXY = os.environ.get("PROXY_GEAR", "1") == "1"
+_proxy_xf = None
+if PROXY:
+    _gear_path = env._obj.cfg.prim_path.replace("env_.*", "env_0")
+    UsdGeom.Imageable(stage.GetPrimAtPath(_gear_path)).MakeInvisible()
+    px = UsdGeom.Xform.Define(stage, "/World/GearProxy")
+    _proxy_xf = UsdGeom.Xformable(px).AddTransformOp()
+    # exact FORGE gear dims, origin 5 mm below the bottom face
+    teeth = UsdGeom.Cylinder.Define(stage, "/World/GearProxy/teeth")
+    teeth.CreateRadiusAttr(0.02095); teeth.CreateHeightAttr(0.010)
+    teeth.CreateAxisAttr("Z")
+    UsdGeom.Xformable(teeth).AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.010))
+    teeth.CreateDisplayColorAttr([(0.38, 0.40, 0.46)])
+    hub = UsdGeom.Cylinder.Define(stage, "/World/GearProxy/hub")
+    hub.CreateRadiusAttr(0.01775); hub.CreateHeightAttr(0.030)
+    hub.CreateAxisAttr("Z")
+    UsdGeom.Xformable(hub).AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.030))
+    hub.CreateDisplayColorAttr([(0.50, 0.52, 0.58)])
+    bore = UsdGeom.Cylinder.Define(stage, "/World/GearProxy/bore")
+    bore.CreateRadiusAttr(0.0053); bore.CreateHeightAttr(0.0406)
+    bore.CreateAxisAttr("Z")
+    UsdGeom.Xformable(bore).AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.0253))
+    bore.CreateDisplayColorAttr([(0.10, 0.10, 0.12)])
+    print("gear proxy active (physics visual hidden)", flush=True)
+
+def _proxy_pose():
+    if _proxy_xf is None:
+        return
+    p = env._obj.data.root_pose_w[0].tolist()
+    Mp = Gf.Matrix4d(1.0)
+    Mp.SetRotateOnly(Gf.Rotation(Gf.Quatd(p[3], p[4], p[5], p[6])))
+    Mp.SetTranslateOnly(Gf.Vec3d(p[0], p[1], p[2]))
+    _proxy_xf.Set(Mp)
 print("scene dressed", flush=True)
 
 for _ in range(110): app.update()
@@ -189,6 +228,10 @@ def _grab():
         except Exception as fx:
             print("flush FAILED: %r" % (fx,), flush=True)
     try:
+        _proxy_pose()
+    except Exception as fx:
+        print("proxy pose FAILED: %r" % (fx,), flush=True)
+    try:
         app.update(); app.update()
         d = np.asarray(rgb.get_data())
     finally:
@@ -207,7 +250,8 @@ GREEN, ORANGE, CYAN = (120, 255, 120), (255, 170, 60), (110, 210, 255)
 
 MAX_EP = int(os.environ.get("MAX_EP", "4"))
 N = int(os.environ.get("MAX_STEPS", "780"))
-TAIL = 20
+TAIL = 8   # stop right after the seat — forge_no_term keeps pressing and take-1
+           # BROKE the gear 19 steps post-seat; don't film that
 CAP_EVERY = int(os.environ.get("CAP_EVERY", "2"))   # capture every Nth policy step
 
 for ep in range(MAX_EP):
