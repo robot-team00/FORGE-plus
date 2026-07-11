@@ -154,9 +154,11 @@ def main() -> None:
         # envs must stay synchronized: no per-env early resets. Truncation is the
         # only done — all envs reset together and the staging re-arms globally.
         cfg.forge_no_term = True
-        # staging ~2000 env steps + seat 135 + policy window ~550. The demo's
-        # 120 s here would idle ~4500 steps/episode after the drop.
-        cfg.episode_length_s = 45.0
+        # GEAR PORT staging v2 (seat at the entrance pose): staging is only
+        # ~250 env steps (predrive 60 + seat 135 + hover/handoff), so 20 s
+        # (1200 steps) leaves ~950 live policy steps. (The bottle's staged
+        # carry needed 45 s.)
+        cfg.episode_length_s = 20.0
     print(f"[train] forge_mode={cfg.forge_mode} release={cfg.forge_release_mode} place_strategy={cfg.place_strategy} obs={obs_dim} act={act_dim}", flush=True)
     env = FrankaGearInsertEnv(cfg)
     N   = env.num_envs

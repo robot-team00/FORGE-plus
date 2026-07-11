@@ -86,6 +86,8 @@ def main() -> None:
                         "branch, which lets recovery engage the post-slip shy hover")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
+    p.add_argument("--gripper", default="franka_panda",
+                   help="franka_panda | robotiq_2f140")
     args = p.parse_args()
     rng = random.Random(args.seed)
     torch.manual_seed(args.seed)   # makes --stochastic runs reproducible
@@ -96,6 +98,19 @@ def main() -> None:
     cfg.forge_obj_cls = args.obj
     cfg.forge_start_fixed_x = args.offset_mm / 1000.0
     cfg.slip_disturb_mm = args.slip_mm
+    cfg.gripper = args.gripper
+    if args.gripper == "robotiq_2f140":
+        # staged grasp at the entrance pose (seat-at-B staging): the setup
+        # window is generous but the arrival fast-forward ends it in ~250
+        # env steps; RAW parse for the four-bar; the eval already owns its
+        # episode boundary (forced reset on timeout), single env.
+        cfg.forge_setup_steps = 4000
+        cfg.warmup_substeps = 100
+        cfg.scene.replicate_physics = False
+        cfg.forge_no_term = True
+        cfg.episode_length_s = 45.0
+        if args.max_steps < 1000:
+            args.max_steps = 1000   # staging ~250 env steps + attempts
     if args.budget == "no_ceiling":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 120.0
     env = FrankaGearInsertEnv(cfg)
@@ -140,7 +155,22 @@ def main() -> None:
                       f"tilt={tilt:4.1f} Fins={float(env._cf_insert[0]):5.2f} "
                       f"rec={int(env._rec_steps[0])} cool={int(env._jam_cooldown[0])} "
                       f"setup={int(env._setup_ctr[0])}", flush=True)
-            if bool((res[2] | res[3])[0]):
+            if args.gripper == "robotiq_2f140":
+                # forge_no_term: termination never fires — latch the live
+                # success/break state script-side and force a synchronized
+                # reset (the env's global staging state machine re-arms on
+                # full resets only).
+                if bool(env._broke[0]):
+                    n_brk += 1
+                    done = True
+                elif bool(env._succeeded[0]):
+                    n_succ += 1
+                    done = True
+                if done:
+                    out = env.reset()
+                    obs = (out[0] if isinstance(out, tuple) else out)["policy"]
+                    break
+            elif bool((res[2] | res[3])[0]):
                 succ = bool(res[4].get("succ_mask", torch.zeros(1))[0]) \
                     if "succ_mask" in res[4] else res[4].get("n_succ", 0) > 0
                 brk = bool(res[4].get("brk_mask", torch.zeros(1))[0]) \

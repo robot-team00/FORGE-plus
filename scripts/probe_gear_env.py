@@ -34,12 +34,24 @@ def main() -> None:
     p.add_argument("--num_envs", type=int, default=4)
     p.add_argument("--steps", type=int, default=260)
     p.add_argument("--obj", type=int, default=1, help="object class (0=abs_gear, 1=steel_gear)")
+    p.add_argument("--gripper", default="franka_panda",
+                   help="franka_panda | robotiq_2f140")
     args = p.parse_args()
 
     cfg = GearInsertEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.forge_mode = True
     cfg.forge_obj_cls = args.obj
+    cfg.gripper = args.gripper
+    if args.gripper == "robotiq_2f140":
+        # staged grasp needs the long setup window (the arrival fast-forward
+        # ends it early on a clean approach); four-bar loop joints only
+        # survive a RAW parse; staging state machine is global -> forge_no_term
+        cfg.forge_setup_steps = 4000
+        cfg.warmup_substeps = 100
+        cfg.scene.replicate_physics = False
+        cfg.forge_no_term = True
+        cfg.episode_length_s = 45.0
     env = FrankaGearInsertEnv(cfg)
     print(f"[probe] env up: {env.num_envs} envs, F_max={env.f_max_n:.1f} N", flush=True)
 

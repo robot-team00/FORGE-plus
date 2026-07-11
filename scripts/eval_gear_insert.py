@@ -36,12 +36,25 @@ def main() -> None:
                         "fixed_global=60 N for every object; no_ceiling=120 N (the "
                         "controller hard cap, i.e. no per-object budget); "
                         "oracle=F_break-5 N (evaluator-side cheat)")
+    p.add_argument("--gripper", default="franka_panda",
+                   help="franka_panda | robotiq_2f140")
     args = p.parse_args()
 
     cfg = GearInsertEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.forge_mode = True
     cfg.forge_obj_cls = args.obj
+    cfg.gripper = args.gripper
+    if args.gripper == "robotiq_2f140":
+        # staged grasp: long setup window (arrival fast-forward ends it early),
+        # RAW parse for the four-bar, synchronized resets (global staging).
+        cfg.forge_setup_steps = 4000
+        cfg.warmup_substeps = 100
+        cfg.scene.replicate_physics = False
+        cfg.forge_no_term = True
+        cfg.episode_length_s = 45.0
+        if args.max_steps < 1500:
+            args.max_steps = 1500   # staging ~800-1100 env steps + policy 240
     if args.budget == "fixed_global":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 60.0
     elif args.budget == "no_ceiling":
@@ -67,24 +80,57 @@ def main() -> None:
     ep_peaks: list[float] = []          # collected at episode end
     over_budget_eps = 0                 # episodes whose F_max > F_break (dangerous budget)
     margins: list[float] = []           # F_break - F_max per ended episode
+    # robotiq: forge_no_term (global staging needs synchronized resets), so the
+    # EVAL owns the episode boundary — latch first-success/break per env (the
+    # franka's terminate-on-success semantics, enforced script-side), then a
+    # full synchronized env.reset() once every env is decided or the cap hits.
+    rq = args.gripper == "robotiq_2f140"
+    ep_succ = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    ep_brk = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    ep_step = 0
     while n_end < args.episodes and step < args.max_steps * 40:
         with torch.no_grad():
             mean, _ = policy(obs, env.f_cmd_norm())
             act = mean.clamp(-1.0, 1.0)
         res = env.step(act)
         obs = res[0]["policy"]
-        peak_f = torch.maximum(peak_f, env._cf_insert)
-        ended = res[2] | res[3]
-        if bool(ended.any()):
-            idx = ended.nonzero(as_tuple=True)[0]
-            ep_peaks.extend(peak_f[idx].tolist())
-            m = (env._f_break[idx] - env._budget_env[idx])
-            margins.extend(m.tolist())
-            over_budget_eps += int((m < 0).sum().item())
-            peak_f[idx] = 0.0
-        n_succ += int(res[4].get("n_succ", 0.0))
-        n_brk += int(res[4].get("n_brk", 0.0))
-        n_end += int(ended.sum().item())
+        if rq:
+            # only undecided envs accumulate peak force (franka records peaks
+            # up to termination; post-seat pressing must not pollute the stats)
+            und = ~(ep_succ | ep_brk)
+            peak_f = torch.where(und, torch.maximum(peak_f, env._cf_insert), peak_f)
+        else:
+            peak_f = torch.maximum(peak_f, env._cf_insert)
+        if rq:
+            ep_succ |= (env._succeeded & ~ep_brk)
+            ep_brk |= (env._broke & ~ep_succ)
+            ep_step += 1
+            if bool((ep_succ | ep_brk).all()) or ep_step >= args.max_steps:
+                n_succ += int(ep_succ.sum().item())
+                n_brk += int(ep_brk.sum().item())
+                n_end += env.num_envs
+                ep_peaks.extend(peak_f.tolist())
+                m = (env._f_break - env._budget_env)
+                margins.extend(m.tolist())
+                over_budget_eps += int((m < 0).sum().item())
+                peak_f[:] = 0.0
+                ep_succ[:] = False
+                ep_brk[:] = False
+                ep_step = 0
+                out = env.reset()
+                obs = (out[0] if isinstance(out, tuple) else out)["policy"]
+        else:
+            ended = res[2] | res[3]
+            if bool(ended.any()):
+                idx = ended.nonzero(as_tuple=True)[0]
+                ep_peaks.extend(peak_f[idx].tolist())
+                m = (env._f_break[idx] - env._budget_env[idx])
+                margins.extend(m.tolist())
+                over_budget_eps += int((m < 0).sum().item())
+                peak_f[idx] = 0.0
+            n_succ += int(res[4].get("n_succ", 0.0))
+            n_brk += int(res[4].get("n_brk", 0.0))
+            n_end += int(ended.sum().item())
         step += 1
         if step % 50 == 0:
             print(f"[eval] step {step}  ended={n_end}  succ={n_succ}  brk={n_brk}", flush=True)
@@ -102,7 +148,8 @@ def main() -> None:
         print(f"budget margin  : mean {mg.mean():.1f} N (F_break - F_max); "
               f"over-budget eps: {over_budget_eps}/{len(margins)}")
     print(f"=========================", flush=True)
-    _app.close()
+    # skip _app.close(): it hangs this pod's headless Kit after the summary
+    # (the zero-shot run had to be killed by PID); hard exit frees the GPU
     os._exit(0)
 
 
