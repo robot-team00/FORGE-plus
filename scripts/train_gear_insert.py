@@ -83,6 +83,14 @@ def main() -> None:
                    help="extrinsic curriculum stage A: place on the shelf WITHOUT the upright requirement")
     p.add_argument("--reset_std", type=float, default=None,
                    help="after --resume, reset policy log_std to this (re-inflate exploration for stage B)")
+    p.add_argument("--std_anneal_to", type=float, default=None,
+                   help="anneal a log_std CEILING from the resume value down to this target "
+                        "(deterministic-mean consolidation: the robotiq policy converged to "
+                        "std~1.0 — sampled noise does the funnel search and the mean never "
+                        "gets gradient pressure to be precise; shrinking the ceiling forces "
+                        "PPO to move the competence into the mean)")
+    p.add_argument("--std_anneal_its", type=int, default=None,
+                   help="iterations (from resume) to reach --std_anneal_to; default = all remaining")
     p.add_argument("--forge", action="store_true",
                    help="FORGE-style LEARNED insertion: policy drives the EE, no scripted waypoints/base-aim (obs=34)")
     p.add_argument("--forge_obj", type=int, default=None,
@@ -200,6 +208,14 @@ def main() -> None:
             policy.log_std.data.fill_(float(args.reset_std))
             print(f"[train] reset log_std -> {args.reset_std} (re-inflate exploration)", flush=True)
 
+    # ── log_std anneal schedule (per-dim ceiling from the resume value) ──
+    anneal_start_ls = None
+    if args.std_anneal_to is not None and hasattr(policy, "log_std"):
+        anneal_start_ls = policy.log_std.data.clone()
+        anneal_its = args.std_anneal_its or max(args.iterations - start_iter, 1)
+        print(f"[train] std anneal: log_std ceiling {anneal_start_ls.max().item():.2f} -> "
+              f"{args.std_anneal_to} over {anneal_its} its", flush=True)
+
     # ── Rollout + PPO loop ────────────────────────────────────────────────
     out = env.reset()
     obs = (out[0] if isinstance(out, tuple) else out)["policy"].to(dev)
@@ -288,6 +304,14 @@ def main() -> None:
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 aopt.step(); copt.step()
 
+        # ── std-anneal ceiling clamp (after the PPO update each iteration) ─
+        if anneal_start_ls is not None:
+            frac = min(1.0, (it - start_iter + 1) / anneal_its)
+            tgt = torch.full_like(anneal_start_ls, float(args.std_anneal_to))
+            ceil = anneal_start_ls + frac * (tgt - anneal_start_ls)
+            # ceiling only shrinks: dims already below stay free to move
+            policy.log_std.data = torch.minimum(policy.log_std.data, ceil)
+
         # ── Periodic logging + checkpoint ─────────────────────────────────
         if it % 5 == 0:
             succ = ep_succ / max(ep_end, 1.0)
@@ -300,6 +324,7 @@ def main() -> None:
                 f"min {diag_fmin:.3f} seat {diag_fseat:.2f}  "
                 f"Fins {diag_fins:.1f} Fsurf {diag_fsurf:.1f} Farm {diag_farm:.1f}  "
                 f"rel {diag_nrel:.0f} badrel {diag_nbad:.0f} relupz {diag_relupz:.2f} releod {diag_releod:.2f}  "
+                f"std {policy.log_std.data.exp().mean().item():.3f}  "
                 f"fps {fps:.0f}",
                 flush=True,
             )
@@ -332,7 +357,9 @@ def main() -> None:
         ckpt,
     )
     print(f"TRAIN_DONE -> {ckpt}", flush=True)
-    _app.close()
+    # _app.close() hangs this pod's headless Kit after the summary (the ftlong
+    # trainer sat R-state for hours post-TRAIN_DONE); hard exit frees the GPU
+    os._exit(0)
 
 
 if __name__ == "__main__":
