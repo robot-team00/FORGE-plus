@@ -853,6 +853,29 @@ if ISAAC_AVAILABLE:
                                       # (see the rec_end block: live base-aim feedback
                                       # pumps the held bottle's pendulum swing)
             self._rq_rec_prev = torch.zeros(N, dtype=torch.long, device=d)  # recovery edge detect
+            self._rq_regrasp_pend = torch.zeros(N, dtype=torch.bool, device=d)  # regrasp seat
+                                      # DEFERRED to the maneuver falling edge: the seat
+                                      # window PINS the gear to the shaft axis at
+                                      # grasp_c_z - grip_h, so firing it while the gear
+                                      # is pressed in contact (the abs post-retract
+                                      # friction press) teleports it into overlap with
+                                      # the shaft — PhysX penetration spikes to ~300 N
+                                      # and breaks fragile gears (rq sweep ours cell:
+                                      # 8/25 breaks). The lift clears contact first.
+            self._rq_reaim_pend = torch.zeros(N, dtype=torch.bool, device=d)  # re-freeze the
+                                      # post-recovery aim AFTER the deferred seat: the
+                                      # rec_end freeze sees the PRE-seat gear pose, and
+                                      # the seat then re-centers the gear in-hand — a
+                                      # stale aim lands the re-descent off-center
+                                      # (+y 30 N wedges, absfix smoke)
+            self._rq_seat_hold = torch.zeros(N, 3, device=d)  # FIXED arm hold during the
+                                      # seat window: holding at the LIVE ee is zero-
+                                      # error = zero restoring force (take-97 rule) —
+                                      # under OSC (recovery regrasp) the arm crept 2 cm
+                                      # through the squeeze and the bite failed at unpin
+                                      # (absfix smoke ep0: gear dropped, tilt 97°)
+            self._rq_pendctr = torch.zeros(N, dtype=torch.long, device=d)  # pend age /
+                                      # fire-anyway cap for the deferred regrasp seat
             self._rq_calmctr = torch.zeros(N, dtype=torch.long, device=d)  # swing-settle gate:
                                       # consecutive substeps with the held bottle's
                                       # |v_xy| calm; the post-recovery re-descent
@@ -1870,6 +1893,16 @@ if ISAAC_AVAILABLE:
                     src[:, 2] = torch.maximum(src[:, 2], ee_pos_w[:, 2] - 0.003)
                     self._pol_anchor[_newly] = src[_newly]
                     self._pol_anchor_set |= _newly
+                    import os as _osA
+                    if _osA.environ.get("RQ_TRACE") == "1" and bool(_newly[0]):
+                        print(f"      [rq-anchor] init=("
+                              f"{float(src[0,0]-orig[0,0]):.3f},"
+                              f"{float(src[0,1]-orig[0,1]):.3f},"
+                              f"{float(src[0,2]-orig[0,2]):.4f}) "
+                              f"ee=({float(ee_pos_w[0,0]-orig[0,0]):.3f},"
+                              f"{float(ee_pos_w[0,1]-orig[0,1]):.3f},"
+                              f"{float(ee_pos_w[0,2]-orig[0,2]):.4f})",
+                              flush=True)
                     # NOTE (probe 11): do NOT re-anchor the ori command here.
                     # The standing ori error at hand-off is LOAD-BEARING — it
                     # is how the wrist carries the un-modeled gravity moment
@@ -2299,6 +2332,13 @@ if ISAAC_AVAILABLE:
                 # — the in-contact manipulation stays the policy's.
                 _rec_end = (self._rq_rec_prev > 0) & (self._rec_steps == 0)
                 if bool(_rec_end[0]):
+                    # deferred regrasp seat: NOT fired here — the maneuver-exit
+                    # pose is wherever the lift left the hand (9 mm off the
+                    # shaft in the trace2 run) and the seat pins the gear ON
+                    # the shaft axis, so squeezing here bakes a matching
+                    # in-hand offset into the new grip. The pend block below
+                    # (before arm_seat) waits for the hand to center over the
+                    # pin site AND sink to the hand-off band, then fires.
                     self._rq_rimz[:] = -1.0
                     self._rq_pressctr[:] = 0
                     self._rq_calmctr[:] = 0   # swing-settle: re-settle after every maneuver
@@ -2342,9 +2382,21 @@ if ISAAC_AVAILABLE:
                     # reached, BOTH halves, exactly like the seat->OSC handoff:
                     # the ~0.03-0.1 rad maneuver-exit twist is within what the
                     # funnel ride and the policy (trained at ori_k 110) absorb.
-                    self._rq_q_des = self._robot.data.body_quat_w[
-                        :, self._ee_idx].clone()
-                    self._rq_quat_tgt = self._rq_q_des.clone()
+                    # GEAR PORT: DO NOT re-anchor — probe-11 rule wins here.
+                    # The standing ori error is LOAD-BEARING (error = M/k for
+                    # the ~2-3.6 Nm unmodeled wrist moment). Re-anchoring
+                    # zeroes it, so the wrist re-earns the equilibrium error
+                    # after every maneuver, swinging the rigidly-held gear
+                    # 0.25 m x ~0.13 rad ≈ 30-40 mm along (-x,+y) EXACTLY as
+                    # the policy takes over — every post-recovery attempt in
+                    # smokes 1-5 pressed at (0.425, 0.151), 40 mm off-shaft,
+                    # regardless of a perfect level/centered re-seat. The
+                    # bottle takes-94/95 oerr ratchet this guarded against is
+                    # a render-pipeline (held-torque stepping) artifact; the
+                    # gear runs ori_k 1200 (small standing error) and the
+                    # smoke/eval pipeline steps physics normally. (The two
+                    # re-anchor lines are deleted, not gated: this env is
+                    # gear-only; the bottle env keeps its own copy.)
                     # gravity-integrator ceiling for the re-descent (see the
                     # downward-only clamp in the ag block)
                     self._rq_ag_cap = self._rq_ag.clone()
@@ -2440,6 +2492,104 @@ if ISAAC_AVAILABLE:
                             print(f"      [rq-lift ok] ag={float(self._rq_ag[0]):+.3f} "
                                   f"ee={[round(float(v),3) for v in ee_pos_w[0]-orig[0]]}",
                                   flush=True)
+                # DEFERRED REGRASP SEAT (recovery): fire only once the hand is
+                # CENTERED over the pin site (<4 mm — the pin teleports the
+                # gear onto the shaft axis, so an off-center hand bakes that
+                # offset into the new grip: gxy 16-22 mm, tilt creep, marginal
+                # bite in the absfix smokes) AND low enough that the pinned
+                # gear lands inside the arrival hand-off gate (gz < 0.465 ⇔
+                # ee < ~0.705 — the scripted re-descent cannot reliably sink
+                # the weak-z plant afterwards; the POLICY does the descent,
+                # exactly like the episode-start hand-off). z-nudge below
+                # keeps the maneuver's lift residual sinking meanwhile.
+                # Fire-anyway cap 300: a pend that can't center must not
+                # starve the attempt loop (is_failure is gated on pend).
+                if bool(self._rq_regrasp_pend[0]) \
+                        and int(self._rec_steps[0]) == 0 \
+                        and int(self._rq_seatctr[0]) == 0:
+                    self._rq_pendctr[0] += 1
+                    # sink toward the hand-off band, gated on the REALIZED ee
+                    # (the weak-z plant carries a ~3 cm standing error, so a
+                    # command-side floor never realizes low enough and the fire
+                    # gate starves). An unfloored nudge drove the tilted held
+                    # gear into the shaft while pend suppressed jam detection
+                    # (absfix3: 8/10 breaks, 121 N) — stop sinking once the
+                    # realized ee is in band, back off on any contact (the
+                    # 18°-tilted rim hangs ~5 mm low and can graze the tip).
+                    _eez_now = float(ee_pos_w[0, 2] - orig[0, 2])
+                    if float(self._cf_insert[0]) > 2.0:
+                        target[0, 2] = ee_pos_w[0, 2] + 0.010
+                    elif _eez_now > 0.688:
+                        target[:, 2] = torch.minimum(
+                            target[:, 2], ee_pos_w[:, 2] - 0.02)
+                    else:
+                        target[0, 2] = ee_pos_w[0, 2]
+                    _pin0 = torch.stack(
+                        [orig[0, 0] + c.rack_x + self._start_off[0, 0],
+                         orig[0, 1] + c.rack_y + self._start_off[0, 1]])
+                    _exy0 = float((ee_pos_w[0, :2] - _pin0).norm())
+                    _eez0 = float(ee_pos_w[0, 2] - orig[0, 2])
+                    _stl0 = bool(self._rq_settling[0]) \
+                        if hasattr(self, "_rq_settling") else False
+                    # fire gate 0.690, not 0.705: at 0.703 the pinned gear
+                    # lands at z 0.460 — 15-20 mm ABOVE the clean-handoff band
+                    # (0.430-0.446), and from that never-trained free hover
+                    # the policy mean saturates toward the fence corner (the
+                    # smoke 1-8 walk to (0.421,0.160); anchor + obs verified
+                    # clean, trace8). At 0.690 the gear lands ~0.445 =
+                    # mid-band, the state the policy descends from 256/256.
+                    if ((_exy0 < 0.004 and _eez0 < 0.690 and not _stl0
+                         and float(self._cf_insert[0]) < 1.0)
+                            or int(self._rq_pendctr[0]) > 300):
+                        import os as _os9
+                        if _os9.environ.get("RQ_TRACE") == "1":
+                            print(f"      [rq-pendseat] fired at exy="
+                                  f"{_exy0*1000:.1f}mm eez={_eez0:.3f} "
+                                  f"pend={int(self._rq_pendctr[0])}",
+                                  flush=True)
+                        self._rq_regrasp_pend[0] = False
+                        self._rq_pendctr[0] = 0
+                        # +120 substeps of pinned open-settle BEFORE the kiss:
+                        # the recovery seat ENTERS with fingers closed (~0.6)
+                        # on the tilted gear, and at the staging timing the
+                        # kiss phase began while the pads were still mid-open
+                        # (ang 0.31 at ctr 220, trace3) — the squeeze then
+                        # stalled 0.604-0.612 vs staging's 0.569 (pads on the
+                        # wrong band) and the gear slowly PIVOTED out of the
+                        # marginal bite ([rq-c]: gear 0.465->0.471 while the
+                        # ee held ±0.5 mm). Phases are counter thresholds, so
+                        # extra counter = pure open time at the start.
+                        self._rq_seatctr[0] = self._RQ_SEAT_HI + 120
+                        self._rq_reaim_pend[0] = True
+                        self._rq_seat_hold[0] = ee_pos_w[0]
+                        # the seat IS the settle (390 substeps pinned at zero
+                        # velocity) — clear the rec_end settle request and
+                        # re-snapshot settle_pos to the CENTERED pose. A live
+                        # settle hold at the maneuver-exit settle_pos was the
+                        # last setup command at handoff, and the policy anchor
+                        # inherits it via _last_cmd_target (command
+                        # continuity): the arm then held the displaced pose —
+                        # the 40 mm (-x,+y) fence-corner walk of smokes 1-7.
+                        self._rq_need_settle[0] = False
+                        self._rq_settlewait[0] = 0
+                        self._rq_settle_pos[0] = ee_pos_w[0]
+                        # cooldown covers seat window + a full detector window
+                        # AFTER handoff, all in SUBSTEP units (cooldown, the
+                        # seat counter and the sig histories all tick per
+                        # substep — the //decimation version expired before
+                        # the window even ended and the detector churned a
+                        # cosmetic hover at handoff, trace3)
+                        # ... + 340: protect ~170 ctl steps of POLICY search
+                        # after handoff. The healthy funnel thread is a
+                        # sustained 10-20 N press with slow descent over
+                        # 100-300 steps; a detector window right at handoff
+                        # read it as a wedge and yanked the gear MID-SEAT
+                        # (smoke 9 ep1 s550: 11.7 N on-axis press -> regrasp
+                        # churn). A policy that hasn't seated after the
+                        # protected window is honestly stuck.
+                        self._jam_cooldown[0] = max(
+                            int(self._jam_cooldown[0]),
+                            self._RQ_SEAT_HI + 120 + self.cfg.jam_window + 340)
                 # The seat arms the moment the PRE-DRIVE completes: the servoed
                 # drive pose IS the hand-off (base move), and the whole window
                 # runs on the stiff joint drives — no arrival/fallback gating.
@@ -2460,8 +2610,13 @@ if ISAAC_AVAILABLE:
                 self._rq_seatctr = torch.where(arm_seat,
                                                torch.full_like(self._rq_seatctr, self._RQ_SEAT_HI),
                                                self._rq_seatctr)
+                # snapshot the hold pose on the arming edge: a FIXED target gives
+                # the OSC real restoring stiffness through the squeeze (live-ee
+                # hold = zero force; the arm crept 2 cm and the bite failed)
+                self._rq_seat_hold = torch.where(arm_seat.unsqueeze(-1),
+                                                 ee_pos_w, self._rq_seat_hold)
                 seat_on = self._rq_seatctr > 0
-                target = torch.where(seat_on.unsqueeze(-1), ee_pos_w, target)
+                target = torch.where(seat_on.unsqueeze(-1), self._rq_seat_hold, target)
                 self._rq_seatctr = torch.where(seat_on, self._rq_seatctr - 1, self._rq_seatctr)
                 # settle gate pauses the countdown too — the re-descent window
                 # must not be consumed while waiting out the pendulum swing
@@ -2469,6 +2624,12 @@ if ISAAC_AVAILABLE:
                                           torch.zeros_like(seat_on))
                 self._setup_ctr = torch.where(_hold, self._setup_ctr,
                                               (self._setup_ctr - 1).clamp(min=0))
+                # deferred-regrasp aim refresh: the rec_end freeze saw the
+                # PRE-seat gear; re-snapshot now that the seat has re-centered
+                # the part in-hand and it hangs freely again
+                if bool(self._rq_reaim_pend[0]) and int(self._rq_seatctr[0]) == 0:
+                    self._rq_freeze_aim(ee_pos_w, orig)
+                    self._rq_reaim_pend[0] = False
             else:
                 # GEAR PORT: keep the scripted setup alive (floor 1) until the EE
                 # has ARRIVED at the approach pose — hand off to the learned
@@ -2784,6 +2945,10 @@ if ISAAC_AVAILABLE:
             self.reset()
             self._rec_off.zero_(); self._rec_steps.zero_(); self._rec_wiggle.zero_()
             self._rec_phase.zero_(); self._jam_cooldown.zero_(); self._rec_open.zero_()
+            if self.cfg.gripper == "robotiq_2f140":
+                self._rq_regrasp_pend.zero_()
+                self._rq_reaim_pend.zero_()
+                self._rq_pendctr.zero_()
             self._sig_ptr = 0
             self._cf_hist.zero_(); self._basez_hist.zero_()
             self._latx_hist.zero_(); self._laty_hist.zero_()
@@ -2831,6 +2996,11 @@ if ISAAC_AVAILABLE:
             """Jam: high contact with no descent over the window, near the cell."""
             c = self.cfg
             if self._jam_cooldown[0] > 0 or self._rec_steps[0] > 0:
+                return False
+            if self.cfg.gripper == "robotiq_2f140" \
+                    and bool(self._rq_regrasp_pend[0]):
+                # a deferred regrasp seat is still waiting to fire (centering
+                # traverse) — not a new jam; the pend fire-anyway cap bounds it
                 return False
             hover_ok = False
             if c.forge_mode:
@@ -2964,9 +3134,12 @@ if ISAAC_AVAILABLE:
             elif action == "regrasp":
                 # re-seat the bottle in the gripper (reuse the warmup seat) + lift
                 if self.cfg.gripper == "robotiq_2f140":
-                    # re-run the seat window at the current hand pose (the pin
-                    # holds the bottle while the pads reopen, then kiss+squeeze)
-                    self._rq_seatctr[0] = self._RQ_SEAT_HI
+                    # DEFER the seat window to the maneuver falling edge (rec_end):
+                    # the seat pin teleports the gear onto the shaft axis, and from
+                    # an in-contact press that means into OVERLAP with the shaft
+                    # (~300 N penetration spikes, fragile breaks). Lift first; the
+                    # rec_end block fires the seat in free space.
+                    self._rq_regrasp_pend[0] = True
                 else:
                     self._warmup[0] = self.cfg.warmup_substeps
                     # the regrasp REMOVES the in-hand offset the frozen gear-aim

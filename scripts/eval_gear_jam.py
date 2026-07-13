@@ -109,8 +109,11 @@ def main() -> None:
         cfg.scene.replicate_physics = False
         cfg.forge_no_term = True
         cfg.episode_length_s = 45.0
-        if args.max_steps < 1000:
-            args.max_steps = 1000   # staging ~250 env steps + attempts
+        if args.max_steps < 1600:
+            args.max_steps = 1600   # staging ~250 env steps + attempts; one
+            # deferred-regrasp recovery cycle (pend traverse + extended seat
+            # + protected search) is ~450 steps — 1600 fits ~3 cycles (the
+            # 1000 cap cut 3/10 smoke-10 episodes mid-second-cycle)
     if args.budget == "no_ceiling":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 120.0
     env = FrankaGearInsertEnv(cfg)
