@@ -97,6 +97,13 @@ def main() -> None:
                    help="fix the forge training object class (0=abs_gear/fragile, 1=steel_gear/robust)")
     p.add_argument("--forge_release", action="store_true",
                    help="LEARNED safe release: 8th action dim lets the policy let go; success needs a settled drop (obs=34, act=8)")
+    p.add_argument("--snap_every", type=int, default=100,
+                   help="save a .itN snapshot every N iterations (polish runs want dense snapshots: "
+                        "PPO drift can collapse a converged mean between it100 saves)")
+    p.add_argument("--value_warmup", type=int, default=0,
+                   help="iterations of value-only updates before the policy trains (checkpoints "
+                        "carry no value head, so a resumed mean otherwise takes garbage-advantage "
+                        "gradient until the fresh critic converges)")
     args = p.parse_args()
     dev  = torch.device(args.device)
 
@@ -285,10 +292,17 @@ def main() -> None:
         B    = bO.shape[0]
 
         # ── PPO mini-batch updates ────────────────────────────────────────
+        value_only = it - start_iter < args.value_warmup
         for _ in range(args.epochs):
             idx = torch.randperm(B, device=dev)
             for s in range(0, B, args.minibatch):
                 j     = idx[s : s + args.minibatch]
+                vloss = F.mse_loss(value(bO[j], bFc[j]).squeeze(-1), bRet[j])
+                if value_only:
+                    copt.zero_grad()
+                    (0.5 * vloss).backward()
+                    copt.step()
+                    continue
                 mean, std = policy(bO[j], bFc[j])
                 dist  = torch.distributions.Normal(mean, std)
                 nlp   = dist.log_prob(bA[j]).sum(-1)
@@ -296,7 +310,6 @@ def main() -> None:
                 a1    = ratio * bAdv[j]
                 a2    = torch.clamp(ratio, 1.0 - args.clip, 1.0 + args.clip) * bAdv[j]
                 aloss = -torch.min(a1, a2).mean()
-                vloss = F.mse_loss(value(bO[j], bFc[j]).squeeze(-1), bRet[j])
                 ent   = dist.entropy().sum(-1).mean()
                 loss  = aloss + 0.5 * vloss - 0.0005 * ent
                 aopt.zero_grad(); copt.zero_grad()
@@ -345,7 +358,7 @@ def main() -> None:
             )
         # PPO drift can collapse a converged policy (mixed round-2 lesson);
         # keep periodic snapshots so a good checkpoint survives later drift.
-        if it > 0 and it % 100 == 0:
+        if it > 0 and it % args.snap_every == 0:
             torch.save(
                 {"policy_state_dict": policy.state_dict(), "policy_cfg": dict(vars(pcfg))},
                 f"{ckpt}.it{it}",

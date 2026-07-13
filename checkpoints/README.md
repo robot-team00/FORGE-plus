@@ -11,9 +11,19 @@ notes reference them; do not rename.
 
 | ckpt | result |
 |---|---|
-| `task1_gear_rq_bc3.pt` | **abs clean gate: 256/256 seats, 0 breaks, peak 16.1 N** (steel 1.6%) |
-| `task1_gear_rq_bc4.pt` | **steel clean gate: 256/256 seats, 0 breaks, peak 28.6 N** (abs 0%) |
-| `task1_gear_rq_bc7.pt` | best single ckpt: steel 32/32 @ 18.9 N, abs 27/32 (84%) |
+| `task1_gear_rq_uni.pt` | **UNIFIED single ckpt, BOTH clean gates: abs 256/256, 0 breaks, peak 15.9 N mean / 18.5 p95; steel 256/256, 0 breaks, 35.6 N mean / 57.6 p95; 0 over-budget eps** |
+| `task1_gear_rq_bc3.pt` | abs clean gate: 256/256 seats, 0 breaks, peak 16.1 N (steel 1.6%) |
+| `task1_gear_rq_bc4.pt` | steel clean gate: 256/256 seats, 0 breaks, peak 28.6 N (abs 0%) |
+| `task1_gear_rq_bc7.pt` | best single pre-soup ckpt: steel 32/32 @ 18.9 N, abs 27/32 (84%) |
+
+`task1_gear_rq_uni.pt` is a WEIGHT SOUP: `0.15*bc3 + 0.85*bc7`
+(`scripts/make_soup.py`; valid because bc7 was warm-started from bc3 — same
+basin; every alpha 0.10-0.75 passes triage, steel peak force is monotone in
+alpha, 0.15 minimizes the joint force tails). Pod-only evidence lineages:
+`task1_gear_rq_pp1.pt(.itN)` — tiny-std PPO polish of bc7 (std 0.05, lr 1e-4,
+value warmup): abs destroyed 0/32 by it25 at every snapshot; 1/std^2 gradient
+amplification makes tiny-std PPO move the mean too coarsely. `soup_b3b7_a*` /
+`soup_b3b4_a*` — the alpha grids (b3b4 fails everywhere: cold-refit pair).
 
 ## BC / DAgger lineage (the working method: expert demos -> DAgger -> BC)
 
