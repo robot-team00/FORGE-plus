@@ -49,7 +49,31 @@ sits far below workable exploration noise (0.12 action noise already breaks
 - `task1_gear_sliprand.pt` (+its) — slip-disturbance robust franka policy;
   **`.it300` is the resume/init base for every rq run and the BC lineage**
 
-## task3_* checkpoints
+## task3_* checkpoints (bottle pick-place / insertion arcs)
 
-Bottle insertion / pick-place arcs (separate task; see the task3 session
-notes and `docs/REPLICATION_PLAYBOOK.md`).
+Family-level map (see `docs/REPLICATION_PLAYBOOK.md` and the task3 session
+notes for the full histories):
+
+- `task3_place_*` — the FrankaPickPlace place-only arc (OSC / jacobian /
+  smoothing iterations); `task3_place_solved_97succ.pt` = the ~97%
+  gentle-place milestone, `task3_place_final.pt` / `task3_place_committed.pt`
+  = the arc's endpoints.
+- `task3_pick_place_franka.pt` — full pick+place
+  (`.bak_weightsonly` = weights-only backup of the same).
+- `task3_wine_bottle.pt`, `task3_wine_bottle_topdown.pt` — wine-cellar
+  peg-in-hole insert (bottle into rack cell, ends vertical).
+- `task3_faithful_grasp.pt` — real-friction grasp of the ceramic tumbler
+  (flat-faces-only grip rule arc).
+- `task3_extrinsic.pt`, `task3_extrinsic_A.pt` — extrinsic-dexterity place
+  strategy variants.
+- `task3_forge_entrance/handoff/handoff_descent/insert*` — the LEARNED
+  FORGE insertion arc (entrance hand-off staging -> policy-driven insert).
+- `task3_forge_release*.pt` — learned insert+release (8-dim action,
+  finger-open fix; the PR #40 arc; `_v1`-`_v3` = iterations,
+  `task3_forge_release.pt` = final).
+- `task3_forge_robotiq.pt`, `task3_robotiq_2f140.pt`,
+  `task3_rq_trainsmoke*.pt` — the 2F-140 bottle port + retrain arc
+  (over-break force fixes, take-91 video; committed 0a80d6f).
+- `task3_franka_panda.pt` — franka base for the bottle task.
+- `task3_pp_smoke.pt`, `task3_forge_smoke.pt`, `task3_forge_dbg.pt` —
+  pipeline smoke/debug checkpoints.
