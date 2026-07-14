@@ -70,6 +70,15 @@ cfg.forge_obj_cls = 0
 cfg.forge_no_term = True          # we detect the seat ourselves + tail frames
 cfg.forge_start_fixed_x = 0.0     # centered start (the jam eval staging)
 cfg.slip_disturb_mm = float(os.environ.get("SLIP_MM", "5"))
+GRIPPER = os.environ.get("GRIPPER", "franka_panda")
+cfg.gripper = GRIPPER
+if GRIPPER == "robotiq_2f140":
+    # same staging as eval_gear_jam: entrance grasp (seat-at-B), RAW parse
+    # for the four-bar, generous setup window ended by arrival fast-forward
+    cfg.forge_setup_steps = 4000
+    cfg.warmup_substeps = 100
+    cfg.scene.replicate_physics = False
+    cfg.episode_length_s = 45.0
 
 from isaaclab.envs import DirectRLEnv as _DRL
 FrankaGearInsertEnv.render = _DRL.render
@@ -342,9 +351,17 @@ for ep in range(MAX_EP):
                 img.save(os.path.join(FRAMEDIR, "f_%04d.png" % saved))
                 saved += 1
         if k % 50 == 0:
-            print("ep%d k%d saved=%d cf=%.1f tilt=%.1f gear_z=%.3f att=%d t=%.0fs"
-                  % (ep, k, saved, cf, tilt, float(g[2]), attempts, _time.time()-t0),
-                  flush=True)
+            # pad_dz: grasp-realism check (design +0.030 = grip_h; pads must sit
+            # on the hub band, never above it) — verify in the log per take
+            from isaaclab.utils.math import matrix_from_quat as _mfq
+            _eep = env._robot.data.body_pos_w[0, env._ee_idx]
+            _ax = _mfq(env._robot.data.body_quat_w[0, env._ee_idx].unsqueeze(0))[0, :, 2]
+            _pad_dz = float(_eep[2] + float(env._grasp_tcp_d) * _ax[2]) \
+                - float(env._obj.data.root_pose_w[0, 2])
+            print("ep%d k%d saved=%d cf=%.1f tilt=%.1f gear_z=%.3f att=%d "
+                  "pad_dz=%+.4f t=%.0fs"
+                  % (ep, k, saved, cf, tilt, float(g[2]), attempts, _pad_dz,
+                     _time.time()-t0), flush=True)
         if succ and seated_at is None:
             seated_at = saved
             print("SEATED ep%d k%d frame %d" % (ep, k, seated_at), flush=True)
