@@ -98,3 +98,83 @@ Reading the table:
 # full table
 bash scripts/sweep_jam_recovery.sh checkpoints/task1_gear_sliprand.pt.it300 25
 ```
+
+---
+
+# Robotiq 2F-140 sweep (2026-07-14)
+
+Same protocol on the ported gripper: fragile abs_gear, 5 mm in-grip slip
+every episode, 25 episodes/cell, deterministic mean, budget mode `ours`.
+Policy = `task1_gear_rq_uni.pt` (the bc3/bc7 weight-soup unification; clean
+gates 256/256 both classes, 0 breaks). Recovery chain = the deferred-regrasp
+rebuild (commit f81bb6a: post-lift seat pin, seat-arm hold, realized-ee fire
+gate below the trained hand-off band, substep-true cooldown, protected
+post-seat search window). Step cap **1600** (vs 700 for the Franka table):
+one 2F-140 deferred-regrasp cycle — pend traverse + extended open-settle
+seat + protected search — is ~450 steps, and the cap must fit ~3 cycles.
+
+| recovery      | success | breaks | timeouts | attempts | peak Fins mean / max |
+|---------------|--------:|-------:|---------:|---------:|---------------------:|
+| **ours**      | **40%** (10/25) | 12% (3) | 48% (12) | 3.56 | 23.0 / 48.3 N |
+| heuristic     | 0%      | 0%     | 100%     | 5.00 | 12.5 / 18.0 N |
+| vision_llm    | 28% (7/25) | 12% (3) | 60% (15) | 3.88 | 19.0 / 43.6 N |
+| press_harder  | 0%      | 0%     | 100%     | 5.00 | 11.3 / 16.5 N |
+| none          | 0%      | **20% (5)** | 80% (20) | 0 | 10.2 / 50.5 N |
+
+Reading the table:
+
+- The mechanism transfers: the slip leaves the gear tilted **in the
+  four-bar pinch**, and only the signature chain routes to `regrasp` (via
+  the recurring-hover rule), the one maneuver that fixes an in-grip tilt.
+  `ours` signatures: {hover 40, wedge 30, friction 19} — it is the only
+  cell that ever reaches deep wedge contact, because it is the only one
+  that ever restores an insertable grip.
+- **heuristic** never reads the hover signature (its cells see only
+  {hover, friction}), maps everything to wiggle/rotate, never regrasps: 0%.
+- **vision_llm** (random menu) draws `regrasp` by luck: 28% vs our 40% —
+  the force signature is again worth the gap, though narrower than on the
+  Franka (64% vs 32%) because the 2F-140 regrasp cycle is long enough that
+  wasted wrong-maneuver attempts burn the step budget.
+- **press_harder shows a different face of the same anti-pattern.** On the
+  Franka it destroyed 24/25 gears; here it breaks nothing — because its
+  only maneuver (re-approach with an escalated ceiling) never fixes the
+  in-grip tilt, so the tilted bore never takes load and the raised F_max
+  never engages (peak 16.5 N, 100% timeouts). Escalation is futile here
+  rather than destructive; the destructive face shows up in `none`.
+- **none** is not benign on this gripper: with no recovery interrupting it,
+  the policy's own descent eventually presses the tilted bore into the
+  shaft tip — 5/25 fragile breaks at up to 50.5 N. The jam is real, and
+  doing nothing is worse than a wrong maneuver.
+
+## Honest caveats (2F-140)
+
+- **The step cap differs from the Franka table** (1600 vs 700, reason
+  above), so timeout rates are not directly comparable across the two
+  tables. Within the 2F-140 table all cells share the cap.
+- **48% timeouts in `ours`** is the current frontier, not breakage: the
+  cap fits ~3 recovery cycles and some episodes need more (false-positive
+  detector churn during the post-seat funnel search burns ~450-step
+  cycles; in the 10-episode smoke, 3 of 5 timeouts were the older
+  1000-step cap cutting a second cycle mid-flight — hence the raise).
+- **Recovery episodes press harder than clean ones**: 23.0 N mean / 48.3 N
+  max vs the uni clean gate's 15.9 / 36.7 — that envelope exposure is the
+  3 fragile breaks (F_break 38±5). Same story as the Franka row; the
+  ceiling is never raised.
+- On **steel** (robust class) the same chain recovers 25/25 with 0 breaks
+  and 0 timeouts, but recovery episodes press 85 N mean / 135 N max vs
+  clean 35.6 / 62.5 — fine inside steel's 100 N budget, but the margin is
+  consumed by the recovery seating press.
+- `attempts` no longer saturates (3.56 mean in `ours` vs 5.00 on the
+  Franka table): the deferred-regrasp pend state suppresses the cosmetic
+  hover re-fires that inflated the Franka counter.
+
+## Reproduce (2F-140)
+
+```bash
+# single cell
+/workspace/.venv/bin/python scripts/eval_gear_jam.py \
+    --gripper robotiq_2f140 --recovery ours --obj 0 --slip_mm 5 \
+    --episodes 25 --ckpt checkpoints/task1_gear_rq_uni.pt
+# full table
+bash scripts/sweep_jam_recovery.sh checkpoints/task1_gear_rq_uni.pt 25 robotiq_2f140
+```
