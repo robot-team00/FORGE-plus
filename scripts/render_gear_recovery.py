@@ -72,6 +72,8 @@ cfg.forge_start_fixed_x = 0.0     # centered start (the jam eval staging)
 cfg.slip_disturb_mm = float(os.environ.get("SLIP_MM", "5"))
 GRIPPER = os.environ.get("GRIPPER", "franka_panda")
 cfg.gripper = GRIPPER
+RELEASE = os.environ.get("RELEASE", "0") == "1"
+TABLE = os.environ.get("TABLE", "0") == "1"
 if GRIPPER == "robotiq_2f140":
     # same staging as eval_gear_jam: entrance grasp (seat-at-B), RAW parse
     # for the four-bar, generous setup window ended by arrival fast-forward
@@ -79,6 +81,12 @@ if GRIPPER == "robotiq_2f140":
     cfg.warmup_substeps = 100
     cfg.scene.replicate_physics = False
     cfg.episode_length_s = 45.0
+    if TABLE:
+        cfg.rq_table_pick = True          # unpinned grasp from the table +
+        cfg.episode_length_s = 120.0      # place-on-table recovery regrasp
+if RELEASE:
+    cfg.forge_release_mode = True         # LEARNED release (8-dim ckpt) ends
+    cfg.forge_hybrid_retract = True       # the episode: open + retract clear
 
 from isaaclab.envs import DirectRLEnv as _DRL
 FrankaGearInsertEnv.render = _DRL.render
@@ -127,11 +135,14 @@ tgt = Gf.Vec3d(float(orig[0]) + 0.42, float(orig[1]) + 0.11, float(orig[2]) + 0.
 if GRIPPER == "robotiq_2f140":
     # the 2F-140 tower is ~2x the panda hand and its open fingers span
     # 140 mm — the panda framing crops it at the top. Wider lens, pulled
-    # back and raised, aim lifted to mid-gripper.
+    # back and raised, aim lifted to mid-gripper. Table mode: aim midway
+    # between the pick spot (0.46,-0.04) and the shaft (0.45,0.12) so the
+    # table grab and the insertion both stay in frame.
     cam.CreateFocalLengthAttr(26.0)
     eye = Gf.Vec3d(float(orig[0]) + 1.24, float(orig[1]) - 0.80,
                    float(orig[2]) + 1.00)
-    tgt = Gf.Vec3d(float(orig[0]) + 0.42, float(orig[1]) + 0.10,
+    tgt = Gf.Vec3d(float(orig[0]) + 0.42,
+                   float(orig[1]) + (0.04 if TABLE else 0.10),
                    float(orig[2]) + 0.54)
 up = Gf.Vec3d(0, 0, 1)
 fwd = (tgt - eye).GetNormalized()
@@ -268,8 +279,11 @@ GREEN, ORANGE, CYAN = (120, 255, 120), (255, 170, 60), (110, 210, 255)
 
 MAX_EP = int(os.environ.get("MAX_EP", "4"))
 N = int(os.environ.get("MAX_STEPS", "780"))
-TAIL = 8   # stop right after the seat — forge_no_term keeps pressing and take-1
-           # BROKE the gear 19 steps post-seat; don't film that
+TAIL = int(os.environ.get("TAIL", "12" if RELEASE else "8"))
+           # non-release: stop right after the seat — forge_no_term keeps
+           # pressing and take-1 BROKE the gear 19 steps post-seat. Release
+           # mode: success = released + hand clear, so the tail just holds
+           # the finished scene.
 CAP_EVERY = int(os.environ.get("CAP_EVERY", "2"))   # capture every Nth policy step
 
 for ep in range(MAX_EP):
@@ -293,8 +307,12 @@ for ep in range(MAX_EP):
         res = env.step(torch.clamp(m, -1, 1))
         obs = res[0]["policy"]
 
-        # recovery loop — identical wiring to eval_gear_jam
-        if attempts < 5 and env.is_failure():
+        # recovery loop — identical wiring to eval_gear_jam. NOT run for
+        # no-slip takes: the clean protocol (eval_gear_insert) has no
+        # detector, and a detector false-positive on a slow clean descent
+        # churned regrasp cycles through an otherwise-clean episode
+        # (final-take log: att=2 in a SLIP_MM=0 episode).
+        if cfg.slip_disturb_mm > 0 and attempts < 5 and env.is_failure():
             sig = env.failure_signature()
             resp = selector.select(sig, env.f_max_n, attempts + 1, "insert", env.gripper)
             env.apply_recovery(resp.action, dict(resp.params or {}))
@@ -314,26 +332,42 @@ for ep in range(MAX_EP):
         broke = broke or bool(env._broke[0].item())
         setup_active = int(env._setup_ctr[0].item()) > 0
         rec_active = int(env._rec_steps[0].item()) > 0
+        released = RELEASE and bool(env._released[0].item())
+        placing = TABLE and getattr(env, "_rq_pl_phase", 0) > 0
+        # capture at half rate through the long quiet staging legs (servo,
+        # return traverse); full rate whenever the fingers move, recovery
+        # runs, or the policy is live
+        closing = int(getattr(env, "_rq_seatctr", torch.zeros(1))[0]) != 0
+        _ce = CAP_EVERY * (2 if (setup_active and not closing
+                                 and not rec_active and not placing) else 1)
 
-        if k % CAP_EVERY == 0 or succ or broke:
+        if k % _ce == 0 or succ or broke:
             data = _grab()
             if data is not None:
                 img = Image.fromarray(data[:, :, :3]).convert("RGB")
                 dr = ImageDraw.Draw(img, "RGBA")
-                st = ("SEATED" if succ else "BREAK" if broke
-                      else "recovering" if (rec_active or (attempts and cf < 1.0))
+                st = ("DONE — released, hand clear" if succ
+                      else "BREAK" if broke
+                      else "RELEASING (learned)" if released
+                      else "recovering" if (rec_active or placing
+                                            or (attempts and cf < 1.0))
                       else "inserting")
                 dr.rectangle([0, 0, W, 92], fill=(0, 0, 0, 130))
                 dr.text((20, 8), "FORGE+  task1 gear insertion + jam recovery   step %3d" % k,
                         font=F_TITLE, fill=(255, 255, 255))
                 dr.text((20, 38), "state: %s%s" % (st, "   [5 mm in-grip SLIP injected]"
                         if slip_seen and not succ else ""), font=F_MED, fill=(255, 235, 150))
-                if setup_active:
-                    ctrl, cdesc, ccol = "SCRIPTED", "approach positioning", ORANGE
+                if placing:
+                    ctrl, cdesc, ccol = "RECOVERY", "place on table + re-pick", CYAN
+                elif setup_active:
+                    ctrl, cdesc, ccol = "SCRIPTED", ("table pick + carry" if TABLE
+                                                     else "approach positioning"), ORANGE
                 elif rec_active:
                     ctrl, cdesc, ccol = "RECOVERY", last_rec, CYAN
+                elif released:
+                    ctrl, cdesc, ccol = "LEARNED", "release commanded (act[7])", GREEN
                 else:
-                    ctrl, cdesc, ccol = "LEARNED", "force-guided insertion (PPO policy)", GREEN
+                    ctrl, cdesc, ccol = "LEARNED", "force-guided insertion (policy)", GREEN
                 dr.text((20, 62), "CONTROL:", font=F_MED, fill=(210, 210, 210))
                 dr.text((112, 62), ctrl, font=F_MED, fill=ccol)
                 dr.text((112 + 92, 62), "— %s" % cdesc, font=F_MED, fill=(220, 220, 220))
