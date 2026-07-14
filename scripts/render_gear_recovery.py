@@ -124,6 +124,15 @@ cam = UsdGeom.Camera.Define(stage, "/World/EvalCam")
 cam.CreateFocalLengthAttr(30.0)
 eye = Gf.Vec3d(float(orig[0]) + 1.05, float(orig[1]) - 0.68, float(orig[2]) + 0.85)
 tgt = Gf.Vec3d(float(orig[0]) + 0.42, float(orig[1]) + 0.11, float(orig[2]) + 0.44)
+if GRIPPER == "robotiq_2f140":
+    # the 2F-140 tower is ~2x the panda hand and its open fingers span
+    # 140 mm — the panda framing crops it at the top. Wider lens, pulled
+    # back and raised, aim lifted to mid-gripper.
+    cam.CreateFocalLengthAttr(26.0)
+    eye = Gf.Vec3d(float(orig[0]) + 1.24, float(orig[1]) - 0.80,
+                   float(orig[2]) + 1.00)
+    tgt = Gf.Vec3d(float(orig[0]) + 0.42, float(orig[1]) + 0.10,
+                   float(orig[2]) + 0.54)
 up = Gf.Vec3d(0, 0, 1)
 fwd = (tgt - eye).GetNormalized()
 rgt = Gf.Cross(fwd, up).GetNormalized()
