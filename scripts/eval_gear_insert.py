@@ -38,6 +38,10 @@ def main() -> None:
                         "oracle=F_break-5 N (evaluator-side cheat)")
     p.add_argument("--gripper", default="franka_panda",
                    help="franka_panda | robotiq_2f140")
+    p.add_argument("--release", action="store_true",
+                   help="forge_release_mode gate: success = the LEARNED release "
+                        "(act[7]>0) with the gear resting seated, upright, "
+                        "settled and the hand retracted clear (8-dim ckpt)")
     args = p.parse_args()
 
     cfg = GearInsertEnvCfg()
@@ -55,6 +59,11 @@ def main() -> None:
         cfg.episode_length_s = 45.0
         if args.max_steps < 1500:
             args.max_steps = 1500   # staging ~800-1100 env steps + policy 240
+    if args.release:
+        cfg.forge_release_mode = True
+        cfg.forge_hybrid_retract = True
+        if args.gripper == "robotiq_2f140" and args.max_steps < 1700:
+            args.max_steps = 1700   # + settle hold + release + retract-clear
     if args.budget == "fixed_global":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 60.0
     elif args.budget == "no_ceiling":
@@ -87,6 +96,8 @@ def main() -> None:
     rq = args.gripper == "robotiq_2f140"
     ep_succ = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     ep_brk = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    ep_bad = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    n_badrel = 0
     ep_step = 0
     while n_end < args.episodes and step < args.max_steps * 40:
         with torch.no_grad():
@@ -104,10 +115,13 @@ def main() -> None:
         if rq:
             ep_succ |= (env._succeeded & ~ep_brk)
             ep_brk |= (env._broke & ~ep_succ)
+            if args.release:
+                ep_bad |= (env._bad_release & ~ep_succ & ~ep_brk)
             ep_step += 1
-            if bool((ep_succ | ep_brk).all()) or ep_step >= args.max_steps:
+            if bool((ep_succ | ep_brk | ep_bad).all()) or ep_step >= args.max_steps:
                 n_succ += int(ep_succ.sum().item())
                 n_brk += int(ep_brk.sum().item())
+                n_badrel += int(ep_bad.sum().item())
                 n_end += env.num_envs
                 ep_peaks.extend(peak_f.tolist())
                 m = (env._f_break - env._budget_env)
@@ -115,6 +129,7 @@ def main() -> None:
                 over_budget_eps += int((m < 0).sum().item())
                 peak_f[:] = 0.0
                 ep_succ[:] = False
+                ep_bad[:] = False
                 ep_brk[:] = False
                 ep_step = 0
                 out = env.reset()
@@ -141,6 +156,8 @@ def main() -> None:
     print(f"episodes ended : {n_end}")
     print(f"SUCCESS rate   : {rate:.3f}  ({n_succ}/{n_end})")
     print(f"BREAK rate     : {brate:.3f}  ({n_brk}/{n_end})")
+    if args.release:
+        print(f"BAD RELEASE    : {n_badrel}/{n_end} (released and lost the gear)")
     if ep_peaks:
         pk = torch.tensor(ep_peaks)
         mg = torch.tensor(margins)

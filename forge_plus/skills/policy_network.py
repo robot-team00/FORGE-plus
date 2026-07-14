@@ -32,6 +32,14 @@ class PolicyConfig:
     dropout: float = 0.0
     log_std_min: float = -5.0
     log_std_max: float = 2.0
+    release_obs_head: bool = False  # act dim 7 (the release command) comes from a
+                                    # Linear over the RAW (obs, f_cmd) instead of
+                                    # the trunk features: the arm-trained trunk
+                                    # provably discards the seat-state signal the
+                                    # release decision needs (frozen-probe FPR 27%
+                                    # / FNR 52% vs raw-obs logreg FNR 0%, 255/256
+                                    # zero-FPR window coverage). Old checkpoints
+                                    # lack this field — loaded via getattr default.
 
 
 class FiLMLayer(nn.Module):
@@ -83,6 +91,9 @@ class ForceConditionedPolicy(nn.Module):
         # Output heads
         self.mean_head = nn.Linear(cfg.hidden_dim, cfg.act_dim)
         self.log_std = nn.Parameter(torch.full((cfg.act_dim,), -1.5))
+        if getattr(cfg, "release_obs_head", False):
+            # release command (dim 7) read from the raw input — see PolicyConfig
+            self.release_head = nn.Linear(cfg.obs_dim + 1, 1)
 
         self._init_weights()
 
@@ -118,6 +129,9 @@ class ForceConditionedPolicy(nn.Module):
             x = norm(x + residual)
 
         mean = self.mean_head(x)
+        if getattr(self.cfg, "release_obs_head", False):
+            rel = self.release_head(torch.cat([obs, f_cmd], dim=-1))
+            mean = torch.cat([mean[:, :7], rel], dim=-1)
         log_std = torch.clamp(self.log_std, self.cfg.log_std_min, self.cfg.log_std_max)
         std = log_std.exp().expand_as(mean)
         return mean, std
