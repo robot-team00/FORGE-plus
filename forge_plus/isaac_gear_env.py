@@ -908,6 +908,8 @@ if ISAAC_AVAILABLE:
                                       # (absfix smoke ep0: gear dropped, tilt 97°)
             self._rq_pendctr = torch.zeros(N, dtype=torch.long, device=d)  # pend age /
                                       # fire-anyway cap for the deferred regrasp seat
+            self._rq_pl_phase = 0     # table-mode PLACE machine (env 0): 1 traverse
+            self._rq_pl_t = 0         # -> 2 lower -> 3 open -> 4 lift+re-arm
             self._rq_calmctr = torch.zeros(N, dtype=torch.long, device=d)  # swing-settle gate:
                                       # consecutive substeps with the held bottle's
                                       # |v_xy| calm; the post-recovery re-descent
@@ -1850,6 +1852,20 @@ if ISAAC_AVAILABLE:
                               ) > 0.99863   # cos(3 deg)
                     _g_still = self._obj.data.root_vel_w[:, :3].norm(dim=-1) < 0.03
                     _g_arr = _g_arr & _g_upr & _g_still
+                if self.cfg.rq_table_pick and bool(_g_arr[0]) \
+                        and int(self._setup_ctr[0]) > 12 \
+                        and getattr(self, "_rq_repick_prot", False):
+                    # arrival edge AFTER A REPICK ONLY (checked BEFORE the
+                    # fast-forward write): protect the post-repick funnel
+                    # search from the detector (the pendseat +340 rule). This
+                    # must NOT fire on ordinary arrivals — muzzling the
+                    # detector after the post-retract re-approach let the
+                    # tilted-gear press ramp past the old 7-14 N detection
+                    # point to 49-61 N breaks (table jam smoke 1: 5/5).
+                    self._jam_cooldown[0] = max(
+                        int(self._jam_cooldown[0]),
+                        self.cfg.jam_window + 340)
+                    self._rq_repick_prot = False
                 self._setup_ctr = torch.where(
                     _g_arr, torch.minimum(self._setup_ctr,
                                           torch.full_like(self._setup_ctr, 12)),
@@ -2564,13 +2580,22 @@ if ISAAC_AVAILABLE:
                     # old +x/-y offsets only approximated for the rotate_align
                     # flow; the retract flow drifts differently and kept
                     # re-hitting the rim, ratcheting the bottle out of the pinch)
-                    self._rq_centered = True
-                    self._setup_ctr = torch.maximum(
-                        self._setup_ctr, torch.full_like(self._setup_ctr, 500))
-                    import os as _os7
-                    if _os7.environ.get("RQ_TRACE") == "1":
-                        print("      [rq-recontact] recovery done -> centered "
-                              "approach re-descent (500)", flush=True)
+                    if self.cfg.rq_table_pick and bool(self._rq_regrasp_pend[0]):
+                        # table regrasp: the PLACE machine owns everything
+                        # after this rec_end — the centered re-descent (setup
+                        # 500, -0.10 deep carrot) ran CONCURRENTLY with the
+                        # place and fought it (trace 3). It belongs to the
+                        # retract re-approach flow only.
+                        self._rq_need_settle[:] = False
+                    else:
+                        self._rq_centered = True
+                        self._setup_ctr = torch.maximum(
+                            self._setup_ctr,
+                            torch.full_like(self._setup_ctr, 500))
+                        import os as _os7
+                        if _os7.environ.get("RQ_TRACE") == "1":
+                            print("      [rq-recontact] recovery done -> centered "
+                                  "approach re-descent (500)", flush=True)
                 # NO live per-substep aim refresh. The old justification ("live
                 # aim ran through render loops 4-9 without the loop-12 pendulum
                 # pumping") was VOID — the dead centered-arming gate meant loops
@@ -2633,7 +2658,69 @@ if ISAAC_AVAILABLE:
                 # keeps the maneuver's lift residual sinking meanwhile.
                 # Fire-anyway cap 300: a pend that can't center must not
                 # starve the attempt loop (is_failure is gated on pend).
-                if bool(self._rq_regrasp_pend[0]) \
+                if c.rq_table_pick and bool(self._rq_regrasp_pend[0]) \
+                        and int(self._rec_steps[0]) == 0 \
+                        and int(self._rq_seatctr[0]) == 0:
+                    # TABLE-MODE REGRASP: no pin exists — the regrasp is a real
+                    # PLACE on the table + a re-run of the pick staging. Here:
+                    # lift clear of contact, then hand to the place machine.
+                    self._rq_pendctr[0] += 1
+                    _eez_tp = float(ee_pos_w[0, 2] - orig[0, 2])
+                    # lift under the COMPLIANT OSC until truly clear (ceiling
+                    # 0.73 — gear ~0.475, 5 cm over the shaft top; a hooked rim
+                    # needs height to unhook). The drives may engage ONLY in
+                    # confirmed free space: the pendctr>150 timeout-to-drives
+                    # path handed a still-wedged gear to the stiff drives and
+                    # they crushed it through the shaft (smoke 6: 5/5 breaks
+                    # at 165-213 N). If the gear never frees, ABORT the place
+                    # (detector resumes; the attempt budget judges honestly).
+                    if _eez_tp < 0.73:
+                        target[0, 2] = ee_pos_w[0, 2] + 0.006
+                    else:
+                        target[0, 2] = ee_pos_w[0, 2]
+                    if int(self._rq_pendctr[0]) > 500 \
+                            and float(self._cf_insert[0]) >= 0.5:
+                        self._rq_regrasp_pend[0] = False
+                        self._rq_pendctr[0] = 0
+                        import os as _os9a
+                        if _os9a.environ.get("RQ_TRACE") == "1":
+                            print("      [rq-place] ABORT (never lifted clear)",
+                                  flush=True)
+                    if (_eez_tp > 0.695
+                            and float(self._cf_insert[0]) < 0.5
+                            and bool(self._rq_regrasp_pend[0])):
+                        self._rq_regrasp_pend[0] = False
+                        self._rq_pendctr[0] = 0
+                        self._rq_need_settle[0] = False
+                        self._rq_settlewait[0] = 0
+                        # ENGAGE THE DRIVES for the whole place: the OSC place
+                        # traverse ran away 25 cm (trace 2, attempt 3 placed at
+                        # (0.69,-0.17)) — the same wrist-twist walk that killed
+                        # the OSC carry (probes 7-12). Drive re-engage protocol:
+                        # command = the DROOP-COMPENSATED entrance pose (the
+                        # pend-fire hover IS the entrance: ee ~(0.45,0.12,0.695)
+                        # within mm). Commanding the LIVE joints instead sagged
+                        # the arm 3.5 cm on engage (holding gains realize BELOW
+                        # an uncompensated command — the 2*desired-reached
+                        # rule) and dropped the held gear onto the shaft tip:
+                        # smokes 6-9's deterministic 165-319 N grind.
+                        _r3 = self._robot
+                        self._rq_arm_cmd = self._rq_arm_pose_ent.clone()
+                        if self._rq_drive_kp is not None:
+                            _r3.write_joint_stiffness_to_sim(
+                                self._rq_drive_kp, joint_ids=self._arm_ids)
+                            _r3.write_joint_damping_to_sim(
+                                self._rq_drive_kd, joint_ids=self._arm_ids)
+                        _r3.set_joint_effort_target(
+                            torch.zeros_like(_r3.data.joint_pos))
+                        self._rq_drive_mode = True
+                        self._rq_pl_phase = 1
+                        self._rq_pl_t = 720
+                        import os as _os9t
+                        if _os9t.environ.get("RQ_TRACE") == "1":
+                            print("      [rq-place] engaged on DRIVES (lift "
+                                  f"clear at eez={_eez_tp:.3f})", flush=True)
+                if (not c.rq_table_pick) and bool(self._rq_regrasp_pend[0]) \
                         and int(self._rec_steps[0]) == 0 \
                         and int(self._rq_seatctr[0]) == 0:
                     self._rq_pendctr[0] += 1
@@ -2719,6 +2806,12 @@ if ISAAC_AVAILABLE:
                         self._jam_cooldown[0] = max(
                             int(self._jam_cooldown[0]),
                             self._RQ_SEAT_HI + 120 + self.cfg.jam_window + 340)
+                # ── TABLE-MODE PLACE (recovery regrasp) runs ON THE DRIVES ──
+                # in the _apply_action drive block (phases: 1 return to the
+                # entrance pose -> 2 pure-j1 arc to the pick yaw -> 3 open,
+                # ~3 cm drop to the table -> re-arm the pick staging). The
+                # OSC version of this machine ran away 25 cm (wrist-twist
+                # walk, trace 2). Jam detection stays suppressed on pl_phase.
                 # The seat arms the moment the PRE-DRIVE completes: the servoed
                 # drive pose IS the hand-off (base move), and the whole window
                 # runs on the stiff joint drives — no arrival/fallback gating.
@@ -3131,6 +3224,10 @@ if ISAAC_AVAILABLE:
                 # a deferred regrasp seat is still waiting to fire (centering
                 # traverse) — not a new jam; the pend fire-anyway cap bounds it
                 return False
+            if self.cfg.rq_table_pick and self._rq_pl_phase > 0:
+                # table-mode place+repick in progress — scripted recovery
+                # execution, not a new jam (phase timeouts bound it)
+                return False
             hover_ok = False
             if c.forge_mode:
                 # forge doesn't advance the phase machine; the "insertion" is active once the
@@ -3139,8 +3236,12 @@ if ISAAC_AVAILABLE:
                 bx, by, bz = self._base_xyz0()
                 # at/around the cell mouth (the wedge sits a little above the floor, and the jam
                 # offsets it laterally, so use a generous window) and the scripted setup is done.
+                _nz = 0.35 if self.cfg.rq_table_pick else 0.18
+                # table mode 0.35: the post-retract hover parks the gear at
+                # ~0.57 — 5 mm ABOVE the 0.18 ceiling — and the recurring-hover
+                # signature (the regrasp router) went blind (smoke 3 timeouts)
                 near_cell = (abs(bx - c.rack_x) < 0.09 and abs(by - c.rack_y) < 0.09
-                             and bz < c.cell_floor_z + 0.18)
+                             and bz < c.cell_floor_z + _nz)
                 if int(self._setup_ctr[0]) > 0 or not near_cell:
                     return False
                 # a hover only counts while the part is still ABOVE the seat (a
@@ -3455,7 +3556,13 @@ if ISAAC_AVAILABLE:
                     # itself uses at episode start. 40 < setup_steps//2 so the
                     # stage split is purely the arrival gate.
                     self._start_off[_rec_done] = 0.0
-                    self._setup_ctr[_rec_done] = 40
+                    # table mode: 400, not 40 — the table flow's slew-limited
+                    # descent from the retract altitude (~0.82) needs ~200
+                    # steps; at 40 the setup expired mid-descent and the policy
+                    # hovered OOD-high above the detector's near_cell ball
+                    # (table smoke 3: eps 0/2/3 froze after attempt 1)
+                    self._setup_ctr[_rec_done] = (
+                        400 if self.cfg.rq_table_pick else 40)
                     # NOTE the limits of this re-approach: it re-centers the
                     # HAND (useful after the post-slip hover drifts ~2 cm) but
                     # cannot fix the true post-slip anomaly — the slip leaves
@@ -3929,6 +4036,16 @@ if ISAAC_AVAILABLE:
             # this overrides the phase-based close so the policy decides WHEN to let go.
             if self.cfg.forge_release_mode:
                 rel_cmd = (self._actions[:, 7] > 0.0) & (self._warmup == 0) & (self._setup_ctr == 0)
+                # never latch during recovery machinery: a gear being LOWERED
+                # TO THE TABLE by the place phase reads as "seated + settled"
+                # to the head, and the one-way latch then kept the pads open
+                # through the whole repick (table jam smoke 4: grip 0.009 at
+                # handoff, gear rolled 8 cm, every regrasp episode dead)
+                rel_cmd = rel_cmd & (self._rec_steps == 0) \
+                    & (~self._rq_regrasp_pend if hasattr(self, "_rq_regrasp_pend")
+                       else torch.ones_like(rel_cmd))
+                if getattr(self, "_rq_pl_phase", 0) > 0:
+                    rel_cmd = torch.zeros_like(rel_cmd)
                 # newly_released = the step the policy first lets go (used to penalise releasing
                 # while the bottle is still high above the floor -> forces a real descent first).
                 # Accumulate across substeps; reset each env step in _pre_physics_step.
@@ -3962,6 +4079,11 @@ if ISAAC_AVAILABLE:
                 if self.cfg.forge_release_mode:
                     ang_t = torch.where(self._released,
                                         torch.full((self.num_envs,), self._rq_open, device=_d), ang_t)
+                if self.cfg.rq_table_pick and self._rq_pl_phase >= 3:
+                    # recovery PLACE: pads open on the table-resting gear
+                    # (phase 3) and stay open through the lift (phase 4);
+                    # the re-armed staging then closes them at the pick
+                    ang_t = torch.full_like(ang_t, self._rq_open)
                 import os as _os
                 if _os.environ.get("RQ_TRACE") == "1" and int(self._rq_seatctr[0]) > 0:
                     print(f"      [rqw] sc={int(self._rq_seatctr[0])} "
@@ -4007,20 +4129,21 @@ if ISAAC_AVAILABLE:
                                                                float(_ap[0]))))
                             if self.cfg.rq_table_pick:
                                 # TABLE PICK destination: pads at the grip band
-                                # over the table-resting gear. x/z retarget; the
-                                # j1 term servos the y POSITION (dy/dj1 ~ reach —
-                                # pad yaw is free on a round gear, so hand-axis
-                                # yaw is unconstrained here).
-                                _cp = _m.cos(self.cfg.rq_pick_dth)
-                                _sp = _m.sin(self.cfg.rq_pick_dth)
-                                _xerr = float(_eep[0]) - (_cp * self.cfg.rack_x
-                                                          - _sp * self.cfg.rack_y)
+                                # over the LIVE resting gear (not the nominal
+                                # spot — a recovery place scatters a couple cm
+                                # and the pick must follow the part). x/z
+                                # retarget; the j1 term servos the y POSITION
+                                # (dy/dj1 ~ reach — pad yaw is free on a round
+                                # gear, so hand-axis yaw is unconstrained).
+                                _gxy_sv = (self._obj.data.root_pose_w[0, :2]
+                                           - self.scene.env_origins[0, :2])
+                                _xerr = float(_eep[0]) - float(_gxy_sv[0])
                                 _zerr = float(_eep[2]) - (
                                     self.cfg.table_top_z - 0.005 + self._rq_grip_h
-                                    + float(self._grasp_tcp_d))
+                                    + float(torch.as_tensor(
+                                        self._grasp_tcp_d).reshape(-1)[0]))
                                 _yerr = 1.6 * (float(_eep[1])
-                                               - (_sp * self.cfg.rack_x
-                                                  + _cp * self.cfg.rack_y))
+                                               - float(_gxy_sv[1]))
                             def _cl(v, lo, hi):
                                 return max(lo, min(hi, v))
                             # per-window correction clamps kill the overshoot the
@@ -4087,6 +4210,95 @@ if ISAAC_AVAILABLE:
                             print(f"      [rq-predrive done] ee={[round(float(v),3) for v in _ee0]} "
                                   f"jpos={[round(float(v),3) for v in r.data.joint_pos[0,:7]]}",
                                   flush=True)
+                    if self.cfg.rq_table_pick and self._rq_pl_phase > 0:
+                        # DRIVE-SIDE PLACE (recovery regrasp): 1) return the
+                        # gripped gear to the entrance pose (safe altitude,
+                        # gear at band over the plate), 2) pure-j1 arc to the
+                        # pick yaw (pads stay high; the gear crosses to clear
+                        # table), 3) open — the gear drops ~3 cm flat onto the
+                        # table — then re-arm the full pick staging (the live-
+                        # gear servo lands the pads wherever it settled).
+                        if self._rq_pl_phase == 1:
+                            # J1 ARC FIRST, at the LIFTED altitude: descending
+                            # to any pose over the shaft presses the tilted
+                            # bore onto the tip under drive stiffness (smokes
+                            # 6/7: identical deterministic 165-213 N crush in
+                            # leg 1's z-drop). Base rotation preserves the EE
+                            # altitude; the gear crosses the plate 1.5+ cm
+                            # clear and reaches open table.
+                            if self._rq_pl_t % 120 == 0:
+                                _d0 = float(self._rq_arm_pose[0]
+                                            - self._rq_arm_cmd[0])
+                                self._rq_arm_cmd[0] += max(-0.06, min(0.06, _d0))
+                            self._rq_pl_t -= 1
+                            if self._rq_pl_t <= 0:
+                                self._rq_pl_phase = 2
+                                self._rq_pl_t = 600
+                        elif self._rq_pl_phase == 2:
+                            # over clear table: descend toward the pick pose,
+                            # GATED ON THE REALIZED GEAR ALTITUDE. The pick
+                            # pose holds pads at a RESTING gear's grip band —
+                            # a HELD gear rides 30 mm lower, so driving all
+                            # the way pressed it into the table at drive
+                            # stiffness (smoke 8: 319 N). Stop at gear z
+                            # 0.412 (~1.5 cm up) and drop from there.
+                            _gz_pl2 = float(self._obj.data.root_pose_w[0, 2]
+                                            - self.scene.env_origins[0, 2])
+                            if _gz_pl2 > 0.412 and self._rq_pl_t % 120 == 0:
+                                _stp = (self._rq_arm_pose
+                                        - self._rq_arm_cmd).clamp(-0.05, 0.05)
+                                self._rq_arm_cmd += _stp
+                            self._rq_pl_t -= 1
+                            if _gz_pl2 <= 0.412 or self._rq_pl_t <= 0:
+                                self._rq_pl_phase = 3
+                                self._rq_pl_t = 90
+                        elif self._rq_pl_phase == 3:
+                            # pads opening (ang override on pl_phase >= 3)
+                            self._rq_pl_t -= 1
+                            if self._rq_pl_t <= 0:
+                                self._rq_pl_phase = 0
+                                self._rq_pl_t = 0
+                                # RE-ARM the pick staging (drives already on)
+                                self._rq_predrive[:] = self._RQ_PREDRIVE
+                                self._rq_arm_cmd = self._rq_arm_pose.clone()
+                                self._rq_pd_ext = 0
+                                self._rq_return = -1
+                                self._rq_seatctr[:] = -1
+                                self._rq_lift_ok = True
+                                self._rq_liftctr = 0
+                                self._rq_xyint[:] = 0.0
+                                if hasattr(self, "_rq_tp_hold_on"):
+                                    self._rq_tp_hold_on[:] = False
+                                self._rq_rimz[:] = -1.0
+                                self._rq_desc[:] = False
+                                self._rq_ag[:] = 0.0
+                                self._rq_ag_cap = None
+                                self._rq_fup[:] = 0.0
+                                self._rq_des_z[:] = 0.0
+                                self._rq_prev_ee = None
+                                self._rq_prev_cmd[:] = 0.0
+                                self._rq_hover_xy[:] = 0.0
+                                self._rq_centered = False
+                                self._rq_need_settle[:] = False
+                                self._rq_settlewait[:] = 0
+                                self._setup_ctr[:] = torch.maximum(
+                                    self._setup_ctr,
+                                    torch.full_like(self._setup_ctr, 4000))
+                                self._rq_repick_prot = True
+                                if self.cfg.forge_release_mode:
+                                    # unlatch any mid-recovery release — the
+                                    # gear is back in a fresh carry
+                                    self._released[:] = False
+                                    self._newly_released[:] = False
+                                    self._rel_age[:] = 0
+                                import os as _os9p
+                                if _os9p.environ.get("RQ_TRACE") == "1":
+                                    print("      [rq-repick] staging re-armed",
+                                          flush=True)
+                        r.set_joint_position_target(
+                            self._rq_arm_cmd.unsqueeze(0).expand(self.num_envs, 7),
+                            joint_ids=self._arm_ids)
+                        return
                     if self.cfg.rq_table_pick:
                         # DRIVE-SIDE RETURN TRAVERSE: carry the gripped gear back
                         # to the entrance pose on the STIFF JOINT DRIVES (zero
@@ -4528,6 +4740,8 @@ if ISAAC_AVAILABLE:
             if self.cfg.gripper == "robotiq_2f140":
                 self._rq_need_settle[env_ids] = False
                 self._rq_settlewait[env_ids]  = 0
+                self._rq_pl_phase = 0
+                self._rq_pl_t = 0
                 # deterministic wedge staging: the random start offset moved the
                 # jam aim in/out of the funnel's capture radius per episode
                 # (smoke 43: a -1 cm draw turned the wedge into a slide-in).

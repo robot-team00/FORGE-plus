@@ -88,6 +88,13 @@ def main() -> None:
     p.add_argument("--debug", action="store_true", help="log gear state every 25 steps")
     p.add_argument("--gripper", default="franka_panda",
                    help="franka_panda | robotiq_2f140")
+    p.add_argument("--table_pick", action="store_true",
+                   help="rq_table_pick staging: unpinned grasp from the table; "
+                        "the recovery regrasp becomes PLACE-on-table + re-pick")
+    p.add_argument("--release", action="store_true",
+                   help="forge_release_mode (8-dim ckpt): the episode ends with "
+                        "the LEARNED release + hand clear; success = release "
+                        "criteria, not just the seat")
     args = p.parse_args()
     rng = random.Random(args.seed)
     torch.manual_seed(args.seed)   # makes --stochastic runs reproducible
@@ -114,6 +121,17 @@ def main() -> None:
             # deferred-regrasp recovery cycle (pend traverse + extended seat
             # + protected search) is ~450 steps — 1600 fits ~3 cycles (the
             # 1000 cap cut 3/10 smoke-10 episodes mid-second-cycle)
+        if args.table_pick:
+            cfg.rq_table_pick = True
+            cfg.episode_length_s = 120.0   # the env TRUNCATES (full reset,
+            # gear respawn) at episode_length_s regardless of the eval's cap —
+            # 45 s = 2700 steps reset table trace 1 mid-recovery
+            if args.max_steps < 7000:
+                args.max_steps = 7000   # table staging ~2100 steps + a
+                # place+repick recovery cycle is ~2400 steps — fits ~2 cycles
+        if args.release:
+            cfg.forge_release_mode = True
+            cfg.forge_hybrid_retract = True
     if args.budget == "no_ceiling":
         cfg.budget_mode, cfg.budget_fixed_n = "fixed", 120.0
     env = FrankaGearInsertEnv(cfg)

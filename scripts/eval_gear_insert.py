@@ -42,6 +42,10 @@ def main() -> None:
                    help="forge_release_mode gate: success = the LEARNED release "
                         "(act[7]>0) with the gear resting seated, upright, "
                         "settled and the hand retracted clear (8-dim ckpt)")
+    p.add_argument("--table_pick", action="store_true",
+                   help="rq_table_pick staging: the gear spawns RESTING on the "
+                        "table and the staged grasp closes on the supported "
+                        "part (no seat-window pin); drive-side return carry")
     args = p.parse_args()
 
     cfg = GearInsertEnvCfg()
@@ -59,6 +63,15 @@ def main() -> None:
         cfg.episode_length_s = 45.0
         if args.max_steps < 1500:
             args.max_steps = 1500   # staging ~800-1100 env steps + policy 240
+        if args.table_pick:
+            cfg.rq_table_pick = True
+            cfg.episode_length_s = 120.0   # truncation must not cut the longer
+            # table staging (45 s = 2700 steps; staging alone is ~2100)
+            if args.max_steps < 3600:
+                args.max_steps = 3600   # table staging (servo windows + return
+                # traverse + settle hover) is ~2100 env steps before the policy;
+                # search + seat + settle + release + retract-clear needs ~700
+                # more (the 2600 cap timed out 64/64 mid-search at healthy 10 N)
     if args.release:
         cfg.forge_release_mode = True
         cfg.forge_hybrid_retract = True

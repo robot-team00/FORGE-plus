@@ -47,6 +47,12 @@ def main() -> None:
                    help="consecutive geometric-seat steps before the expert releases")
     p.add_argument("--post_keep", type=int, default=25,
                    help="steps kept after the env success latch (teaches staying open)")
+    p.add_argument("--table_pick", action="store_true",
+                   help="collect under rq_table_pick staging — the release head "
+                        "reads raw obs (incl. the phase onehot), and the table "
+                        "flow leaves those in a DIFFERENT state than the pinned "
+                        "flow: a head trained on pinned data never fires in "
+                        "table mode (smoke 3: 64/64 pressed at budget, 0 rel)")
     args = p.parse_args()
 
     cfg = GearInsertEnvCfg()
@@ -61,6 +67,10 @@ def main() -> None:
     cfg.episode_length_s = 45.0
     cfg.forge_release_mode = True
     cfg.forge_hybrid_retract = True
+    if args.table_pick:
+        cfg.rq_table_pick = True
+        cfg.episode_length_s = 120.0
+        args.steps = max(args.steps, 3400)   # table staging ~2100 + insert
     env = FrankaGearInsertEnv(cfg)
 
     ck = torch.load(args.ckpt, map_location=env.device, weights_only=False)
