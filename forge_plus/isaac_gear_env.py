@@ -389,6 +389,19 @@ class GearInsertEnvCfg(DirectRLEnvCfg if ISAAC_AVAILABLE else object):  # type: 
                                         # with a fixed retract motion (not a manipulation skill — just
                                         # clearing out so the let-go is visible). Release stays learned.
 
+    # ── Table-pick staging (robotiq 2F-140) ─────────────────────────────────────
+    rq_table_pick: bool = False   # gear spawns RESTING on the table at a pick spot
+                                  # and the staged close grips the SUPPORTED part —
+                                  # no seat-window pin (the in-air pin teleports
+                                  # were the last non-physical assist). The OSC
+                                  # then lifts and carries to the same trained
+                                  # hand-off entrance (the bottle-era carry leg).
+    rq_pick_dth: float = -0.33    # pick spot = entrance xy rotated by this angle
+                                  # about the robot base, so the pick arm pose is
+                                  # the PROVEN grasp pose with j1 offset by the
+                                  # same angle (no new pose engineering; the gear
+                                  # is rotationally symmetric so pad yaw is free)
+
     # ── Payload compensation (robotiq): feedforward J^T gravity wrench ─────────
     # PhysX's articulation gravity comp is short for the loop-jointed 2F-140
     # subtree and knows nothing about the held bottle. The un-modeled gravity
@@ -787,6 +800,13 @@ if ISAAC_AVAILABLE:
                                       # the arm AT the grasp pose, so the predrive
                                       # only settles the drives (bottle: 600 to
                                       # unfold from the factory spawn)
+            if cfg.rq_table_pick:
+                # table pick needs REAL servo windows (%120 slots + the pd==120
+                # tolerance check are unreachable at PREDRIVE=120 — probe 2:
+                # zero windows ran, seat armed 4 cm high): the z leg walks the
+                # pads from the teleport altitude down to the grip band over
+                # the resting gear.
+                self._RQ_PREDRIVE = 600
             self._rq_pd_ext = 0       # tolerance-gated extensions used (max 4 x 240)
             self._rq_drive_kp = None  # holding-gain snapshot, taken just before the
             self._rq_drive_kd = None  # OSC handoff zeroes the arm drives (restored
@@ -798,6 +818,15 @@ if ISAAC_AVAILABLE:
             # level) — the seat happens THERE, and the OSC carries the gripped
             # bottle to the cell (carry stability proven in smokes 12/13).
             self._rq_servo_on = False
+            if cfg.rq_table_pick:
+                # TABLE PICK: the open-loop command holds the IN-AIR hand-off
+                # altitude — the pads closed 3.8 cm above the hub, around the
+                # bore cylinder, to full-close (probe 1). The servo's table-mode
+                # branch retargets z to the grip band over the resting gear;
+                # its clamped per-window trims start from an already-correct
+                # pose family (same pose, j1 offset), so the pose-family
+                # walk-off that got the servo disabled cannot engage.
+                self._rq_servo_on = True
             # Integral z feedforward for the OSC carry: PhysX's gravity comp is
             # ~50 N-equivalent short for this loop-jointed articulation in
             # extended poses (smoke 15: 13 cm sag drove the carried bottle into
@@ -824,6 +853,9 @@ if ISAAC_AVAILABLE:
                                       # above the shaft tops (0.425).
                                       # (bottle history: +0.13, smokes 28/29)
             self._rq_des_z = torch.zeros(N, device=d)  # unclamped setup z target (integrator error)
+            self._rq_xyint = torch.zeros(N, 2, device=d)  # table-pick XY standing-error
+                                      # integrator (the pin used to hide the OSC's
+                                      # ~12 mm appr offset from the arrival gate)
             self._rq_lift_ok = True   # False between OSC handoff and lift convergence:
             self._rq_liftctr = 0      # xy HELD at the handoff anchor until the integrator
                                       # has learned the lift (carrying early = rack strike)
@@ -914,6 +946,13 @@ if ISAAC_AVAILABLE:
             # reached ee (0.288, 0, 0.726), pitch 0.03 deg).
             self._rq_arm_pose = torch.tensor(
                 [0.2591, -0.4489, 0.0, -1.4194, 0.0, 1.4375, 0.785], device=d)
+            self._rq_arm_pose_ent = self._rq_arm_pose.clone()  # entrance pose —
+                                      # the drive-side return traverse target
+            self._rq_return = -1      # substep countdown of that traverse
+                                      # (-1 = not started this episode)
+            if cfg.rq_table_pick:
+                # table pick: same pose family, base yaw offset to the pick spot
+                self._rq_arm_pose[0] += cfg.rq_pick_dth
             self._rq_arm_cmd = self._rq_arm_pose.clone()
             self._rq_drive_mode = False  # True (robotiq) until the seat completes:
                                          # arm on HOLDING-GAIN joint drives (probe
@@ -1605,10 +1644,46 @@ if ISAAC_AVAILABLE:
                 # drive mode / seat freeze — but keep the math clean).
                 _rq_gv = torch.zeros(self.num_envs, 2, device=self.device)
                 if int(self._rq_seatctr.max()) == 0 and int(self._rq_seatctr.min()) == 0:
-                    _rq_gv = self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2]
+                    # IN-HAND gate: gear-aim's target is hand + (shaft - gear),
+                    # which for a gear NOT in the grip is a perpetual carrot a
+                    # constant offset ahead of the hand — the table-pick probe's
+                    # failed grasp sent the arm on a circular runaway to
+                    # (-0.58, 0.12). A grip on the Ø35.5 hub stalls the finger
+                    # drive well below full-close; closed-on-air reads ~0.784.
+                    _held = (self._robot.data.joint_pos[:, self._grip_ids[0]]
+                             < 0.74)
+                    _rq_gv = torch.where(
+                        _held.unsqueeze(-1),
+                        self._obj.data.root_pose_w[:, :2] - ee_pos_w[:, :2],
+                        _rq_gv)
                 _dxy = torch.stack(
                     [orig[:, 0] + c.rack_x + self._start_off[:, 0] + self._rq_dest_dx,
                      orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1) - _rq_gv
+                if self.cfg.rq_table_pick:
+                    # XY standing-error integrator (table pick): the OSC holds
+                    # the arm at appr - F_res/k (probe-11 rule), and with the
+                    # pin gone the REAL gear inherits that ~12 mm offset — the
+                    # 8 mm arrival gate never fired (probe 6 hover). Integrate
+                    # the gear-vs-shaft error into the carrot exactly like the
+                    # z integrator; only while carrying (gripped, post-lift)
+                    # and near the destination (no traverse wind-up).
+                    _sxy_t = torch.stack(
+                        [orig[:, 0] + c.rack_x + self._start_off[:, 0],
+                         orig[:, 1] + c.rack_y + self._start_off[:, 1]], dim=-1)
+                    _gerr = self._obj.data.root_pose_w[:, :2] - _sxy_t
+                    _held_t = (self._robot.data.joint_pos[:, self._grip_ids[0]]
+                               < 0.74)
+                    if (not self._rq_drive_mode) and self._rq_lift_ok:
+                        _int_on = (_held_t & (self._setup_ctr > 0)
+                                   & (self._rec_steps == 0)
+                                   & (_gerr.norm(dim=-1) < 0.05))
+                        self._rq_xyint = torch.where(
+                            _int_on.unsqueeze(-1),
+                            (self._rq_xyint + 0.008 * _gerr).clamp(-0.04, 0.04),
+                            self._rq_xyint)
+                    # NOTE: the bias applies to the OSC carrot `appr` (the
+                    # setup target), NOT to _dxy — _dxy feeds the stage/arrival
+                    # gating and biasing it would corrupt the gate semantics
                 if self._rq_centered:
                     # POST-RECOVERY: base-aim — steer the EE so the bottle
                     # base lands on the cell center. Replaces the static bias
@@ -1752,8 +1827,29 @@ if ISAAC_AVAILABLE:
                                         orig[:, 1] + c.rack_y + self._start_off[:, 1]],
                                        dim=-1)).norm(dim=-1)
                 _g_z = self._obj.data.root_pose_w[:, 2] - orig[:, 2]
+                # table pick: 0.465 was slack tuned for the pinned flow (the pin
+                # delivered the gear at 0.430-0.446 regardless); the table carry
+                # descends FROM ABOVE, so the slack gate fires at ~0.46 and the
+                # policy inherits an OOD free hover above its trained band and
+                # drifts (probe 8). Hand off only inside the band.
+                _g_ztop = 0.448 if self.cfg.rq_table_pick else 0.465
+                # xy 4.5 mm (not 3) in table mode: the unpinned hover's best is
+                # ~3.2 mm (probe 10 sat 0.5 mm outside the gate until the setup
+                # window expired and the policy inherited a 16 mm hand-off);
+                # force-guided search captures from 3-4 mm.
+                _g_xytol = 0.0045 if self.cfg.rq_table_pick else 0.003
                 _g_arr = (self._rq_desc & (self._rq_rimz < 0) & _seat_done
-                          & (_g_xy < 0.003) & (_g_z < 0.465))
+                          & (_g_xy < _g_xytol) & (_g_z < _g_ztop))
+                if self.cfg.rq_table_pick:
+                    # hand off SETTLED and NEAR-UPRIGHT: the carry arrives with
+                    # residual swing and in-grip lean; the pinned flow delivered
+                    # ~0 deg, and at 3.5 deg the policy honestly refuses the
+                    # geometrically impossible insertion and retreats (probe 9)
+                    _g_q = self._obj.data.root_pose_w[:, 3:7]
+                    _g_upr = (1.0 - 2.0 * (_g_q[:, 1] ** 2 + _g_q[:, 2] ** 2)
+                              ) > 0.99863   # cos(3 deg)
+                    _g_still = self._obj.data.root_vel_w[:, :3].norm(dim=-1) < 0.03
+                    _g_arr = _g_arr & _g_upr & _g_still
                 self._setup_ctr = torch.where(
                     _g_arr, torch.minimum(self._setup_ctr,
                                           torch.full_like(self._setup_ctr, 12)),
@@ -1813,6 +1909,9 @@ if ISAAC_AVAILABLE:
             appr[:, 1] = orig[:, 1] + c.rack_y + self._start_off[:, 1]
             if self.cfg.gripper == "robotiq_2f140":
                 appr[:, :2] = appr[:, :2] - _rq_gv   # GEAR-AIM (see _dxy note)
+                if self.cfg.rq_table_pick:
+                    # standing-error integrator bias (see the _rq_xyint note)
+                    appr[:, :2] = appr[:, :2] - self._rq_xyint
             if self.cfg.gripper != "robotiq_2f140":
                 # GEAR-AIM: steer the EE so the GEAR (not the hand) is over the
                 # shaft — see _gv_off note above.
@@ -1939,6 +2038,36 @@ if ISAAC_AVAILABLE:
                 pol = torch.where(self._pol_anchor_set.unsqueeze(-1), self._pol_anchor, pol)
             else:
                 pol = torch.cat([pol[:, :2] + self._fk_aim, pol[:, 2:3]], dim=-1)
+            if self.cfg.gripper == "robotiq_2f140" and self.cfg.rq_table_pick:
+                # SETTLE-HOVER HOLD: once the carry first reaches the arrival
+                # ball (xy + z; the gear may still lean), FREEZE the setup
+                # target — a fixed spring resists the slow wrist-twist +y
+                # drift that outran gear-aim + the xy integrator (probes
+                # 10/11: y crept 15 mm while the tilt settled and the gate
+                # never fired). Fixed-snapshot precedent: _rq_seat_hold
+                # (take-97 rule — live-ee holds have zero restoring force,
+                # a FROZEN snapshot has real stiffness). Released at setup
+                # end; re-latches fresh on a recovery re-approach.
+                if not hasattr(self, "_rq_tp_hold_on"):
+                    self._rq_tp_hold_on = torch.zeros(
+                        self.num_envs, dtype=torch.bool, device=self.device)
+                    self._rq_tp_hold = torch.zeros(
+                        self.num_envs, 3, device=self.device)
+                _tp_gxy = (self._obj.data.root_pose_w[:, :2] - torch.stack(
+                    [orig[:, 0] + c.rack_x + self._start_off[:, 0],
+                     orig[:, 1] + c.rack_y + self._start_off[:, 1]],
+                    dim=-1)).norm(dim=-1)
+                _tp_gz = self._obj.data.root_pose_w[:, 2] - orig[:, 2]
+                if (not self._rq_drive_mode) and self._rq_lift_ok:
+                    _tp_enter = ((self._setup_ctr > 0) & (~self._rq_tp_hold_on)
+                                 & (self._rq_seatctr == 0) & (self._rq_rimz < 0)
+                                 & (_tp_gxy < 0.0045) & (_tp_gz < 0.448))
+                    if bool(_tp_enter.any()):
+                        self._rq_tp_hold[_tp_enter] = ee_pos_w[_tp_enter]
+                        self._rq_tp_hold_on |= _tp_enter
+                self._rq_tp_hold_on &= (self._setup_ctr > 0)
+                appr = torch.where(self._rq_tp_hold_on.unsqueeze(-1),
+                                   self._rq_tp_hold, appr)
             raw = torch.where(in_setup, appr, pol)
             # Fast traverse during setup, SLOW (low-impulse) approach during the learned
             # insertion so the bottle never hits the cell with breaking momentum.
@@ -3363,6 +3492,12 @@ if ISAAC_AVAILABLE:
                 park = self._rq_seatctr < 0
                 seat = self._rq_seatctr > self._RQ_PIN_LO
                 carry = park | seat
+                if self.cfg.rq_table_pick:
+                    # TABLE PICK: no park (the gear RESTS at the pick spot from
+                    # reset) and no pin (the table supports the part through the
+                    # kiss/squeeze — the close is pure physics). The seatctr
+                    # still sequences the finger phases.
+                    carry = torch.zeros_like(carry)
             if carry.any() and self.cfg.gripper == "robotiq_2f140":
                 R_ee = matrix_from_quat(r.data.body_quat_w[:, self._ee_idx])
                 off  = torch.zeros(self.num_envs, 3, device=self.device)
@@ -3861,6 +3996,31 @@ if ISAAC_AVAILABLE:
                             _xerr = float(_eep[0]) - (self.cfg.rack_x
                                                       + float(self._start_off[0, 0])
                                                       + self._rq_dest_dx)
+                            if self.cfg.rq_table_pick:
+                                # pitch target is STRAIGHT DOWN (top-down grip),
+                                # not the bottle's horizontal side grip — the
+                                # side-grip formula reads a permanent +90 deg
+                                # error for a down-pointing hand and wound j6 to
+                                # the clamp corner (probe 4). Deviation = the
+                                # axis' radial component; sign: +j6 grew it.
+                                _perr = -_m.asin(max(-1.0, min(1.0,
+                                                               float(_ap[0]))))
+                            if self.cfg.rq_table_pick:
+                                # TABLE PICK destination: pads at the grip band
+                                # over the table-resting gear. x/z retarget; the
+                                # j1 term servos the y POSITION (dy/dj1 ~ reach —
+                                # pad yaw is free on a round gear, so hand-axis
+                                # yaw is unconstrained here).
+                                _cp = _m.cos(self.cfg.rq_pick_dth)
+                                _sp = _m.sin(self.cfg.rq_pick_dth)
+                                _xerr = float(_eep[0]) - (_cp * self.cfg.rack_x
+                                                          - _sp * self.cfg.rack_y)
+                                _zerr = float(_eep[2]) - (
+                                    self.cfg.table_top_z - 0.005 + self._rq_grip_h
+                                    + float(self._grasp_tcp_d))
+                                _yerr = 1.6 * (float(_eep[1])
+                                               - (_sp * self.cfg.rack_x
+                                                  + _cp * self.cfg.rack_y))
                             def _cl(v, lo, hi):
                                 return max(lo, min(hi, v))
                             # per-window correction clamps kill the overshoot the
@@ -3872,13 +4032,24 @@ if ISAAC_AVAILABLE:
                             # j2->0 vertical-shoulder family lands the OSC near a
                             # singularity of its inertia decoupling and the arm
                             # runs away after handoff (smoke 13 vertical runaway).
+                            # joint clamps are POSE-FAMILY bounds: the bottle
+                            # family (j2<=-0.95, j4<=-1.55, j6>=1.8) vs the gear
+                            # top-down family (probe pose [0.26,-0.45,0,-1.42,0,
+                            # 1.44,0.785]) — the gear pose sits OUTSIDE all three
+                            # bottle bounds, so a window under the bottle clamps
+                            # yanks j2/j4/j6 to the corners (table-pick probe 3:
+                            # alien pose at z 0.98, j1 runaway chasing it)
+                            if self.cfg.rq_table_pick:
+                                _b2, _b4, _b6 = (-0.9, -0.1), (-1.9, -0.95), (1.0, 1.9)
+                            else:
+                                _b2, _b4, _b6 = (-1.7, -0.95), (-2.9, -1.55), (1.8, 3.6)
                             self._rq_arm_cmd[0] = float(self._rq_arm_cmd[0]) - _cl(0.8 * _yerr, -0.15, 0.15)
                             self._rq_arm_cmd[1] = _cl(float(self._rq_arm_cmd[1])
-                                                      + _cl(0.7 * _zerr, -0.15, 0.15), -1.7, -0.95)
+                                                      + _cl(0.7 * _zerr, -0.15, 0.15), *_b2)
                             self._rq_arm_cmd[3] = _cl(float(self._rq_arm_cmd[3])
-                                                      - _cl(0.6 * _xerr, -0.12, 0.12), -2.9, -1.55)
+                                                      - _cl(0.6 * _xerr, -0.12, 0.12), *_b4)
                             self._rq_arm_cmd[5] = _cl(float(self._rq_arm_cmd[5])
-                                                      + _cl(0.8 * _perr, -0.15, 0.15), 1.8, 3.6)
+                                                      + _cl(0.8 * _perr, -0.15, 0.15), *_b6)
                             if _os2.environ.get("RQ_TRACE") == "1":
                                 print(f"      [rq-servo pd={_pd}] ee={[round(float(v),3) for v in _eep]} "
                                       f"xerr={_xerr:+.3f} zerr={_zerr:+.3f} yaw={_yerr:+.3f} "
@@ -3889,9 +4060,21 @@ if ISAAC_AVAILABLE:
                             # pose tolerances: LEVEL pads matter most (taper-wedge);
                             # a few cm of xy/z hand-off offset is fine — the pin is
                             # EE-relative and the policy corrects small leans.
-                            if _pd == 120 and self._rq_pd_ext < 4 and (
-                                    abs(_perr) > 0.04 or abs(_zerr) > 0.05
-                                    or abs(_xerr) > 0.06 or abs(_yerr) > 0.04):
+                            _ztol = 0.006 if self.cfg.rq_table_pick else 0.05
+                            _xtol = 0.020 if self.cfg.rq_table_pick else 0.06
+                            # _ztol 0.006 not 0.012: the slack let the pads grip
+                            # 6 mm below the hub centre and the top-heavy gear
+                            # leaned 3.5 deg through the carry — right at the
+                            # policy's ~3-4 deg cannot-thread refusal boundary
+                            # (probe 9: it fled upward from the hand-off)
+                            # table pick: the close happens AT the pick pose, so
+                            # the pads must be ON the grip band (z) and centred
+                            # (x, y-via-j1) before the squeeze; the pin used to
+                            # absorb this error and is gone
+                            _pdmax = 10 if self.cfg.rq_table_pick else 4
+                            if _pd == 120 and self._rq_pd_ext < _pdmax and (
+                                    abs(_perr) > 0.04 or abs(_zerr) > _ztol
+                                    or abs(_xerr) > _xtol or abs(_yerr) > 0.04):
                                 self._rq_predrive += 240
                                 self._rq_pd_ext += 1
                                 if _os2.environ.get("RQ_TRACE") == "1":
@@ -3904,11 +4087,34 @@ if ISAAC_AVAILABLE:
                             print(f"      [rq-predrive done] ee={[round(float(v),3) for v in _ee0]} "
                                   f"jpos={[round(float(v),3) for v in r.data.joint_pos[0,:7]]}",
                                   flush=True)
+                    if self.cfg.rq_table_pick:
+                        # DRIVE-SIDE RETURN TRAVERSE: carry the gripped gear back
+                        # to the entrance pose on the STIFF JOINT DRIVES (zero
+                        # sag, zero twist-walk). The OSC carry drifted +y 15-30
+                        # mm during the settle hover (probes 7-12 — the wrist-
+                        # twist disturbance the pinned flow never exposed) and
+                        # the press from there wedged the gear out of the pads.
+                        # The pick pose is the entrance pose j1-rotated, so
+                        # interpolating the COMMAND back to _rq_arm_pose_ent
+                        # retraces the arc and lands the OSC handoff exactly
+                        # where the pinned flow always handed off.
+                        if (self._rq_return < 0 and _pd == 0
+                                and int(self._rq_seatctr.max()) == 0
+                                and int(self._rq_seatctr.min()) == 0):
+                            self._rq_return = 1080
+                        if self._rq_return > 0:
+                            if self._rq_return % 120 == 0:
+                                _stp = (self._rq_arm_pose_ent
+                                        - self._rq_arm_cmd).clamp(-0.05, 0.05)
+                                self._rq_arm_cmd += _stp
+                            self._rq_return -= 1
                     r.set_joint_position_target(
                         self._rq_arm_cmd.unsqueeze(0).expand(self.num_envs, 7),
                         joint_ids=self._arm_ids)
                     if _pd == 0 and int(self._rq_seatctr.max()) == 0 \
-                            and int(self._rq_seatctr.min()) == 0:
+                            and int(self._rq_seatctr.min()) == 0 \
+                            and (not self.cfg.rq_table_pick
+                                 or self._rq_return == 0):
                         # Seat complete, grip established -> hand the arm to the
                         # OSC: zero the gains (parameter write, no body motion),
                         # anchor the nullspace and the rate-limited orientation
@@ -4225,6 +4431,12 @@ if ISAAC_AVAILABLE:
                     # staging dead for the rest of the run. Teleporting makes every
                     # episode's staging bit-identical for every env.
                     _arm_def = self._robot.data.default_joint_pos[env_ids][:, self._arm_ids]
+                    if self.cfg.rq_table_pick:
+                        # pick spot = entrance rotated rq_pick_dth about the base:
+                        # the SAME proven pose with j1 offset lands the open pads
+                        # straddling the table-resting gear
+                        _arm_def = _arm_def.clone()
+                        _arm_def[:, 0] += self.cfg.rq_pick_dth
                     self._robot.write_joint_state_to_sim(
                         _arm_def, torch.zeros_like(_arm_def),
                         joint_ids=self._arm_ids, env_ids=env_ids)
@@ -4240,6 +4452,7 @@ if ISAAC_AVAILABLE:
                     self._rq_arm_cmd = self._rq_arm_pose.clone()
                     self._rq_drive_mode = True
                     self._rq_pd_ext = 0
+                    self._rq_return = -1
                     # Restore the HOLDING-gain arm drives that the OSC handoff
                     # zeroed — with kp=0 the ep-2+ predrive position targets are
                     # inert and the arm drifts into an alien joint branch (2-ep
@@ -4266,6 +4479,7 @@ if ISAAC_AVAILABLE:
                     self._rq_fup[:] = 0.0
                     self._rq_f[:] = 0.0
                     self._rq_des_z[:] = 0.0
+                    self._rq_xyint[:] = 0.0
                     self._rq_prev_ee = None
                     self._rq_prev_cmd[:] = 0.0
                     self._rq_hover_xy[:] = 0.0
@@ -4333,15 +4547,31 @@ if ISAAC_AVAILABLE:
             obj_state = self._obj.data.default_root_state[env_ids].clone()
             obj_state[:, 0:3] += self.scene.env_origins[env_ids]
             if self.cfg.gripper == "robotiq_2f140":
-                # STAGING v2: the arm resets AT the entrance pose, so the
-                # default obj spawn (rack, transport_z 0.72) lands INSIDE the
-                # parked gripper — the contact spike (Fins ~7.6) fired the
-                # descent fast-forward within 2 substeps and zeroed the setup
-                # window before the seat could arm (the dead-episode
-                # alternation in ft run 1: closed fingers collide, open ones
-                # don't). Spawn directly at the PARK altitude instead.
-                obj_state[:, 2] = (self.scene.env_origins[env_ids, 2]
-                                   + self.cfg.transport_z + 0.45)
+                if self.cfg.rq_table_pick:
+                    # TABLE PICK: spawn resting at the pick spot (gear origin is
+                    # 5 mm below the bottom face -> table_top - 0.005; +2 mm drop
+                    # margin settles during the predrive window). Real physics
+                    # from here on — no park, no pin.
+                    _c = math.cos(self.cfg.rq_pick_dth)
+                    _s = math.sin(self.cfg.rq_pick_dth)
+                    obj_state[:, 0] = (self.scene.env_origins[env_ids, 0]
+                                       + _c * self.cfg.rack_x - _s * self.cfg.rack_y)
+                    obj_state[:, 1] = (self.scene.env_origins[env_ids, 1]
+                                       + _s * self.cfg.rack_x + _c * self.cfg.rack_y)
+                    obj_state[:, 2] = (self.scene.env_origins[env_ids, 2]
+                                       + self.cfg.table_top_z - 0.005 + 0.002)
+                    obj_state[:, 3] = 1.0
+                    obj_state[:, 4:7] = 0.0
+                else:
+                    # STAGING v2: the arm resets AT the entrance pose, so the
+                    # default obj spawn (rack, transport_z 0.72) lands INSIDE the
+                    # parked gripper — the contact spike (Fins ~7.6) fired the
+                    # descent fast-forward within 2 substeps and zeroed the setup
+                    # window before the seat could arm (the dead-episode
+                    # alternation in ft run 1: closed fingers collide, open ones
+                    # don't). Spawn directly at the PARK altitude instead.
+                    obj_state[:, 2] = (self.scene.env_origins[env_ids, 2]
+                                       + self.cfg.transport_z + 0.45)
             self._obj.write_root_pose_to_sim(obj_state[:, 0:7], env_ids=env_ids)
             self._obj.write_root_velocity_to_sim(obj_state[:, 7:13], env_ids=env_ids)
 
