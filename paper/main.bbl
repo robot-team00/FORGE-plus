@@ -1,0 +1,135 @@
+\begin{thebibliography}{17}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Narang et~al.(2022)Narang, Storey, Akinola, Macklin, Reist,
+  Wawrzyniak, Guo, Moravanszky, State, Lu, Handa, and Fox]{narang2022factory}
+Yashraj Narang, Kier Storey, Iretiayo Akinola, Miles Macklin, Philipp Reist,
+  Lukasz Wawrzyniak, Yunrong Guo, Adam Moravanszky, Gavriel State, Michelle Lu,
+  Ankur Handa, and Dieter Fox.
+\newblock Factory: Fast contact for robotic assembly.
+\newblock In \emph{Robotics: Science and Systems (RSS)}, 2022.
+\newblock arXiv:2205.03532.
+
+\bibitem[Tang et~al.(2023)Tang, Lin, Akinola, Handa, Sukhatme, Ramos, Fox, and
+  Narang]{tang2023industreal}
+Bingjie Tang, Michael~A. Lin, Iretiayo Akinola, Ankur Handa, Gaurav~S.
+  Sukhatme, Fabio Ramos, Dieter Fox, and Yashraj Narang.
+\newblock {IndustReal}: Transferring contact-rich assembly tasks from
+  simulation to reality.
+\newblock In \emph{Robotics: Science and Systems (RSS)}, 2023.
+\newblock arXiv:2305.17110.
+
+\bibitem[Tang et~al.(2024)Tang, Akinola, Xu, Wen, Handa, Van~Wyk, Fox,
+  Sukhatme, Ramos, and Narang]{tang2024automate}
+Bingjie Tang, Iretiayo Akinola, Jie Xu, Bowen Wen, Ankur Handa, Karl Van~Wyk,
+  Dieter Fox, Gaurav~S. Sukhatme, Fabio Ramos, and Yashraj Narang.
+\newblock {AutoMate}: Specialist and generalist assembly policies over diverse
+  geometries.
+\newblock In \emph{Robotics: Science and Systems (RSS)}, 2024.
+\newblock arXiv:2407.08028.
+
+\bibitem[Noseworthy et~al.(2025)Noseworthy, Tang, Wen, Handa, Kessens, Roy,
+  Fox, Ramos, Narang, and Akinola]{noseworthy2025forge}
+Michael Noseworthy, Bingjie Tang, Bowen Wen, Ankur Handa, Chad Kessens,
+  Nicholas Roy, Dieter Fox, Fabio Ramos, Yashraj Narang, and Iretiayo Akinola.
+\newblock {FORGE}: Force-guided exploration for robust contact-rich
+  manipulation under uncertainty.
+\newblock \emph{IEEE Robotics and Automation Letters}, 2025.
+\newblock arXiv:2408.04587.
+
+\bibitem[Liu et~al.(2023)Liu, Bahety, and Song]{liu2023reflect}
+Zeyi Liu, Arpit Bahety, and Shuran Song.
+\newblock {REFLECT}: Summarizing robot experiences for failure explanation and
+  correction.
+\newblock In \emph{Conference on Robot Learning (CoRL)}, 2023.
+\newblock arXiv:2306.15724.
+
+\bibitem[Guo et~al.(2023)Guo, Wang, Zha, Jiang, and Chen]{guo2023doremi}
+Yanjiang Guo, Yen-Jen Wang, Lihan Zha, Zheyuan Jiang, and Jianyu Chen.
+\newblock {DoReMi}: Grounding language model by detecting and recovering from
+  plan-execution misalignment.
+\newblock \emph{arXiv preprint arXiv:2307.00329}, 2023.
+
+\bibitem[Duan et~al.(2024)Duan, Pumacay, Kumar, Wang, Tian, Yuan, Krishna, Fox,
+  Mandlekar, and Guo]{duan2024aha}
+Jiafei Duan, Wilbert Pumacay, Nishanth Kumar, Yi~Ru Wang, Shulin Tian, Wentao
+  Yuan, Ranjay Krishna, Dieter Fox, Ajay Mandlekar, and Yijie Guo.
+\newblock {AHA}: A vision-language-model for detecting and reasoning over
+  failures in robotic manipulation.
+\newblock \emph{arXiv preprint arXiv:2410.00371}, 2024.
+
+\bibitem[Huang et~al.(2025)Huang, Wang, Lin, Hu, Wen, and
+  Gao]{huang2025tactilevla}
+Jialei Huang, Shuo Wang, Fanqi Lin, Yihang Hu, Chuan Wen, and Yang Gao.
+\newblock Tactile-{VLA}: Unlocking vision-language-action model's physical
+  knowledge for tactile generalization.
+\newblock \emph{arXiv preprint arXiv:2507.09160}, 2025.
+
+\bibitem[Cao et~al.(2026)]{cao2026pacovla}
+Yifan Cao et~al.
+\newblock {PaCo-VLA}: Passivity-shielded compliance prior for contact-rich
+  vision-language-action manipulation.
+\newblock \emph{arXiv preprint arXiv:2606.00515}, 2026.
+
+\bibitem[Yu et~al.(2025)]{yu2025forcevla}
+Jiawen Yu et~al.
+\newblock {ForceVLA}: Enhancing {VLA} models with a force-aware {MoE} for
+  contact-rich manipulation.
+\newblock \emph{arXiv preprint arXiv:2505.22159}, 2025.
+
+\bibitem[Zhang et~al.(2026)Zhang, Huang, et~al.]{zhang2026compliantvla}
+Wei Zhang, Ying Huang, et~al.
+\newblock {CompliantVLA}-adaptor: {VLM}-guided variable impedance action for
+  safe contact-rich manipulation.
+\newblock \emph{arXiv preprint arXiv:2601.15541}, 2026.
+
+\bibitem[Mittal et~al.(2025)]{mittal2025isaaclab}
+Mayank Mittal et~al.
+\newblock Isaac lab: A gpu-accelerated simulation framework for multi-modal
+  robot learning.
+\newblock \emph{arXiv preprint arXiv:2511.04831}, 2025.
+
+\bibitem[Mittal et~al.(2023)Mittal, Yu, Yu, Liu, Rudin, Hoeller, Yuan, Singh,
+  Guo, Mazhar, Mandlekar, Babich, State, Hutter, and Garg]{mittal2023orbit}
+Mayank Mittal, Calvin Yu, Qinxi Yu, Jingzhou Liu, Nikita Rudin, David Hoeller,
+  Jia~Lin Yuan, Ritvik Singh, Yunrong Guo, Hammad Mazhar, Ajay Mandlekar, Buck
+  Babich, Gavriel State, Marco Hutter, and Animesh Garg.
+\newblock Orbit: A unified simulation framework for interactive robot learning
+  environments.
+\newblock \emph{IEEE Robotics and Automation Letters}, 2023.
+\newblock arXiv:2301.04195.
+
+\bibitem[Murali et~al.(2025)]{murali2025graspgen}
+Adithyavairavan Murali et~al.
+\newblock {GraspGen}: A diffusion-based framework for 6-dof grasping.
+\newblock \emph{arXiv preprint arXiv:2507.13097}, 2025.
+
+\bibitem[Schulman et~al.(2017)Schulman, Wolski, Dhariwal, Radford, and
+  Klimov]{schulman2017ppo}
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov.
+\newblock Proximal policy optimization algorithms.
+\newblock \emph{arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem[Ross et~al.(2011)Ross, Gordon, and Bagnell]{ross2011dagger}
+St{\'e}phane Ross, Geoffrey Gordon, and Drew Bagnell.
+\newblock A reduction of imitation learning and structured prediction to
+  no-regret online learning.
+\newblock In \emph{International Conference on Artificial Intelligence and
+  Statistics (AISTATS)}, 2011.
+\newblock arXiv:1011.0686.
+
+\bibitem[Wortsman et~al.(2022)Wortsman, Ilharco, Gadre, Roelofs, Gontijo-Lopes,
+  Morcos, Namkoong, Farhadi, Carmon, Kornblith, and Schmidt]{wortsman2022soups}
+Mitchell Wortsman, Gabriel Ilharco, Samir~Ya Gadre, Rebecca Roelofs, Raphael
+  Gontijo-Lopes, Ari~S. Morcos, Hongseok Namkoong, Ali Farhadi, Yair Carmon,
+  Simon Kornblith, and Ludwig Schmidt.
+\newblock Model soups: Averaging weights of multiple fine-tuned models improves
+  accuracy without increasing inference time.
+\newblock In \emph{International Conference on Machine Learning (ICML)}, 2022.
+\newblock arXiv:2203.05482.
+
+\end{thebibliography}
