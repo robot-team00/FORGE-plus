@@ -35,7 +35,7 @@
 \maketitle
 
 \begin{abstract}
-Force-conditioned RL skills can seat tight-clearance assemblies while respecting a commanded force ceiling, but two questions remain open: \emph{who sets the ceiling}, and \emph{what should the robot do when an insertion fails}. Autotuning the ceiling for success works only for indestructible parts, and the natural recovery --- press harder --- is precisely the action that destroys a fragile one. We study a two-layer system in which a \textbf{frozen, text-only LLM} (a) sets a per-object force ceiling \Fmax{} from the object's identity before the episode, and (b) on failure, selects a recovery maneuver from a fixed menu by reading a \textbf{compact text force signature} --- no images anywhere in the system. Force authority never belongs to the LLM: a hard clamp in the fast control loop saturates commanded forces to \Fmax{}, the recovery menu contains no ``increase the ceiling'' option, and the hidden per-instance breaking force \Fbreak{} is visible only to the evaluator, making the fragility metric non-circular. On a 0.4\,mm-diametral-clearance gear insertion executed on two grippers (Franka Panda hand and Robotiq 2F-140), a single unified checkpoint passes strict 256/256 clean gates on both a fragile and a robust object class with zero breaks, decides its own release via a learned head (256/256, zero bad releases), and completes a fully physical table-pick flow at a 5.4\,N mean peak force. Under an injected in-grip slip, the force-signature chain recovers 64\% (Franka) and 40\% (2F-140) of jams, while a press-harder baseline shows two distinct failure faces: it breaks 96\% of fragile parts on one gripper and is 100\% futile on the other. We report our negative results as first-class findings: PPO provably fails at this clearance on the 2F-140 (exploration noise that can find the funnel already breaks the part), tiny-std PPO polish destroys a working policy, and three natural designs for a learned release head fail for instructive reasons. All experiments are in rigid-body simulation with breakage modeled as a hidden scalar force threshold; no sim-to-real claim is made.
+Force-conditioned RL skills can seat tight-clearance assemblies while respecting a commanded force ceiling, but two questions remain open: \emph{who sets the ceiling}, and \emph{what should the robot do when an insertion fails}. Autotuning the ceiling for success works only for indestructible parts, and the natural recovery --- press harder --- is precisely the action that destroys a fragile one. We study a two-layer system in which a \textbf{frozen, text-only LLM} (a) sets a per-object force ceiling \Fmax{} from the object's identity before the episode, and (b) on failure, selects a recovery maneuver from a fixed menu by reading a \textbf{compact text force signature} --- no images anywhere in the system. Force authority never belongs to the LLM: a hard clamp in the fast control loop saturates commanded forces to \Fmax{}, the recovery menu contains no ``increase the ceiling'' option, and the hidden per-instance breaking force \Fbreak{} is visible only to the evaluator, making the fragility metric non-circular. On a fragile bottle-into-rack placement and a 0.4\,mm-diametral-clearance gear insertion, each executed on two grippers (Robotiq 2F-140 and Franka Panda hand), a single unified checkpoint passes strict 256/256 clean gates on both a fragile and a robust object class with zero breaks, decides its own release via a learned head (256/256, zero bad releases), and completes a fully physical table-pick flow at a 5.4\,N mean peak force. Under an injected in-grip slip, the force-signature chain recovers 40\% (2F-140) and 64\% (Franka) of jams, while a press-harder baseline shows two distinct failure faces: it is 100\% futile on one gripper and breaks 96\% of fragile parts on the other. We report our negative results as first-class findings: PPO provably fails at this clearance on the 2F-140 (exploration noise that can find the funnel already breaks the part), tiny-std PPO polish destroys a working policy, and three natural designs for a learned release head fail for instructive reasons. All experiments are in rigid-body simulation with breakage modeled as a hidden scalar force threshold; no sim-to-real claim is made.
 \end{abstract}
 
 \section{Introduction}
@@ -62,7 +62,7 @@ Three invariants make the evaluation non-circular (\S\ref{sec:invariants}): the 
 \begin{enumerate}
   \item \textbf{A two-layer architecture and benchmark} for force-budgeted assembly under per-object fragility, with a non-circular breakage metric (hidden per-episode \Fbreak{} draws), seven evaluation metrics, and six baselines including a press-harder recovery modeled on Tactile-VLA's published behavior (\S\ref{sec:system}, \S\ref{sec:benchmark}).
   \item \textbf{Full-cycle results on two grippers.} On the Robotiq 2F-140, one unified checkpoint passes strict clean gates of 256/256 on both a fragile ABS gear and a steel gear with zero breaks, a learned release head passes 256/256 with zero bad releases, and a fully physical table-pick flow completes 64/64 at a 5.4\,N mean peak insertion force --- the gentlest contact of the project (\S\ref{sec:exp-gates}).
-  \item \textbf{Force-signature recovery vs.\ baselines.} Under a 5\,mm in-grip slip, only the force-signature chain ever routes to \code{regrasp} --- the one maneuver that fixes a tilted grip --- recovering 64\% (Franka) / 40\% (2F-140) of jams vs.\ 32\% / 28\% for a menu-sampling proxy of a vision-based reasoner and 0\% for a hand-coded heuristic. Press-harder shows \emph{two different failure faces} on the two grippers: destructive (96\% breaks) on the Franka, futile (0\% success, 0 breaks, 100\% timeouts) on the 2F-140 (\S\ref{sec:exp-recovery}).
+  \item \textbf{Force-signature recovery vs.\ baselines.} On the bottle task, a rim wedge is caught from the force signature at 16.1\,N against a 23\,N break, and budget-preserving retries seat the fragile bottle in 9/9 headless recovery episodes with zero breaks (\S\ref{sec:exp-task3}). On the gear task, under a 5\,mm in-grip slip, only the force-signature chain ever routes to \code{regrasp} --- the one maneuver that fixes a tilted grip --- recovering 40\% (2F-140) / 64\% (Franka) of jams vs.\ 28\% / 32\% for a menu-sampling proxy of a vision-based reasoner and 0\% for a hand-coded heuristic. Press-harder shows \emph{two different failure faces} on the two grippers: futile (0\% success, 0 breaks, 100\% timeouts) on the 2F-140, destructive (96\% breaks) on the Franka (\S\ref{sec:exp-recovery}).
   \item \textbf{Negative results as findings.} PPO cannot learn this insertion on the 2F-140 at 0.4\,mm clearance --- the exploration noise needed to search the funnel already breaks the part (nine escalating runs, zero seats) --- and tiny-std PPO polish destroys a working BC policy within 25 iterations. Three natural designs for a learned release head fail for reasons that generalize (\S\ref{sec:skill}). The oracle budget \Fbreak$-\varepsilon$ breaks half the fragile parts because command clamping does not bound contact overshoot (\S\ref{sec:exp-budget}).
 \end{enumerate}
 
@@ -161,11 +161,11 @@ Each episode runs the skill until success or a detected failure; on failure the 
 
 \subsection{Tasks, objects, embodiments}
 
-\textbf{Gear insertion --- tight clearance (the flagship).} The FORGE GearMesh medium gear ($\varnothing$35.5\,mm hub, bore fit band $r$\,=\,5.15\,mm, \textbf{0.4\,mm diametral clearance}) must be inserted onto the middle shaft of a three-shaft base plate. Two object classes share the geometry: \code{abs\_gear} (fragile; \Fbreak{} drawn per episode from $38\pm5$\,N; identity-derived budget $\approx$10\,N insertion) and \code{steel\_gear} (robust; 100\,N budget). Success is a \emph{strict true seat}: gear origin within 0.6\,mm of the seated height, upright, on the correct shaft. The task runs on \textbf{both grippers}: the Franka Panda hand and the Robotiq 2F-140 four-bar adaptive gripper.\footnote{The 2F-140 port required building a combined Franka+2F-140 USD asset (NVIDIA ships that combination only for the 2F-85) and two PhysX-level findings documented in the repo: the four-bar loop joints do not survive articulation teleports (hence a no-teleport contract: spawn at the authored pose, drive only by position targets), and the merged gripper's excluded loop joints materialize only when a standalone instance of the same gripper USD exists in the scene.}
+\textbf{Bottle placement --- a fragile bottle into a wine rack.} The robot inserts a LIBERO wine bottle, held by the neck under real friction, into a cell of a 3$\times$3 rack, then releases it standing upright --- a place-and-release peg-in-hole where ``press harder'' is maximally destructive. Fragile class: \Fbreak\,$\approx$\,22\,N, budget 8.8\,N; robust class: 180\,N. (The rendered mesh is the wine bottle in all cases; the class sets the hidden fragility.) The recovery episode is demonstrated on both grippers (Robotiq 2F-140 and Franka Panda hand); the quantitative arc is on the Franka.
 
-\textbf{Bottle placement --- a fragile bottle into a wine rack.} A Franka Panda inserts a LIBERO wine bottle, held by the neck under real friction, into a cell of a 3$\times$3 rack, then releases it standing upright --- a place-and-release peg-in-hole where ``press harder'' is maximally destructive. Fragile class: \Fbreak\,$\approx$\,22\,N, budget 8.8\,N; robust class: 180\,N. (The rendered mesh is the wine bottle in all cases; the class sets the hidden fragility.)
+\textbf{Gear insertion --- tight clearance.} The FORGE GearMesh medium gear ($\varnothing$35.5\,mm hub, bore fit band $r$\,=\,5.15\,mm, \textbf{0.4\,mm diametral clearance}) must be inserted onto the middle shaft of a three-shaft base plate. Two object classes share the geometry: \code{abs\_gear} (fragile; \Fbreak{} drawn per episode from $38\pm5$\,N; identity-derived budget $\approx$10\,N insertion) and \code{steel\_gear} (robust; 100\,N budget). Success is a \emph{strict true seat}: gear origin within 0.6\,mm of the seated height, upright, on the correct shaft. The full quantitative arc runs on \textbf{both grippers}: the Robotiq 2F-140 four-bar adaptive gripper and the Franka Panda hand.\footnote{The 2F-140 port required building a combined Franka+2F-140 USD asset (NVIDIA ships that combination only for the 2F-85) and two PhysX-level findings documented in the repo: the four-bar loop joints do not survive articulation teleports (hence a no-teleport contract: spawn at the authored pose, drive only by position targets), and the merged gripper's excluded loop joints materialize only when a standalone instance of the same gripper USD exists in the scene.}
 
-\textbf{Disturbances.} Gear insertion injects a \textbf{5\,mm in-grip slip}: the gear is displaced in the pinch mid-carry. The pads re-center the \emph{position} within a substep, but the \emph{orientation} does not recover --- the asymmetric squeeze leaves the gear tilted 7--10$^\circ$ in the grip, which cannot thread a 0.4\,mm-clearance bore ($\sim$3--4$^\circ$ max while threaded). Bottle placement injects a lateral base-aim error that wedges the bottle on the cell rim.
+\textbf{Disturbances.} Bottle placement injects a lateral base-aim error that wedges the bottle on the cell rim. Gear insertion injects a \textbf{5\,mm in-grip slip}: the gear is displaced in the pinch mid-carry. The pads re-center the \emph{position} within a substep, but the \emph{orientation} does not recover --- the asymmetric squeeze leaves the gear tilted 7--10$^\circ$ in the grip, which cannot thread a 0.4\,mm-clearance bore ($\sim$3--4$^\circ$ max while threaded).
 
 \subsection{What is learned vs.\ what is scripted}
 \label{sec:learned-scripted}
@@ -220,6 +220,18 @@ The last non-physical assist in the pipeline was a seat-window pin that placed t
 \label{sec:exp}
 
 All results are in Isaac Lab rigid-body simulation with the deterministic policy mean, strict success criteria, and hidden per-episode \Fbreak{} draws. Every number below is reproducible from the repository's evaluation scripts and is stated with its protocol.
+
+\subsection{Bottle placement: a jam caught at 16.1\,N against a 23\,N break}
+\label{sec:exp-task3}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.55\textwidth]{figures/franka_jam.png}
+\caption{The rendered fragile recovery episode (Franka, glass-class bottle, \Fbreak\,$\approx$\,23\,N). The JAM card shows the actual signature the LLM saw --- peak 16.1\,N, net insert 1.6\,mm, rising, lateral bias \code{+x steady} --- its \code{rotate\_align} decision, and the standing constraints: \emph{from the force signature alone (no vision)}; \emph{same \Fmax{} --- never press harder}.}
+\label{fig:franka-jam}
+\end{figure}
+
+The recovery episode is rendered on both grippers. On the Robotiq 2F-140, a seeded base-aim fault wedges the fragile bottle on the rack; the jam is caught from the force signature (peak 13.9\,N against that episode's 19\,N break), and the second attempt places the bottle upright. The quantitative arc is on the Franka: a FORGE-style PPO policy (8-dim action including the learned release) performs the insertion under gentle contact ($\sim$0--4\,N against the fragile budget) at $\approx$68\% single-attempt success; the recovery loop is what makes it reliable. With an induced rim wedge on the \emph{fragile} class, the jam is caught from the force signature at \textbf{16.1\,N --- far below the episode's 23.3\,N break} --- the LLM picks \code{rotate\_align}, and the learned policy re-descends and seats the bottle: \textbf{9/9 headless recovery episodes seat the fragile bottle} (2--3 attempts each, 0 breaks), even though a single attempt under the low budget rarely seats it. The same loop on the robust class catches the wedge at $\sim$17\,N vs.\ a 180\,N break. The honest value of the layer is exactly this: the conservative detector plus benign, budget-preserving retries turn an imperfect learned insertion into a reliable one, whether the stall came from the injected misalignment or the policy's own marginality. (The rendered video's stricter full-place gate --- upright settle after a learned release the head was never trained to time on this object class --- passes in about 1 of 3 takes; the release dimension is gated off during recovery and sampled at the seat, as documented in the repo.)
 
 \subsection{Clean gates: one checkpoint, both classes, zero breaks}
 \label{sec:exp-gates}
@@ -282,20 +294,10 @@ Table~\ref{tab:budget} gives a stronger separation than we expected --- \textbf{
 \begin{table}[t]
 \centering
 \small
-\caption{Jam-recovery sweep: fragile ABS gear, 5\,mm in-grip slip every episode, 25 episodes/cell, deterministic mean, identity-derived budget, \Fmax{} never raised. \emph{The two tables use different step caps (700 vs.\ 1600, because one 2F-140 regrasp cycle is $\sim$450 steps and the cap must fit $\sim$3 cycles) and different checkpoints, so rows are comparable within a table, not across tables.} On the Franka table the attempts counter saturated at 5 in every cell (cosmetic settle-churn re-fires) and is omitted; the 2F-140 protocol suppresses that churn.}
+\caption{Jam-recovery sweep: fragile ABS gear, 5\,mm in-grip slip every episode, 25 episodes/cell, deterministic mean, identity-derived budget, \Fmax{} never raised. \emph{The two tables use different step caps (1600 vs.\ 700, because one 2F-140 regrasp cycle is $\sim$450 steps and the cap must fit $\sim$3 cycles) and different checkpoints, so rows are comparable within a table, not across tables.} On the Franka table the attempts counter saturated at 5 in every cell (cosmetic settle-churn re-fires) and is omitted; the 2F-140 protocol suppresses that churn.}
 \label{tab:sweep}
 \begin{tabular}{l rrrr l}
 \toprule
-\multicolumn{6}{c}{\textbf{Franka Panda hand} (700-step cap; clean-gate policy 200/200, 0 breaks)} \\
-\midrule
-Recovery & Success & Breaks & Timeouts & & Peak force mean/max (N) \\
-\midrule
-\textbf{Ours} (force signature) & \textbf{64\%} (16/25) & 12\% (3) & 24\% (6) & & 23.2 / 31.5 \\
-Vision-LLM proxy & 32\% (8/25) & 0\% & 68\% & & 15.0 / 31.6 \\
-Heuristic & 0\% & 0\% & 100\% & & 0.0 / 0.0 \\
-Press-harder & 4\% (1/25) & \textbf{96\% (24)} & 0\% & & 36.1 / 44.8 \\
-None & 0\% & 0\% & 100\% & & 0.0 / 0.0 \\
-\midrule
 \multicolumn{6}{c}{\textbf{Robotiq 2F-140} (1600-step cap; unified checkpoint, clean gates 256/256 both classes)} \\
 \midrule
 Recovery & Success & Breaks & Timeouts & Attempts & Peak force mean/max (N) \\
@@ -305,6 +307,16 @@ Vision-LLM proxy & 28\% (7/25) & 12\% (3) & 60\% & 3.88 & 19.0 / 43.6 \\
 Heuristic & 0\% & 0\% & 100\% & 5.00 & 12.5 / 18.0 \\
 Press-harder & 0\% & 0\% & 100\% & 5.00 & 11.3 / 16.5 \\
 None & 0\% & \textbf{20\% (5)} & 80\% & 0 & 10.2 / 50.5 \\
+\midrule
+\multicolumn{6}{c}{\textbf{Franka Panda hand} (700-step cap; clean-gate policy 200/200, 0 breaks)} \\
+\midrule
+Recovery & Success & Breaks & Timeouts & & Peak force mean/max (N) \\
+\midrule
+\textbf{Ours} (force signature) & \textbf{64\%} (16/25) & 12\% (3) & 24\% (6) & & 23.2 / 31.5 \\
+Vision-LLM proxy & 32\% (8/25) & 0\% & 68\% & & 15.0 / 31.6 \\
+Heuristic & 0\% & 0\% & 100\% & & 0.0 / 0.0 \\
+Press-harder & 4\% (1/25) & \textbf{96\% (24)} & 0\% & & 36.1 / 44.8 \\
+None & 0\% & 0\% & 100\% & & 0.0 / 0.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -312,31 +324,19 @@ None & 0\% & \textbf{20\% (5)} & 80\% & 0 & 10.2 / 50.5 \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/sweep_bars.pdf}
-\caption{The recovery sweep of Table~\ref{tab:sweep} as grouped bars. Note press-harder's two faces: destructive on the Franka (96\% breaks), futile on the 2F-140 (100\% timeouts, zero breaks --- the escalated ceiling never engages because the tilted bore never takes load); there, doing \emph{nothing} is the destructive cell (20\% breaks).}
+\caption{The recovery sweep of Table~\ref{tab:sweep} as grouped bars. Note press-harder's two faces: futile on the 2F-140 (100\% timeouts, zero breaks --- the escalated ceiling never engages because the tilted bore never takes load; there, doing \emph{nothing} is the destructive cell, 20\% breaks), destructive on the Franka (96\% breaks).}
 \label{fig:sweep}
 \end{figure}
 
 \textbf{The failure mechanism.} The 5\,mm slip leaves the gear \emph{tilted 7--10$^\circ$ in the grip} (position recovers within a substep; orientation never does --- probe: 4.6$^\circ\to$10.1$^\circ$ at the kick, no decay). A tilted bore cannot thread the 0.4\,mm fit band, so the deterministic policy backs off and \emph{hovers at zero contact force} --- correctly refusing a geometrically impossible insertion, and invisible to any force-threshold jam detector. A contactless-hover branch in the failure detector makes the refusal legible; the signature chain routes a \emph{recurring} hover (an anomaly that survives an arm maneuver, hence travels with the part) to \code{regrasp}, the only menu action that fixes an in-grip tilt. The re-seat restores the canonical grip (9.8$^\circ\to$0.2$^\circ$).
 
-\textbf{Reading Table~\ref{tab:sweep}.} Only the force-signature chain ever restores an insertable grip. The hand-coded heuristic never reads the hover signature, maps every zero-force state to \code{wiggle\_search}, never regrasps: 0\%. The vision-LLM proxy --- \emph{implemented as a random menu draw}, a deliberately generous stand-in for pixels-only reasoners that cannot see in-grip force asymmetry --- succeeds exactly as often as it happens to pick \code{regrasp}: the force signature is worth 64\% vs.\ 32\% on the Franka and 40\% vs.\ 28\% on the 2F-140 (the gap narrows there because a wasted wrong-maneuver attempt burns a $\sim$450-step regrasp cycle from the step budget). We label this baseline a proxy: it bounds what any reasoner that cannot discriminate the signature could achieve by selection alone.
+\textbf{Reading Table~\ref{tab:sweep}.} Only the force-signature chain ever restores an insertable grip. The hand-coded heuristic never reads the hover signature, maps every zero-force state to \code{wiggle\_search}, never regrasps: 0\%. The vision-LLM proxy --- \emph{implemented as a random menu draw}, a deliberately generous stand-in for pixels-only reasoners that cannot see in-grip force asymmetry --- succeeds exactly as often as it happens to pick \code{regrasp}: the force signature is worth 40\% vs.\ 28\% on the 2F-140 and 64\% vs.\ 32\% on the Franka (the gap is narrower on the 2F-140 because a wasted wrong-maneuver attempt burns a $\sim$450-step regrasp cycle from the step budget). We label this baseline a proxy: it bounds what any reasoner that cannot discriminate the signature could achieve by selection alone.
 
-\textbf{Press-harder shows two faces of the same anti-pattern.} On the Franka it is destructive: escalating \Fmax{} $\times$1.25 per attempt destroys \textbf{24 of 25} fragile gears (peaks to 44.8\,N vs.\ \Fbreak{} $38\pm5$). On the 2F-140 it is \emph{futile}: its only maneuver never fixes the in-grip tilt, the tilted bore never takes load, so the raised ceiling never even engages --- 0 breaks, 0 successes, 100\% timeouts at a 16.5\,N max. Both faces refute force escalation as a recovery strategy, for different reasons; on the 2F-140 the destructive face reappears in the \emph{none} cell, where with no recovery interrupting it the policy's own descent eventually presses the tilted bore into the shaft tip (5/25 breaks at up to 50.5\,N). The jam is real, and doing nothing is worse than a wrong maneuver.
+\textbf{Press-harder shows two faces of the same anti-pattern.} On the 2F-140 it is \emph{futile}: its only maneuver never fixes the in-grip tilt, the tilted bore never takes load, so the raised ceiling never even engages --- 0 breaks, 0 successes, 100\% timeouts at a 16.5\,N max. On the Franka it is destructive: escalating \Fmax{} $\times$1.25 per attempt destroys \textbf{24 of 25} fragile gears (peaks to 44.8\,N vs.\ \Fbreak{} $38\pm5$). Both faces refute force escalation as a recovery strategy, for different reasons; on the 2F-140 the destructive face reappears in the \emph{none} cell, where with no recovery interrupting it the policy's own descent eventually presses the tilted bore into the shaft tip (5/25 breaks at up to 50.5\,N). The jam is real, and doing nothing is worse than a wrong maneuver.
 
 \textbf{Robust class.} On the steel gear the same chain recovers \textbf{25/25 with 0 breaks and 0 timeouts} --- but recovery episodes press 85\,N mean / 135\,N max vs.\ the 35.6/62.5 clean gate, consuming most of steel's 100\,N budget margin.
 
 \textbf{Honest caveats.} (i) Recovery episodes press harder than clean ones on both grippers (2F-140: 23.0\,N mean / 48.3 max vs.\ 15.9 / 36.7 clean) --- that envelope exposure, not any raised ceiling, is what catches low \Fbreak{} draws and accounts for all 3 fragile breaks in each \emph{ours} cell; a gentler post-recovery descent profile is the obvious next refinement. (ii) The 48\% timeout rate in the 2F-140 \emph{ours} cell is the current frontier, not breakage: the cap fits $\sim$3 recovery cycles and detector churn can burn them. (iii) With the fully physical place-on-table regrasp and learned release enabled end-to-end, a 5-episode smoke completes 3/5 (2 breaks, 0 timeouts) --- a smoke, not a cell; the 25-episode table-flow cell is open work.
-
-\subsection{Bottle placement: a jam caught at 16.1\,N against a 23\,N break}
-\label{sec:exp-task3}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.55\textwidth]{figures/franka_jam.png}
-\caption{The rendered fragile recovery episode (Franka, glass-class bottle, \Fbreak\,$\approx$\,23\,N). The JAM card shows the actual signature the LLM saw --- peak 16.1\,N, net insert 1.6\,mm, rising, lateral bias \code{+x steady} --- its \code{rotate\_align} decision, and the standing constraints: \emph{from the force signature alone (no vision)}; \emph{same \Fmax{} --- never press harder}.}
-\label{fig:franka-jam}
-\end{figure}
-
-On the Franka bottle-in-rack task, a FORGE-style PPO policy (8-dim action including the learned release) performs the insertion under gentle contact ($\sim$0--4\,N against the fragile budget) at $\approx$68\% single-attempt success; the recovery loop is what makes it reliable. With an induced rim wedge on the \emph{fragile} class, the jam is caught from the force signature at \textbf{16.1\,N --- far below the episode's 23.3\,N break} --- the LLM picks \code{rotate\_align}, and the learned policy re-descends and seats the bottle: \textbf{9/9 headless recovery episodes seat the fragile bottle} (2--3 attempts each, 0 breaks), even though a single attempt under the low budget rarely seats it. The same loop on the robust class catches the wedge at $\sim$17\,N vs.\ a 180\,N break. The honest value of the layer is exactly this: the conservative detector plus benign, budget-preserving retries turn an imperfect learned insertion into a reliable one, whether the stall came from the injected misalignment or the policy's own marginality. (The rendered video's stricter full-place gate --- upright settle after a learned release the head was never trained to time on this object class --- passes in about 1 of 3 takes; the release dimension is gated off during recovery and sampled at the seat, as documented in the repo.)
 
 \subsection{Force economy across the arc}
 
@@ -349,7 +349,7 @@ Peak insertion forces on the fragile class, all with the identity-derived $\appr
 
 \textbf{The clamp bounds the command, not the contact.} Impedance overshoot reaches $\sim$1.5$\times$ the budget at funnel entry (\S\ref{sec:exp-budget}). We surface it as the clamp-fidelity metric and absorb it with conservative budgets; a contact-force kill switch is an open design choice.
 
-\textbf{Disturbances are injected and simple.} The 5\,mm slip and the rim wedge are controllable, reproducible faults --- not a naturalistic failure distribution. Richer jams (angular catch, burrs, cross-threading) are future work.
+\textbf{Disturbances are injected and simple.} The rim wedge and the 5\,mm slip are controllable, reproducible faults --- not a naturalistic failure distribution. Richer jams (angular catch, burrs, cross-threading) are future work.
 
 \textbf{The vision baseline is a proxy.} We compare against a menu-sampling stand-in, not a full REFLECT/AHA pipeline with rendered frames; the comparison bounds selection-only performance rather than testing a specific vision system.
 

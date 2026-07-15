@@ -239,8 +239,8 @@ PYTHONPATH=. python scripts/train_skill.py \
 
 | # | Name | What it isolates | Objects | Dominant failure |
 |---|---|---|---|---|
-| 1 | Single insertion | Budget-setting + clamp | ABS round connector (fragile) vs steel peg (robust) | Wedge jam vs friction jam — identical on camera, distinguishable in force |
-| 2 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
+| 1 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
+| 2 | Single insertion | Budget-setting + clamp | ABS round connector (fragile) vs steel peg (robust) | Wedge jam vs friction jam — identical on camera, distinguishable in force |
 
 Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps seeded by [GraspGen](https://arxiv.org/abs/2507.13097)). Gripper becomes a generalization axis: `F_max` is derived from object identity and should be gripper-invariant; whether it actually is is a testable prediction.
 
@@ -255,12 +255,12 @@ Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps 
 
 | Key | Material | F_break mean (N) | Task |
 |---|---|---|---|
-| `abs_round_connector` | ABS plastic | 38 ± 5 | Insertion — fragile |
-| `steel_peg` | Steel | 230 ± 20 | Insertion — robust |
 | `glass_bowl` | Borosilicate glass | 22 ± 4 | Placement — fragile |
 | `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Placement — fragile |
 | `metal_plate` | Aluminium | 180 ± 25 | Placement — robust |
 | `sturdy_mug` | Stoneware | 160 ± 20 | Placement — robust |
+| `abs_round_connector` | ABS plastic | 38 ± 5 | Insertion — fragile |
+| `steel_peg` | Steel | 230 ± 20 | Insertion — robust |
 
 `F_break` is sampled per-instance from the class distribution at episode start. The LLM reasons about the *class*, not a memorized instance value.
 

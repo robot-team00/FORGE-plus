@@ -111,14 +111,14 @@
   <section>
     <h2>Headline results</h2>
     <div class="cards">
+      <div class="card"><div class="num">16.1 N &lt; 23 N</div><div class="cap">Fragile bottle: the jam is caught from the force signature far below break; 9/9 recovery episodes seat it under an 8.8&nbsp;N budget with 0 breaks.</div></div>
       <div class="card"><div class="num">256/256 ×2</div><div class="cap"><strong>One unified checkpoint</strong>, both object classes (fragile ABS + steel gear), strict true-seat clean gates, <strong>0 breaks</strong> — Robotiq 2F-140, 0.4&nbsp;mm diametral clearance.</div></div>
       <div class="card"><div class="num">5.4 N</div><div class="cap">Mean peak insertion force in the <strong>fully physical table-pick flow</strong> (64/64, 0 breaks) — removing the last staging pin made contact <em>gentler</em>, not worse.</div></div>
-      <div class="card"><div class="num">64% / 40%</div><div class="cap">Jams recovered by the force-signature chain under a 5&nbsp;mm in-grip slip (Franka / 2F-140) vs 32% / 28% for a menu-luck vision proxy and 0% for a hand-coded heuristic.</div></div>
-      <div class="card"><div class="num">16.1 N &lt; 23 N</div><div class="cap">Fragile bottle: the jam is caught from the force signature far below break; 9/9 recovery episodes seat it under an 8.8&nbsp;N budget with 0 breaks.</div></div>
+      <div class="card"><div class="num">40% / 64%</div><div class="cap">Jams recovered by the force-signature chain under a 5&nbsp;mm in-grip slip (2F-140 / Franka) vs 28% / 32% for a menu-luck vision proxy and 0% for a hand-coded heuristic.</div></div>
     </div>
     <div class="callout">
       <span class="lab">The press-harder result</span>
-      <p><strong>"Press harder" fails in two entirely different ways on two grippers.</strong> On the Franka it is <span class="bad">destructive</span>: escalating the ceiling breaks <strong>24 of 25</strong> fragile gears. On the Robotiq 2F-140 it is <em>futile</em>: force escalation never fixes the in-grip tilt, the tilted bore never takes load, so the raised ceiling never engages — 0 successes, 100% timeouts. There, doing <em>nothing</em> is the destructive cell (20% breaks). Neither face is ever the right answer — and only the force-signature chain finds <code>regrasp</code>, the one maneuver that fixes a tilted grip.</p>
+      <p><strong>"Press harder" fails in two entirely different ways on two grippers.</strong> On the Robotiq 2F-140 it is <em>futile</em>: force escalation never fixes the in-grip tilt, the tilted bore never takes load, so the raised ceiling never engages — 0 successes, 100% timeouts. There, doing <em>nothing</em> is the destructive cell (20% breaks). On the Franka it is <span class="bad">destructive</span>: escalating the ceiling breaks <strong>24 of 25</strong> fragile gears. Neither face is ever the right answer — and only the force-signature chain finds <code>regrasp</code>, the one maneuver that fixes a tilted grip.</p>
     </div>
   </section>
 
@@ -137,18 +137,11 @@
     <p>All four are RTX renders of real evaluation episodes. The HUD labels every phase <strong style="color:#15803d">LEARNED</strong> vs <strong style="color:#b45309">SCRIPTED</strong> in real time, with a live contact-force gauge against the budget <code>F_max</code> and the break limit <code>F_brk</code>. Only learned-policy behavior performs the contact-rich work; scripted phases are staging (transport between poses) and the recovery <em>primitives</em> the LLM selects from.</p>
     <div class="vidgrid">
       <div class="vidcard">
-        <video controls preload="metadata" poster="assets/poster_gear_clean.png">
-          <source src="../docs/videos/task3/gear_clean_robotiq.mp4" type="video/mp4">
+        <video controls preload="metadata" poster="assets/poster_bottle_rq.png">
+          <source src="../docs/videos/task3/forge_recovery_robotiq.mp4" type="video/mp4">
         </video>
-        <div class="vt">Gear insertion · 2F-140 · clean full cycle (28 s)</div>
-        <div class="vd">Table pick (real friction grasp, no pinning) → carry → <strong>learned</strong> force-guided insertion at 0.4&nbsp;mm clearance → <strong>learned</strong> release (act[7]) → hand clear.</div>
-      </div>
-      <div class="vidcard">
-        <video controls preload="metadata" poster="assets/poster_gear_recovery.png">
-          <source src="../docs/videos/task3/gear_recovery_robotiq.mp4" type="video/mp4">
-        </video>
-        <div class="vt">Gear insertion · 2F-140 · jam recovery (83 s)</div>
-        <div class="vd">A 5&nbsp;mm in-grip slip is injected; the recurring contactless-hover signature routes the frozen LLM to <code>regrasp</code> — <strong>two fully physical place-on-table regrasp cycles</strong> — then the learned policy seats and releases the gear.</div>
+        <div class="vt">Bottle placement · 2F-140 · fragile recovery (11 s)</div>
+        <div class="vd">Glass-class bottle (<code>F_break</code> 19&nbsp;N) on the four-bar adaptive gripper: a seeded base-aim fault wedges the bottle on the rack; the jam is caught from the force signature (peak 13.9&nbsp;N, under break), one recovery re-approach, and attempt&nbsp;2 places the bottle upright.</div>
       </div>
       <div class="vidcard">
         <video controls preload="metadata" poster="../docs/videos/task3/forge_recovery_franka.png">
@@ -158,11 +151,18 @@
         <div class="vd">Glass-class bottle (<code>F_break</code> ≈ 23&nbsp;N): the wedge is caught <strong>at 16.1&nbsp;N from the force signature alone</strong>, the LLM picks <code>rotate_align</code> at the same <code>F_max</code>, and the learned policy re-inserts, seats, releases, retracts.</div>
       </div>
       <div class="vidcard">
-        <video controls preload="metadata" poster="../docs/videos/task3/forge_release.png">
-          <source src="../docs/videos/task3/forge_release.mp4" type="video/mp4">
+        <video controls preload="metadata" poster="assets/poster_gear_recovery.png">
+          <source src="../docs/videos/task3/gear_recovery_robotiq.mp4" type="video/mp4">
         </video>
-        <div class="vt">Bottle placement · Franka · learned insert + release (3 s)</div>
-        <div class="vd">The clean case: a FORGE PPO policy descends the bottle into the rack cell under ~0–4&nbsp;N contact and <strong>decides when to let go</strong> (learned 8th action dim); the bottle stands upright.</div>
+        <div class="vt">Gear insertion · 2F-140 · jam recovery (83 s)</div>
+        <div class="vd">A 5&nbsp;mm in-grip slip is injected; the recurring contactless-hover signature routes the frozen LLM to <code>regrasp</code> — <strong>two fully physical place-on-table regrasp cycles</strong> — then the learned policy seats and releases the gear.</div>
+      </div>
+      <div class="vidcard">
+        <video controls preload="metadata" poster="assets/poster_gear_franka.png">
+          <source src="../docs/videos/task3/gear_recovery_franka.mp4" type="video/mp4">
+        </video>
+        <div class="vt">Gear insertion · Franka · jam recovery (14 s)</div>
+        <div class="vd">The same 5&nbsp;mm in-grip slip on the Franka hand — the slip leaves the gear tilted in the grip, the hover signature routes through recovery attempts, and the learned policy threads the 0.4&nbsp;mm bore and ends <strong>SEATED</strong>.</div>
       </div>
     </div>
   </section>
@@ -193,8 +193,8 @@
   <section>
     <h2>Recovery under an in-grip slip — five baselines, two grippers</h2>
     <figure>
-      <img src="assets/sweep_bars.png" alt="Grouped bars of the recovery sweep on both grippers: ours 64%/40% success; press-harder 96% breaks on Franka, 100% timeouts on 2F-140.">
-      <figcaption>Fragile ABS gear, 5&nbsp;mm in-grip slip every episode, 25 episodes/cell, F_max never raised. The slip leaves the gear tilted 7–10° <em>in the grip</em>; only the force-signature chain routes the recurring zero-force hover to <code>regrasp</code>. <strong>Caveat:</strong> the two panels use different step caps (700 vs 1600 — one 2F-140 regrasp cycle is ~450 steps) and different checkpoints, so compare within a panel, not across. The "vision-LLM" baseline is a menu-sampling <em>proxy</em> for pixels-only reasoners. On steel, the same chain recovers 25/25 with 0 breaks. Recovery episodes press harder than clean ones (23&nbsp;N mean vs 15.9) — that envelope exposure, not any raised ceiling, accounts for the residual fragile breaks.</figcaption>
+      <img src="assets/sweep_bars.png" alt="Grouped bars of the recovery sweep on both grippers: ours 40%/64% success; press-harder 100% timeouts on 2F-140, 96% breaks on Franka.">
+      <figcaption>Fragile ABS gear, 5&nbsp;mm in-grip slip every episode, 25 episodes/cell, F_max never raised. The slip leaves the gear tilted 7–10° <em>in the grip</em>; only the force-signature chain routes the recurring zero-force hover to <code>regrasp</code>. <strong>Caveat:</strong> the two panels use different step caps (1600 vs 700 — one 2F-140 regrasp cycle is ~450 steps) and different checkpoints, so compare within a panel, not across. The "vision-LLM" baseline is a menu-sampling <em>proxy</em> for pixels-only reasoners. On steel, the same chain recovers 25/25 with 0 breaks. Recovery episodes press harder than clean ones (23&nbsp;N mean vs 15.9) — that envelope exposure, not any raised ceiling, accounts for the residual fragile breaks.</figcaption>
     </figure>
   </section>
 
