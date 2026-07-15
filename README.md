@@ -4,6 +4,10 @@ LLM-guided failure recovery for contact-rich assembly under per-object force cei
 
 A two-layer simulation study built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA-L 2025). Simulation-only · frozen LLM supervisor · single GPU · no real robot · no fracture modeling.
 
+**[Project page (videos + results)](https://robot-team00.github.io/FORGE-plus/site/)** · **[Paper (LaTeX source)](paper/main.tex)** · [Research proposal](docs/proposal.html)
+
+Kyupaeck Jeff Rah ([ORCID](https://orcid.org/0000-0003-1898-2930)) · Midum Oh
+
 ---
 
 ## What this is
