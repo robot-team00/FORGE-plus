@@ -3,7 +3,32 @@
 
 objects:
 
-  # ---- Task 1: single insertion ----
+  # ---- Task 1: single insertion (gear-on-shaft, FORGE GearMesh assets) ----
+  abs_gear:
+    identity:
+      name: "Ø42mm ABS medium spur gear (FORGE)"
+      material: ABS
+      class: spur_gear
+      nominal_mass_g: 12.0
+      geometry_tags: [tooth_mesh, shaft_bore, thin_wall, clearance_fit]
+    f_break_mean_n: 38.0
+    f_break_std_n: 5.0
+    f_break_min_n: 20.0
+    compatible_tasks: [task1_single_insertion]
+
+  steel_gear:
+    identity:
+      name: "Ø42mm steel medium spur gear (FORGE)"
+      material: steel
+      class: spur_gear
+      nominal_mass_g: 90.0
+      geometry_tags: [tooth_mesh, shaft_bore, solid, clearance_fit]
+    f_break_mean_n: 230.0
+    f_break_std_n: 20.0
+    f_break_min_n: 180.0
+    compatible_tasks: [task1_single_insertion]
+
+  # ---- Legacy task-1 objects (pre-gear variant) ----
   abs_round_connector:
     identity:
       name: "Ø8mm ABS round connector"

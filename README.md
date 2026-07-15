@@ -71,6 +71,46 @@ Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) 
 
 ---
 
+## Task 1 demo — gear insertion on the Robotiq 2F-140
+
+The full Task 1 cycle on the *second* gripper: a Robotiq 2F-140 **picks a FORGE gear off the
+table with a real friction grasp, inserts it onto a shaft with 0.4 mm diametral clearance under
+a per-object force budget, and a learned head decides when to release** — and when the grip is
+disturbed mid-episode, a **frozen LLM reads the text force signature** and drives recovery,
+including a fully physical **place-on-table regrasp**. Nothing about the object is teleported or
+pinned anywhere in this flow; the HUD labels every phase LEARNED (green) vs SCRIPTED staging
+(orange) with a live force gauge.
+
+Headline numbers (deterministic policy, strict TRUE-seat criterion, hidden per-episode
+`F_break`; one unified checkpoint for both object classes):
+
+- **Clean gates:** fragile ABS gear **256/256, 0 breaks** (peak 15.9 N mean); steel gear
+  **256/256, 0 breaks** — single checkpoint (`task1_gear_rq_uni.pt`, a bc3/bc7 weight soup).
+- **Learned release** (`release_obs_head`, act[7]): both classes 256/256, 0 breaks, 0 bad
+  releases — success requires released + standing seated + hand clear.
+- **Full table-pick flow:** 64/64, 0 breaks, peak **5.4 N mean** — the unpinned friction pick
+  centers the part better than the staging pin ever did, the gentlest insertions of the project.
+- **Recovery sweep** (5 mm in-grip slip, fragile class): ours **40%** vs vision-LLM proxy 28%,
+  heuristic 0%, press-harder 0% (futile — it never fixes the in-grip tilt), no-recovery 0% with
+  **20% breaks**. Only the force-signature chain ever routes to `regrasp`, the one maneuver that
+  fixes a tilted grip.
+
+▶️ **[`docs/videos/task3/gear_clean_robotiq.mp4`](docs/videos/task3/gear_clean_robotiq.mp4)** —
+clean episode (28 s): table pick → carry → learned insertion → learned release → hand clear.
+▶️ **[`docs/videos/task3/gear_recovery_robotiq.mp4`](docs/videos/task3/gear_recovery_robotiq.mp4)**
+— recovery episode (83 s): induced in-grip slip → hover signature → LLM-selected recovery with
+two physical place-on-table regrasps → seat → learned release.
+
+Why the method section matters: **PPO alone provably fails at this clearance** (exploration
+noise that can search the funnel already breaks the part; nine escalating runs, zero seats),
+and a tiny-std PPO polish *destroys* a working policy. The pipeline that works is
+scripted-expert demos → DAgger → BC → **weight-soup unification**. Full write-up (plant fixes,
+release-head design history, the 13-probe table-pick staging, the droop-compensation rule, all
+caveats): **[`docs/task1_gear_robotiq.md`](docs/task1_gear_robotiq.md)**; recovery baseline
+tables for both grippers: [`docs/task1_jam_recovery.md`](docs/task1_jam_recovery.md).
+
+---
+
 ## Architecture
 
 ![Two-layer architecture diagram](docs/architecture.svg)
@@ -200,6 +240,11 @@ PYTHONPATH=. python scripts/train_skill.py \
 | 3 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
 
 Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps seeded by [GraspGen](https://arxiv.org/abs/2507.13097)). Gripper becomes a generalization axis: `F_max` is derived from object identity and should be gripper-invariant; whether it actually is is a testable prediction.
+
+> **Implementation note:** the *demonstrated* Task 1 uses the FORGE GearMesh assets — a fragile
+> ABS gear (`F_break` 38±5 N) vs a steel gear onto a shaft with 0.4 mm diametral clearance —
+> rather than the proposal's connector/peg pair; same fragile-vs-robust contrast, real FORGE
+> geometry. See [`docs/task1_gear_robotiq.md`](docs/task1_gear_robotiq.md).
 
 ---
 
