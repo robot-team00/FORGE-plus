@@ -2,7 +2,11 @@
 
 LLM-guided failure recovery for contact-rich assembly under per-object force ceilings.
 
-A two-layer simulation study built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA-L 2025). Simulation-only · frozen LLM supervisor · single GPU · no real robot · no fracture modeling.
+A two-layer system built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA-L 2025): a frozen LLM sets per-object force ceilings and picks recoveries from text force signatures, while a hard clamp in the fast loop keeps force authority.
+
+**[Project page (videos + results)](https://robot-team00.github.io/FORGE-plus/site/)** · **[Paper (PDF)](paper/forge-plus.pdf)**
+
+[Kyupaeck Jeff Rah](https://www.linkedin.com/in/jeffrah) · Midum Oh — *Independent Researchers*
 
 ---
 
@@ -34,15 +38,16 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ---
 
-## Task 3 demo — wine-cellar bottle insertion
+## Bottle-placement demo — wine-cellar bottle insertion
 
-A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
-rack, then safely releases it** — a contact-rich peg-in-hole **place + release**. A **learned
-FORGE PPO policy** descends the bottle into the cell under force control (contact stays gentle,
-~0–4 N — far below breaking), keeps it vertical, and **decides when to let go** (a learned 8th
-action dimension); it seats the bottle standing upright and the arm retracts. Real physics
-throughout — the bottle is a dynamic rigid body held by a genuine friction grip, never teleported
-during the carry.
+The robot carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
+rack, then safely releases it** — a contact-rich peg-in-hole **place + release**, with the
+fragile recovery episode demonstrated on **both grippers** (Robotiq 2F-140 and Franka Panda).
+A **learned FORGE PPO policy** descends the bottle into the cell under force control (contact
+stays gentle, ~0–4 N — far below breaking), keeps it vertical, and **decides when to let go**
+(a learned 8th action dimension); it seats the bottle standing upright and the arm retracts.
+Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction grip,
+never teleported during the carry.
 
 > ✅ **This is a learned policy** (FORGE PPO), not a scripted scaffold. The **force-guided
 > insertion and the release timing are learned**; only the pre-approach positioning, the
@@ -52,18 +57,28 @@ during the carry.
 > write-ups: [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md)
 > and [`docs/task3/06-recovery.md`](docs/task3/06-recovery.md).
 
-<div align="center">
-  <img src="docs/videos/task3/forge_recovery_franka.png" width="600" alt="Fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
-  <br><em>The headline moment: the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the system reads the
-  <b>text force signature</b> (no vision), the LLM picks <code>rotate_align</code>, and the learned
-  policy re-inserts, seats the bottle, releases, and retracts.</em>
-</div>
+<table>
+<tr>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/forge_recovery_robotiq.mp4"><img src="docs/videos/task3/forge_recovery_robotiq.png" alt="Robotiq 2F-140 fragile recovery: the JAM DETECTED card shows the text force signature (peak 14.0 N, rising, lateral -x steady) and the LLM's rotate_align decision over the wine rack"></a>
+  <br><em><b>Robotiq 2F-140</b> — a seeded base-aim fault wedges the bottle; the jam is caught
+  from the <b>text force signature</b> (peak 14.0 N vs a 19 N break, no vision), the LLM picks
+  <code>rotate_align</code>, and attempt 2 places the bottle upright.</em>
+</td>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/forge_recovery_franka.mp4"><img src="docs/videos/task3/forge_recovery_franka.png" alt="Franka fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack"></a>
+  <br><em><b>Franka Panda</b> — the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the LLM picks
+  <code>rotate_align</code>, and the learned policy re-inserts, seats the bottle,
+  <b>releases</b> (learned), and retracts.</em>
+</td>
+</tr>
+</table>
 
-▶️ **[`docs/videos/task3/forge_recovery_franka.mp4`](docs/videos/task3/forge_recovery_franka.mp4)**
- — the full **fragile recovery episode**: learned insertion → induced jam caught from the force
- signature far below break → LLM recovery → learned re-insertion → seat → **learned release** →
- retract. (The clean insertion + release demo without a jam:
- [`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4).)
+▶️ Videos (click a still above to play, or open directly):
+**[`forge_recovery_robotiq.mp4`](docs/videos/task3/forge_recovery_robotiq.mp4)** (11 s) ·
+**[`forge_recovery_franka.mp4`](docs/videos/task3/forge_recovery_franka.mp4)** (13 s).
+(The clean insertion + release demo without a jam:
+[`forge_release.mp4`](docs/videos/task3/forge_release.mp4).)
 
 Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) is in
 **[`docs/task3/`](docs/task3/README.md)** — start with
@@ -71,9 +86,9 @@ Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) 
 
 ---
 
-## Task 1 demo — gear insertion on the Robotiq 2F-140
+## Gear-insertion demo — Robotiq 2F-140
 
-The full Task 1 cycle on the *second* gripper: a Robotiq 2F-140 **picks a FORGE gear off the
+The full gear-insertion cycle on the *second* gripper: a Robotiq 2F-140 **picks a FORGE gear off the
 table with a real friction grasp, inserts it onto a shaft with 0.4 mm diametral clearance under
 a per-object force budget, and a learned head decides when to release** — and when the grip is
 disturbed mid-episode, a **frozen LLM reads the text force signature** and drives recovery,
@@ -95,11 +110,29 @@ Headline numbers (deterministic policy, strict TRUE-seat criterion, hidden per-e
   **20% breaks**. Only the force-signature chain ever routes to `regrasp`, the one maneuver that
   fixes a tilted grip.
 
-▶️ **[`docs/videos/task3/gear_clean_robotiq.mp4`](docs/videos/task3/gear_clean_robotiq.mp4)** —
-clean episode (28 s): table pick → carry → learned insertion → learned release → hand clear.
-▶️ **[`docs/videos/task3/gear_recovery_robotiq.mp4`](docs/videos/task3/gear_recovery_robotiq.mp4)**
-— recovery episode (83 s): induced in-grip slip → hover signature → LLM-selected recovery with
-two physical place-on-table regrasps → seat → learned release.
+<table>
+<tr>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/gear_recovery_robotiq.mp4"><img src="docs/videos/task3/gear_recovery_robotiq.png" alt="Robotiq 2F-140 mid-recovery: the tilted gear is being placed back on the table for a physical re-pick (LLM decision wedge -> regrasp, attempt 2)"></a>
+  <br><em><b>Robotiq 2F-140</b> — mid-recovery: the slip leaves the gear tilted in the grip, and
+  the LLM's <code>regrasp</code> decision drives a <b>fully physical place-on-table re-pick</b>
+  (two cycles in the episode) before the learned policy seats and releases it.</em>
+</td>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/gear_recovery_franka.mp4"><img src="docs/videos/task3/gear_recovery_franka.png" alt="Franka hand threading the white gear onto the shaft under LEARNED force-guided insertion (8.3 N, under budget) after the slip recovery"></a>
+  <br><em><b>Franka Panda</b> — the same 5 mm in-grip slip; the recurring contactless-hover
+  signature routes through recovery attempts and the learned policy threads the 0.4 mm bore,
+  ending <b>SEATED</b>.</em>
+</td>
+</tr>
+</table>
+
+▶️ Videos (click a still above to play, or open directly):
+**[`gear_recovery_robotiq.mp4`](docs/videos/task3/gear_recovery_robotiq.mp4)** (83 s) ·
+**[`gear_recovery_franka.mp4`](docs/videos/task3/gear_recovery_franka.mp4)** (14 s).
+(The clean full cycle without a disturbance — table pick → carry → learned insertion → learned
+release → hand clear:
+[`gear_clean_robotiq.mp4`](docs/videos/task3/gear_clean_robotiq.mp4), 28 s.)
 
 Why the method section matters: **PPO alone provably fails at this clearance** (exploration
 noise that can search the funnel already breaks the part; nine escalating runs, zero seats),
@@ -114,8 +147,6 @@ tables for both grippers: [`docs/task1_jam_recovery.md`](docs/task1_jam_recovery
 ## Architecture
 
 ![Two-layer architecture diagram](docs/architecture.svg)
-
-> Full research proposal: [`docs/proposal.html`](docs/proposal.html)
 
 Two layers, two rates, clean roles:
 
@@ -152,7 +183,7 @@ forge_plus/
 │   ├── base_assembly_env.py  # Abstract interface (decouples episode runner from sim)
 │   ├── mock_assembly_env.py  # Lightweight CPU env for testing without Isaac Lab
 │   ├── isaac_lab_env.py      # Isaac Lab implementation (requires GPU + isaaclab>=2.0)
-│   └── object_configs.py     # 8 objects across 3 tasks, each with hidden F_break dist.
+│   └── object_configs.py     # object registry, each class with a hidden F_break dist.
 ├── skills/
 │   ├── policy_network.py     # FiLM-conditioned MLP — F_cmd modulates every hidden layer
 │   └── forge_skill.py        # FORGE-style skill with running obs normalizer
@@ -211,7 +242,7 @@ Run the full test suite:
 PYTHONPATH=. python -m pytest tests/ -v
 ```
 
-Evaluate all baselines on Task 1:
+Evaluate all baselines on the gear-insertion task:
 
 ```bash
 PYTHONPATH=. python scripts/evaluate.py \
@@ -235,13 +266,12 @@ PYTHONPATH=. python scripts/train_skill.py \
 
 | # | Name | What it isolates | Objects | Dominant failure |
 |---|---|---|---|---|
-| 1 | Single insertion | Budget-setting + clamp | ABS round connector (fragile) vs steel peg (robust) | Wedge jam vs friction jam — identical on camera, distinguishable in force |
-| 2 | Multi-step assembly | Closed-loop recovery across a sequence | Resin planet gear (fragile) vs aluminium planet gear (robust) | Cross-thread / misalignment / tooth clash — each demands a different recovery within budget |
-| 3 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
+| 1 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
+| 2 | Single insertion | Budget-setting + clamp | ABS round connector (fragile) vs steel peg (robust) | Wedge jam vs friction jam — identical on camera, distinguishable in force |
 
 Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps seeded by [GraspGen](https://arxiv.org/abs/2507.13097)). Gripper becomes a generalization axis: `F_max` is derived from object identity and should be gripper-invariant; whether it actually is is a testable prediction.
 
-> **Implementation note:** the *demonstrated* Task 1 uses the FORGE GearMesh assets — a fragile
+> **Implementation note:** the *demonstrated* insertion task uses the FORGE GearMesh assets — a fragile
 > ABS gear (`F_break` 38±5 N) vs a steel gear onto a shaft with 0.4 mm diametral clearance —
 > rather than the proposal's connector/peg pair; same fragile-vs-robust contrast, real FORGE
 > geometry. See [`docs/task1_gear_robotiq.md`](docs/task1_gear_robotiq.md).
@@ -252,14 +282,12 @@ Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps 
 
 | Key | Material | F_break mean (N) | Task |
 |---|---|---|---|
-| `abs_round_connector` | ABS plastic | 38 ± 5 | Task 1 — fragile |
-| `steel_peg` | Steel | 230 ± 20 | Task 1 — robust |
-| `resin_planet_gear` | Photopolymer resin | 48 ± 8 | Task 2 — fragile |
-| `metal_planet_gear` | Aluminium | 210 ± 18 | Task 2 — robust |
-| `glass_bowl` | Borosilicate glass | 22 ± 4 | Task 3 — fragile |
-| `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Task 3 — fragile |
-| `metal_plate` | Aluminium | 180 ± 25 | Task 3 — robust |
-| `sturdy_mug` | Stoneware | 160 ± 20 | Task 3 — robust |
+| `glass_bowl` | Borosilicate glass | 22 ± 4 | Placement — fragile |
+| `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Placement — fragile |
+| `metal_plate` | Aluminium | 180 ± 25 | Placement — robust |
+| `sturdy_mug` | Stoneware | 160 ± 20 | Placement — robust |
+| `abs_round_connector` | ABS plastic | 38 ± 5 | Insertion — fragile |
+| `steel_peg` | Steel | 230 ± 20 | Insertion — robust |
 
 `F_break` is sampled per-instance from the class distribution at episode start. The LLM reasons about the *class*, not a memorized instance value.
 
@@ -452,6 +480,6 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99
 
 Videos are stored as `docs/videos/task3/eval_run_NNN.mp4`.
 
-The **Task 3 wine-cellar bottle insertion** demo (screenshot + video) is at the
-[top of this README](#task-3-demo--wine-cellar-bottle-insertion); full write-up in
+The **wine-cellar bottle insertion** demo (screenshot + video) is at the
+[top of this README](#bottle-placement-demo--wine-cellar-bottle-insertion); full write-up in
 [`docs/task3/`](docs/task3/README.md).

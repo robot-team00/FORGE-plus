@@ -1,4 +1,4 @@
-# Task 1 on the Robotiq 2F-140 — the complete write-up
+# Gear insertion on the Robotiq 2F-140 — the complete write-up
 
 **Full-cycle, fully learned-manipulation gear insertion on a second gripper:
 table pick → force-budgeted insertion → learned release, with force-signature

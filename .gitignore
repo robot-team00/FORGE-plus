@@ -22,3 +22,5 @@ tmp_*.txt
 tmp_*.json
 tmp_*.hex
 _committed_*.txt
+!site/assets/
+!site/assets/**

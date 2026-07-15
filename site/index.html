@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FORGE-plus: Force-Budgeted Recovery</title>
+<meta name="description" content="LLM-guided failure recovery for contact-rich assembly under per-object force ceilings. A frozen LLM sets the budget and reads text force signatures; a hard clamp keeps force authority in the fast loop.">
+<style>
+  :root{
+    --ink:#1f2330; --muted:#5b6170; --faint:#8a909e;
+    --line:#e4e6eb; --line-strong:#d3d6de;
+    --indigo:#4338ca; --indigo-soft:#eef2ff; --indigo-line:#c7cdf5;
+    --green:#15803d; --red:#b42318; --amber:#b45309;
+    --amber-bg:#fffbeb; --amber-line:#f59e0b; --amber-ink:#7a4f0a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#fcfcfd;color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:56px 24px 100px}
+  .eyebrow{font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--indigo);font-weight:700;margin:0 0 12px}
+  h1{font-size:34px;line-height:1.2;letter-spacing:-.012em;margin:0 0 8px;font-weight:750}
+  h1 .sub{display:block;font-size:19px;font-weight:500;color:var(--muted);margin-top:8px;line-height:1.45}
+  .authors{font-size:16px;color:var(--muted);margin:10px 0 0}
+  .authors a{color:inherit}
+  .tags{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 8px}
+  .pill{display:inline-block;font-size:11.5px;font-weight:600;color:var(--indigo);background:var(--indigo-soft);
+    border:1px solid var(--indigo-line);padding:3px 11px;border-radius:999px}
+  .pill.neutral{color:var(--muted);background:#f2f3f6;border-color:var(--line-strong)}
+  .links{margin:22px 0 0;display:flex;flex-wrap:wrap;gap:10px}
+  .btn{display:inline-block;padding:9px 18px;border-radius:8px;font-weight:650;font-size:14px;text-decoration:none;
+    border:1.5px solid var(--indigo);color:var(--indigo);transition:background .15s}
+  .btn:hover{background:var(--indigo-soft)}
+  .btn.primary{background:var(--indigo);color:#fff}
+  .btn.primary:hover{background:#3730a3}
+  .rule{height:1px;background:var(--line);border:0;margin:38px 0}
+  section{margin:44px 0 0}
+  h2{font-size:14px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--indigo);
+    margin:0 0 18px;padding-bottom:9px;border-bottom:1.5px solid var(--indigo-line)}
+  h3{font-size:16px;font-weight:700;margin:26px 0 8px}
+  p{margin:0 0 14px}
+  a{color:var(--indigo)}
+  strong{font-weight:670}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:#f1f2f6;color:#37323e;padding:1px 5px;border-radius:4px}
+  figure{margin:18px 0;border:1px solid var(--line-strong);border-radius:10px;padding:14px;background:#fff}
+  figure img{display:block;width:100%;height:auto;border-radius:4px}
+  figcaption{font-size:12.5px;color:var(--faint);font-style:italic;padding:10px 4px 0;line-height:1.5}
+  .vidgrid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:18px}
+  .vidcard{border:1px solid var(--line-strong);border-radius:10px;background:#fff;padding:12px;display:flex;flex-direction:column}
+  .vidcard video{width:100%;border-radius:6px;background:#000}
+  .vidcard .vt{font-weight:700;font-size:14.5px;margin:10px 2px 4px}
+  .vidcard .vd{font-size:13px;color:var(--muted);line-height:1.5;margin:0 2px}
+  .tbl-wrap{overflow-x:auto;margin:16px 0 8px;border:1px solid var(--line-strong);border-radius:8px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.45}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:#f6f7fa;color:var(--muted);font-weight:700;font-size:11.5px;letter-spacing:.04em;
+    text-transform:uppercase;border-bottom:1.5px solid var(--line-strong);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+  td.h{font-weight:650;white-space:nowrap}
+  .good{color:var(--green);font-weight:650}
+  .bad{color:var(--red);font-weight:650}
+  .callout{background:var(--amber-bg);border:1px solid #f3e2b6;border-left:4px solid var(--amber-line);
+    border-radius:7px;padding:14px 18px;margin:20px 0;font-size:14.5px}
+  .callout .lab{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+    color:var(--amber-ink);display:block;margin-bottom:6px}
+  .callout p{margin:0;color:#48402c}
+  .callout p+p{margin-top:8px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:18px 0}
+  .card{border:1px solid var(--line-strong);border-radius:10px;background:#fff;padding:16px 18px}
+  .card .num{font-size:26px;font-weight:750;color:var(--indigo);line-height:1.1}
+  .card .cap{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45}
+  .foot{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
+  @media(max-width:640px){.vidgrid{grid-template-columns:1fr}h1{font-size:26px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Project Page</p>
+  <h1>FORGE-plus: Force-Budgeted Recovery
+    <span class="sub">A frozen LLM sets per-object force ceilings from identity and picks recoveries from text force signatures — while a hard clamp it cannot raise keeps force authority in the fast control loop.</span>
+  </h1>
+
+  <p class="authors"><a href="https://www.linkedin.com/in/jeffrah">Kyupaeck Jeff Rah</a> &middot; Midum Oh<br><span style="font-size:14px">Independent Researchers</span></p>
+
+  <div class="tags">
+    <span class="pill">Frozen LLM supervisor</span>
+    <span class="pill">Text force signatures</span>
+    <span class="pill">Hard per-object ceiling</span>
+    <span class="pill">Hidden F_break — non-circular metric</span>
+    <span class="pill neutral">Franka Panda + Robotiq 2F-140</span>
+  </div>
+
+  <div class="links">
+    <a class="btn primary" href="https://github.com/robot-team00/FORGE-plus">Code &amp; docs</a>
+    <a class="btn" href="../paper/forge-plus.pdf">Paper (PDF)</a>
+  </div>
+
+  <hr class="rule">
+
+  <!-- TLDR -->
+  <section>
+    <h2>In one paragraph</h2>
+    <p>Force-conditioned RL skills (<a href="https://arxiv.org/abs/2408.04587">FORGE</a>) can seat tight-clearance assemblies under a commanded force ceiling — but <strong>who sets the ceiling</strong>, and <strong>what do you do when the insertion jams</strong>? FORGE-plus answers with a deliberately thin semantic layer: a <strong>frozen, text-only LLM</strong> reads the object's identity and sets a per-object <code>F_max</code> before the episode; on failure it reads a <strong>compact text force signature</strong> (peak axial force, net insertion, lateral bias, slip events — no images) and picks a recovery from a fixed menu with <em>no "press harder" option</em>. A hard clamp in the fast loop saturates every commanded force to <code>F_max</code>; the hidden per-episode breaking force <code>F_break</code> is visible only to the evaluator, so the fragility metric cannot be gamed. Everything below is rigid-body simulation (Isaac Lab); breakage is a hidden scalar force threshold; <strong>no sim-to-real claim is made</strong>.</p>
+  </section>
+
+  <!-- headline numbers -->
+  <section>
+    <h2>Headline results</h2>
+    <div class="cards">
+      <div class="card"><div class="num">16.1 N &lt; 23 N</div><div class="cap">Fragile bottle: the jam is caught from the force signature far below break; 9/9 recovery episodes seat it under an 8.8&nbsp;N budget with 0 breaks.</div></div>
+      <div class="card"><div class="num">256/256 ×2</div><div class="cap"><strong>One unified checkpoint</strong>, both object classes (fragile ABS + steel gear), strict true-seat clean gates, <strong>0 breaks</strong> — Robotiq 2F-140, 0.4&nbsp;mm diametral clearance.</div></div>
+      <div class="card"><div class="num">5.4 N</div><div class="cap">Mean peak insertion force in the <strong>fully physical table-pick flow</strong> (64/64, 0 breaks) — removing the last staging pin made contact <em>gentler</em>, not worse.</div></div>
+      <div class="card"><div class="num">40% / 64%</div><div class="cap">Jams recovered by the force-signature chain under a 5&nbsp;mm in-grip slip (2F-140 / Franka) vs 28% / 32% for a menu-luck vision proxy and 0% for a hand-coded heuristic.</div></div>
+    </div>
+    <div class="callout">
+      <span class="lab">The press-harder result</span>
+      <p><strong>"Press harder" fails in two entirely different ways on two grippers.</strong> On the Robotiq 2F-140 it is <em>futile</em>: force escalation never fixes the in-grip tilt, the tilted bore never takes load, so the raised ceiling never engages — 0 successes, 100% timeouts. There, doing <em>nothing</em> is the destructive cell (20% breaks). On the Franka it is <span class="bad">destructive</span>: escalating the ceiling breaks <strong>24 of 25</strong> fragile gears. Neither face is ever the right answer — and only the force-signature chain finds <code>regrasp</code>, the one maneuver that fixes a tilted grip.</p>
+    </div>
+  </section>
+
+  <!-- architecture -->
+  <section>
+    <h2>Architecture</h2>
+    <figure>
+      <img src="../docs/architecture.svg" alt="Two-layer architecture: a slow frozen-LLM layer (budget-setter, recovery-selector, signature encoder) above a fast control layer (RL skill, OSC controller, force clamp, robot); a hidden F_break is read only by the evaluator.">
+      <figcaption>Two layers, two rates, clean roles. The LLM only emits a number and a menu choice (~0.1–1&nbsp;Hz of decisions, JSON in/out, text only); the RL skill + <code>ForceClamp</code> run at control rate and own force authority. Three invariants make the evaluation non-circular: <code>F_break</code> is never observed by any learned/LLM component, <code>F_max</code> is immutable during recovery (the selector's <code>keep_F_max_N</code> is overwritten server-side), and a fixed 120&nbsp;N global cap backstops hallucinated ceilings.</figcaption>
+    </figure>
+  </section>
+
+  <!-- videos -->
+  <section>
+    <h2>Videos</h2>
+    <p>All four are RTX renders of real evaluation episodes. The HUD labels every phase <strong style="color:#15803d">LEARNED</strong> vs <strong style="color:#b45309">SCRIPTED</strong> in real time, with a live contact-force gauge against the budget <code>F_max</code> and the break limit <code>F_brk</code>. Only learned-policy behavior performs the contact-rich work; scripted phases are staging (transport between poses) and the recovery <em>primitives</em> the LLM selects from.</p>
+    <div class="vidgrid">
+      <div class="vidcard">
+        <video controls preload="metadata" poster="assets/poster_bottle_rq.png">
+          <source src="../docs/videos/task3/forge_recovery_robotiq.mp4" type="video/mp4">
+        </video>
+        <div class="vt">Bottle placement · 2F-140 · fragile recovery (11 s)</div>
+        <div class="vd">Glass-class bottle (<code>F_break</code> 19&nbsp;N) on the four-bar adaptive gripper: a seeded base-aim fault wedges the bottle on the rack; the jam is caught from the force signature (peak 14.0&nbsp;N, under break), the LLM picks <code>rotate_align</code>, and attempt&nbsp;2 places the bottle upright.</div>
+      </div>
+      <div class="vidcard">
+        <video controls preload="metadata" poster="../docs/videos/task3/forge_recovery_franka.png">
+          <source src="../docs/videos/task3/forge_recovery_franka.mp4" type="video/mp4">
+        </video>
+        <div class="vt">Bottle placement · Franka · fragile recovery (13 s)</div>
+        <div class="vd">Glass-class bottle (<code>F_break</code> ≈ 23&nbsp;N): the wedge is caught <strong>at 16.1&nbsp;N from the force signature alone</strong>, the LLM picks <code>rotate_align</code> at the same <code>F_max</code>, and the learned policy re-inserts, seats, releases, retracts.</div>
+      </div>
+      <div class="vidcard">
+        <video controls preload="metadata" poster="assets/poster_gear_recovery.png">
+          <source src="../docs/videos/task3/gear_recovery_robotiq.mp4" type="video/mp4">
+        </video>
+        <div class="vt">Gear insertion · 2F-140 · jam recovery (83 s)</div>
+        <div class="vd">A 5&nbsp;mm in-grip slip is injected; the recurring contactless-hover signature routes the frozen LLM to <code>regrasp</code> — <strong>two fully physical place-on-table regrasp cycles</strong> — then the learned policy seats and releases the gear.</div>
+      </div>
+      <div class="vidcard">
+        <video controls preload="metadata" poster="assets/poster_gear_franka.png">
+          <source src="../docs/videos/task3/gear_recovery_franka.mp4" type="video/mp4">
+        </video>
+        <div class="vt">Gear insertion · Franka · jam recovery (14 s)</div>
+        <div class="vd">The same 5&nbsp;mm in-grip slip on the Franka hand — the slip leaves the gear tilted in the grip, the hover signature routes through recovery attempts, and the learned policy threads the 0.4&nbsp;mm bore and ends <strong>SEATED</strong>.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- tables -->
+  <section>
+    <h2>Clean gates — one checkpoint, both classes, zero breaks</h2>
+    <p>Robotiq 2F-140, deterministic policy, strict TRUE-seat criterion, hidden per-episode <code>F_break</code> draw. Release success is stricter than insertion: <em>released + standing seated + hand clear</em>, with the gripper opened only by the learned head's own threshold crossing. (Franka clean gate: 200/200, 0 breaks, peak 13.8&nbsp;N mean.)</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Milestone</th><th>Checkpoint</th><th>Fragile ABS gear (F_break 38±5 N)</th><th>Steel gear</th></tr></thead>
+      <tbody>
+        <tr><td class="h">Clean insertion, unified</td><td><code>task1_gear_rq_uni.pt</code></td><td><span class="good">256/256, 0 breaks</span>, peak 15.9 N mean / 18.5 p95</td><td><span class="good">256/256, 0 breaks</span>, 35.6 / 57.6</td></tr>
+        <tr><td class="h">+ learned release</td><td><code>…_uni_rel.pt</code></td><td><span class="good">256/256, 0 breaks, 0 bad releases</span>, 15.7 / 18.5 / 20.1 max</td><td><span class="good">256/256, 0, 0</span>, 35.7 / 59.3 / 69.6</td></tr>
+        <tr><td class="h">Full table-pick flow</td><td><code>…_uni_rel_tp.pt</code></td><td><span class="good">64/64 smoke, 0 breaks</span>, peak <strong>5.4 N mean / 5.8 max</strong> — the gentlest of the project</td><td>open (steel table smoke queued)</td></tr>
+      </tbody>
+    </table></div>
+    <p style="font-size:13.5px;color:var(--muted)">The interesting inversion: the <em>unpinned</em> table pick produces far gentler insertions (5.4&nbsp;N) than the staging pin it replaced (15.9&nbsp;N) — a real friction pick centers the hub in the pads better than the pin ever did.</p>
+  </section>
+
+  <section>
+    <h2>Who should set the budget? — baselines</h2>
+    <figure>
+      <img src="assets/budget_bars.png" alt="Grouped bars: ours 100% success 0% breakage; oracle 50.2/49.8; fixed global 0/100; no-ceiling non-functional.">
+      <figcaption>Fragile ABS gear, Franka, ~200 episodes/cell. The identity-only LLM budget (10&nbsp;N) seats 100% with 0 breaks. The <strong>oracle breaks half the gears</strong>: F_break−ε is only "optimal" if clamp fidelity is perfect, but the skill's funnel-entry overshoot peaks at ~1.5× the budget — a real budget must cover the overshoot distribution, not just sit under F_break. Fixed 60&nbsp;N destroys every part; the unbounded baseline is non-functional (far-OOD force conditioning degenerates the policy).</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Recovery under an in-grip slip — five baselines, two grippers</h2>
+    <figure>
+      <img src="assets/sweep_bars.png" alt="Grouped bars of the recovery sweep on both grippers: ours 40%/64% success; press-harder 100% timeouts on 2F-140, 96% breaks on Franka.">
+      <figcaption>Fragile ABS gear, 5&nbsp;mm in-grip slip every episode, 25 episodes/cell, F_max never raised. The slip leaves the gear tilted 7–10° <em>in the grip</em>; only the force-signature chain routes the recurring zero-force hover to <code>regrasp</code>. <strong>Caveat:</strong> the two panels use different step caps (1600 vs 700 — one 2F-140 regrasp cycle is ~450 steps) and different checkpoints, so compare within a panel, not across. The "vision-LLM" baseline is a menu-sampling <em>proxy</em> for pixels-only reasoners. On steel, the same chain recovers 25/25 with 0 breaks. Recovery episodes press harder than clean ones (23&nbsp;N mean vs 15.9) — that envelope exposure, not any raised ceiling, accounts for the residual fragile breaks.</figcaption>
+    </figure>
+  </section>
+
+  <!-- negative results -->
+  <section>
+    <h2>Negative results (first-class findings)</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Finding</th><th>Evidence</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="h">PPO cannot learn 0.4&nbsp;mm insertion on the 2F-140</td>
+          <td>Nine escalating runs, zero seats (all checkpoints kept in the manifest). Action std 0.12 already breaks 40/64 gears while seating 1/320.</td>
+          <td>The exploration noise needed to <em>search</em> the funnel is already destructive at the funnel's own scale — the exploration–damage trade-off can exclude on-policy RL outright. What works: expert demos → DAgger → BC → <strong>weight soup</strong> (0.15·bc3 + 0.85·bc7).</td>
+        </tr>
+        <tr>
+          <td class="h">Tiny-std PPO polish destroys a working policy</td>
+          <td>Fine-tuning a functioning BC policy at std 0.05 collapsed it from 84% to 0/32 within 25 iterations, at every snapshot.</td>
+          <td>The 1/std² term in the Gaussian policy gradient amplifies updates as std shrinks — the mean moves far more coarsely than the tolerance allows.</td>
+        </tr>
+        <tr>
+          <td class="h">Three natural release-head designs fail</td>
+          <td>Frozen-trunk/all-timesteps learns "open iff already open" (post-open labels are poison); pre-open labels on the frozen trunk hit 27% FPR / 52% FNR (the arm-trained trunk provably discards seat state); trunk fine-tune + distillation pins FNR at 50%.</td>
+          <td>Winner: an <strong>input-skip linear head</strong> on the raw observation — the release signal is linearly separable there (255/256 zero-FPR coverage). Threshold after weight folding, drop post-open samples, recollect per staging.</td>
+        </tr>
+        <tr>
+          <td class="h">The oracle budget breaks half the parts</td>
+          <td>F_max = F_break−5 → 49.8% breakage (funnel-entry overshoot ~1.5× budget).</td>
+          <td>Clamping the command does not bound the contact force; budget appropriateness must cover the overshoot distribution.</td>
+        </tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- honesty -->
+  <section>
+    <h2>Scope &amp; honest limitations</h2>
+    <div class="callout">
+      <span class="lab">Read before citing</span>
+      <p><strong>Simulation only.</strong> No real robot, no sim-to-real claim. Breakage is a hidden scalar threshold on peak contact force in rigid-body physics — no fracture modeling.</p>
+      <p><strong>Learned vs scripted is exactly as labeled.</strong> The force-guided insertion and the release timing are learned; pick/carry staging and the recovery <em>primitives</em> are scripted (the LLM does the <em>selection</em>). The videos label every phase on-screen.</p>
+      <p><strong>Known caveats are kept.</strong> The two sweep panels use different step caps (700 vs 1600) and are not directly comparable; the table-flow recovery result is a 3/5 smoke, not a full cell; the table-pick release gate is a 64-episode smoke; recovery episodes press harder than clean ones (that envelope exposure is the residual fragile breaks); the "vision-LLM" baseline is a menu-sampling proxy, not a full vision pipeline. Every number on this page is copy-checkable against a document in the repository.</p>
+    </div>
+  </section>
+
+  <p class="foot">FORGE-plus · built on <a href="https://arxiv.org/abs/2408.04587">FORGE</a> (RA-L 2025) and <a href="https://arxiv.org/abs/2511.04831">Isaac Lab</a> · grippers per <a href="https://arxiv.org/abs/2507.13097">GraspGen</a> · force authority is enforced by the fast-loop clamp; the language model only proposes a budget and selects a recovery within it.</p>
+
+</div>
+</body>
+</html>

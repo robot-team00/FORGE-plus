@@ -1,4 +1,4 @@
-# Task 1 — budget-setter baselines under the STRICT seat criterion
+# Gear insertion — budget-setter baselines under the STRICT seat criterion
 
 Date: 2026-07-09 (supersedes the loose-criterion version; commit bedc9df).
 Policy: `checkpoints/task1_gear_insert_franka.pt` (trained on abs_gear at the

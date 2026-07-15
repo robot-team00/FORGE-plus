@@ -1,4 +1,4 @@
-# Task 1 — jam recovery: SOLVED, with the recovery-baseline table
+# Gear insertion — jam recovery: SOLVED, with the recovery-baseline table
 
 Date: 2026-07-11. Commit 037bff1 line of work; policy =
 `task1_gear_sliprand.pt.it300` (clean gate: 200/200 strict seats, 0 breaks,
