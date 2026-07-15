@@ -6,7 +6,7 @@ A two-layer simulation study built on top of [FORGE](https://arxiv.org/abs/2408.
 
 **[Project page (videos + results)](https://robot-team00.github.io/FORGE-plus/site/)** · **[Paper (PDF)](paper/main.pdf)**
 
-[Kyupaeck Jeff Rah](https://www.linkedin.com/in/jeffrah) ([ORCID](https://orcid.org/0000-0003-1898-2930)) · Midum Oh
+[Kyupaeck Jeff Rah](https://www.linkedin.com/in/jeffrah) · Midum Oh
 
 ---
 
