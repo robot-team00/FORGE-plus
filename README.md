@@ -38,7 +38,7 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ---
 
-## Task 3 demo — wine-cellar bottle insertion
+## Bottle-placement demo — wine-cellar bottle insertion
 
 A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
 rack, then safely releases it** — a contact-rich peg-in-hole **place + release**. A **learned
@@ -75,9 +75,9 @@ Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) 
 
 ---
 
-## Task 1 demo — gear insertion on the Robotiq 2F-140
+## Gear-insertion demo — Robotiq 2F-140
 
-The full Task 1 cycle on the *second* gripper: a Robotiq 2F-140 **picks a FORGE gear off the
+The full gear-insertion cycle on the *second* gripper: a Robotiq 2F-140 **picks a FORGE gear off the
 table with a real friction grasp, inserts it onto a shaft with 0.4 mm diametral clearance under
 a per-object force budget, and a learned head decides when to release** — and when the grip is
 disturbed mid-episode, a **frozen LLM reads the text force signature** and drives recovery,
@@ -215,7 +215,7 @@ Run the full test suite:
 PYTHONPATH=. python -m pytest tests/ -v
 ```
 
-Evaluate all baselines on Task 1:
+Evaluate all baselines on the gear-insertion task:
 
 ```bash
 PYTHONPATH=. python scripts/evaluate.py \
@@ -245,7 +245,7 @@ PYTHONPATH=. python scripts/train_skill.py \
 
 Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps seeded by [GraspGen](https://arxiv.org/abs/2507.13097)). Gripper becomes a generalization axis: `F_max` is derived from object identity and should be gripper-invariant; whether it actually is is a testable prediction.
 
-> **Implementation note:** the *demonstrated* Task 1 uses the FORGE GearMesh assets — a fragile
+> **Implementation note:** the *demonstrated* insertion task uses the FORGE GearMesh assets — a fragile
 > ABS gear (`F_break` 38±5 N) vs a steel gear onto a shaft with 0.4 mm diametral clearance —
 > rather than the proposal's connector/peg pair; same fragile-vs-robust contrast, real FORGE
 > geometry. See [`docs/task1_gear_robotiq.md`](docs/task1_gear_robotiq.md).
@@ -256,14 +256,14 @@ Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps 
 
 | Key | Material | F_break mean (N) | Task |
 |---|---|---|---|
-| `abs_round_connector` | ABS plastic | 38 ± 5 | Task 1 — fragile |
-| `steel_peg` | Steel | 230 ± 20 | Task 1 — robust |
-| `resin_planet_gear` | Photopolymer resin | 48 ± 8 | Task 2 — fragile |
-| `metal_planet_gear` | Aluminium | 210 ± 18 | Task 2 — robust |
-| `glass_bowl` | Borosilicate glass | 22 ± 4 | Task 3 — fragile |
-| `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Task 3 — fragile |
-| `metal_plate` | Aluminium | 180 ± 25 | Task 3 — robust |
-| `sturdy_mug` | Stoneware | 160 ± 20 | Task 3 — robust |
+| `abs_round_connector` | ABS plastic | 38 ± 5 | Insertion — fragile |
+| `steel_peg` | Steel | 230 ± 20 | Insertion — robust |
+| `resin_planet_gear` | Photopolymer resin | 48 ± 8 | Assembly — fragile |
+| `metal_planet_gear` | Aluminium | 210 ± 18 | Assembly — robust |
+| `glass_bowl` | Borosilicate glass | 22 ± 4 | Placement — fragile |
+| `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Placement — fragile |
+| `metal_plate` | Aluminium | 180 ± 25 | Placement — robust |
+| `sturdy_mug` | Stoneware | 160 ± 20 | Placement — robust |
 
 `F_break` is sampled per-instance from the class distribution at episode start. The LLM reasons about the *class*, not a memorized instance value.
 
@@ -456,6 +456,6 @@ export HOME=/workspace/persist/ovhome MPLBACKEND=Agg DISPLAY=:99
 
 Videos are stored as `docs/videos/task3/eval_run_NNN.mp4`.
 
-The **Task 3 wine-cellar bottle insertion** demo (screenshot + video) is at the
-[top of this README](#task-3-demo--wine-cellar-bottle-insertion); full write-up in
+The **wine-cellar bottle insertion** demo (screenshot + video) is at the
+[top of this README](#bottle-placement-demo--wine-cellar-bottle-insertion); full write-up in
 [`docs/task3/`](docs/task3/README.md).

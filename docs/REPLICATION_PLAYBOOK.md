@@ -1,6 +1,6 @@
-# FORGE-plus Task 3 — Replication Playbook
+# FORGE-plus Bottle Placement — Replication Playbook
 
-> **Purpose:** everything a new session (or a new task) needs to replicate the Task 3
+> **Purpose:** everything a new session (or a new task) needs to replicate the bottle-placement
 > work end-to-end: pod operations, environment architecture, policy training, headless
 > evaluation, RTX rendering (including the pause-capture pipeline), gripper porting,
 > and the debugging protocols that actually worked. Written 2026-07-07 after the

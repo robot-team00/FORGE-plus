@@ -1,11 +1,11 @@
-# Task 3 — Fragile Object Placement (Franka + Isaac Lab)
+# Fragile Object Placement (Franka + Isaac Lab)
 
 > **Naming note:** this is a *placement* task — the robot does **not** pick the object off a
 > surface. The code keeps `pick_place` names (`FrankaPickPlaceEnv`, `*_pick_place.py`,
 > gym id `FORGE-PickPlace-v0`) because the env *implements* the full pick→place pipeline, but we
 > run it in `place_only=True` mode. See the "Pick vs place" box below.
 
-> Read this first. This folder documents **everything** about FORGE-plus Task 3: the
+> Read this first. This folder documents **everything** about FORGE-plus fragile placement: the
 > algorithm, the grasp/place physics, the headless RTX rendering pipeline, and how the
 > realistic LIBERO objects are imported. It is written for engineers *and* for other AI
 > coding agents picking up this work — every section records the *why*, not just the *what*,

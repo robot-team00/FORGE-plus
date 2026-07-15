@@ -1,4 +1,4 @@
-# Task 1 stage-A eval — learned FORGE gear insertion (Franka), STRICT criterion
+# Stage-A eval — learned FORGE gear insertion (Franka), STRICT criterion
 
 Date: 2026-07-08 (supersedes the earlier version of this file — those numbers
 were plate-rest artifacts of a ±5 cm success box; see commit bedc9df).

@@ -479,7 +479,7 @@
   <!-- 9 -->
   <section id="tasks">
     <h2><span class="num">09</span>Tasks</h2>
-    <p>Three tasks, escalating in what they stress. <strong>Task 1</strong> isolates budget-setting and the clamp in the simplest contact case. <strong>Task 2</strong> is the recovery stress test — disturbances are injected to manufacture realistic jams and misalignment across a sequence. <strong>Task 3</strong> carries the idea outside tight insertion, into seating contact where "press harder" is most destructive. Each task pairs a <em class="term">fragile</em> variant (low hidden <code class="inl">F_break</code>) with a geometrically matched <em class="term">robust</em> one. F_break ranges below are illustrative (Newtons), to be calibrated against measured sim contact forces.</p>
+    <p>Three tasks, escalating in what they stress. <strong>Single insertion</strong> isolates budget-setting and the clamp in the simplest contact case. <strong>Multi-step assembly</strong> is the recovery stress test — disturbances are injected to manufacture realistic jams and misalignment across a sequence. <strong>Fragile placement</strong> carries the idea outside tight insertion, into seating contact where "press harder" is most destructive. Each task pairs a <em class="term">fragile</em> variant (low hidden <code class="inl">F_break</code>) with a geometrically matched <em class="term">robust</em> one. F_break ranges below are illustrative (Newtons), to be calibrated against measured sim contact forces.</p>
     <div class="tbl-wrap">
       <table>
         <thead>
@@ -512,7 +512,7 @@
           </tr>
         </tbody>
       </table>
-      <caption>Task 1 is the controlled unit test; Task 2 is the recovery stress test, where injected pose perturbations manufacture the jams; Task 3 checks the ceiling-plus-recovery idea outside peg-in-hole, where escalating force is exactly the wrong move.</caption>
+      <caption>Single insertion is the controlled unit test; multi-step assembly is the recovery stress test, where injected pose perturbations manufacture the jams; fragile placement checks the ceiling-plus-recovery idea outside peg-in-hole, where escalating force is exactly the wrong move.</caption>
     </div>
     <p>Every task is run on <strong>both grippers</strong> — the Franka Panda and the Robotiq 2F-140, with grasps seeded by GraspGen — so each task is really a 2&nbsp;×&nbsp;2 grid of {gripper} × {fragile, robust}. Gripper becomes a generalization axis rather than a hidden default, and the multi-step task additionally stresses whether one identity-derived budget holds as the embodiment changes.</p>
   </section>

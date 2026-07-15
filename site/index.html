@@ -140,28 +140,28 @@
         <video controls preload="metadata" poster="assets/poster_gear_clean.png">
           <source src="../docs/videos/task3/gear_clean_robotiq.mp4" type="video/mp4">
         </video>
-        <div class="vt">Task 1 · 2F-140 · clean full cycle (28 s)</div>
+        <div class="vt">Gear insertion · 2F-140 · clean full cycle (28 s)</div>
         <div class="vd">Table pick (real friction grasp, no pinning) → carry → <strong>learned</strong> force-guided insertion at 0.4&nbsp;mm clearance → <strong>learned</strong> release (act[7]) → hand clear.</div>
       </div>
       <div class="vidcard">
         <video controls preload="metadata" poster="assets/poster_gear_recovery.png">
           <source src="../docs/videos/task3/gear_recovery_robotiq.mp4" type="video/mp4">
         </video>
-        <div class="vt">Task 1 · 2F-140 · jam recovery (83 s)</div>
+        <div class="vt">Gear insertion · 2F-140 · jam recovery (83 s)</div>
         <div class="vd">A 5&nbsp;mm in-grip slip is injected; the recurring contactless-hover signature routes the frozen LLM to <code>regrasp</code> — <strong>two fully physical place-on-table regrasp cycles</strong> — then the learned policy seats and releases the gear.</div>
       </div>
       <div class="vidcard">
         <video controls preload="metadata" poster="../docs/videos/task3/forge_recovery_franka.png">
           <source src="../docs/videos/task3/forge_recovery_franka.mp4" type="video/mp4">
         </video>
-        <div class="vt">Task 3 · Franka · fragile recovery (13 s)</div>
+        <div class="vt">Bottle placement · Franka · fragile recovery (13 s)</div>
         <div class="vd">Glass-class bottle (<code>F_break</code> ≈ 23&nbsp;N): the wedge is caught <strong>at 16.1&nbsp;N from the force signature alone</strong>, the LLM picks <code>rotate_align</code> at the same <code>F_max</code>, and the learned policy re-inserts, seats, releases, retracts.</div>
       </div>
       <div class="vidcard">
         <video controls preload="metadata" poster="../docs/videos/task3/forge_release.png">
           <source src="../docs/videos/task3/forge_release.mp4" type="video/mp4">
         </video>
-        <div class="vt">Task 3 · Franka · learned insert + release (3 s)</div>
+        <div class="vt">Bottle placement · Franka · learned insert + release (3 s)</div>
         <div class="vd">The clean case: a FORGE PPO policy descends the bottle into the rack cell under ~0–4&nbsp;N contact and <strong>decides when to let go</strong> (learned 8th action dim); the bottle stands upright.</div>
       </div>
     </div>

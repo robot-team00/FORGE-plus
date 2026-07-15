@@ -44,7 +44,7 @@ return FAIL_NO_ATTEMPTS_LEFT
 ```
 
 To make a new task env recoverable, implement the `RecoveryEnv` hooks on it — nothing in the loop
-or the LLM layer changes. (Scope note: as everywhere in Task 3, this is the **terminal micro-phase**
+or the LLM layer changes. (Scope note: as everywhere in the bottle-placement task, this is the **terminal micro-phase**
 with **no vision** and **poses assumed known**; see [`05-wine-cellar-insertion.md`](05-wine-cellar-insertion.md) and the root proposal §01.)
 
 ## 2. The env hooks (`FrankaPickPlaceEnv`)

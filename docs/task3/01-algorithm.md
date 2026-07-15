@@ -1,6 +1,6 @@
 # 01 — Algorithm: FORGE, OSC, phases, force budgets, reward, RL
 
-This is the control + learning stack for Task 3. File: `forge_plus/isaac_pick_place_env.py`
+This is the control + learning stack for the bottle-placement task. File: `forge_plus/isaac_pick_place_env.py`
 (env), `forge_plus/skills/policy_network.py` (nets), `scripts/train_pick_place.py` (PPO).
 
 ## 1. FORGE in one paragraph

@@ -1,4 +1,4 @@
-# Task 1 — Robotiq 2F-140 port: handoff for the next session
+# Gear insertion — Robotiq 2F-140 port: handoff for the next session
 
 Written 2026-07-11 at the end of the session that solved jam recovery
 (`037bff1`), produced the recovery-baseline table (`41a70a8`), and delivered

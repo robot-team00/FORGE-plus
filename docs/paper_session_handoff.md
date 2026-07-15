@@ -21,7 +21,7 @@ the source of truth).
    grippers, with the honest-caveats sections (step caps, timeout
    economics, envelope forces).
 5. `docs/task1_baselines.md` — budget baselines (ours / oracle / fixed).
-6. `docs/task3/README.md` + `docs/task3/01…08` — the Task 3 bottle arc
+6. `docs/task3/README.md` + `docs/task3/01…08` — the bottle-placement arc
    (learned insertion + release on the Franka, recovery loop, rendering,
    the 2F-140 asset build).
 7. `checkpoints/README.md` — checkpoint provenance, including the failed
@@ -39,14 +39,14 @@ from every learned/LLM component; `F_max` is immutable during recovery;
 force authority lives in the fast loop.
 
 Results to feature:
-- **Task 1, Robotiq 2F-140** (the flagship): one checkpoint, both classes,
+- **Gear insertion, Robotiq 2F-140** (the flagship): one checkpoint, both classes,
   clean 256/256 + 0 breaks; learned release 256/256; full table-pick flow
   64/64 at 5.4 N mean peak; recovery sweep ours 40% vs vision-proxy 28%,
   heuristic 0%, press-harder 0% *futile*, none 0% with 20% breaks.
-- **Task 1, Franka**: clean 200/200; sweep ours 64% / press-harder 96%
+- **Gear insertion, Franka**: clean 200/200; sweep ours 64% / press-harder 96%
   breaks — note how press-harder shows a *different face* on each gripper
   (destructive vs futile): that contrast is a finding.
-- **Task 3, Franka**: learned insertion + learned release of a fragile
+- **Bottle placement, Franka**: learned insertion + learned release of a fragile
   bottle, recovery caught at 16.1 N vs ~23 N break.
 - **Negative results are first-class**: PPO-only provably fails at 0.4 mm
   clearance (9 runs, exploration-noise argument); tiny-std PPO polish
