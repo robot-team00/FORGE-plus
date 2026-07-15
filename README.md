@@ -2,7 +2,7 @@
 
 LLM-guided failure recovery for contact-rich assembly under per-object force ceilings.
 
-A two-layer simulation study built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA-L 2025). Simulation-only · frozen LLM supervisor · single GPU · no real robot · no fracture modeling.
+A two-layer system built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA-L 2025): a frozen LLM sets per-object force ceilings and picks recoveries from text force signatures, while a hard clamp in the fast loop keeps force authority.
 
 **[Project page (videos + results)](https://robot-team00.github.io/FORGE-plus/site/)** · **[Paper (PDF)](paper/forge-plus.pdf)**
 
