@@ -6,7 +6,7 @@ A two-layer system built on top of [FORGE](https://arxiv.org/abs/2408.04587) (RA
 
 **[Project page (videos + results)](https://robot-team00.github.io/FORGE-plus/site/)** · **[Paper (PDF)](paper/forge-plus.pdf)**
 
-[Kyupaeck Jeff Rah](https://www.linkedin.com/in/jeffrah) · Midum Oh
+[Kyupaeck Jeff Rah](https://www.linkedin.com/in/jeffrah) · Midum Oh — *Independent Researchers*
 
 ---
 
