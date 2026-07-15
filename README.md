@@ -119,7 +119,7 @@ Headline numbers (deterministic policy, strict TRUE-seat criterion, hidden per-e
   (two cycles in the episode) before the learned policy seats and releases it.</em>
 </td>
 <td width="50%" align="center">
-  <a href="docs/videos/task3/gear_recovery_franka.mp4"><img src="docs/videos/task3/gear_recovery_franka.png" alt="Franka hand mid-recovery: the hover signature has routed to a recovery attempt while the gear hangs tilted over the three-shaft plate"></a>
+  <a href="docs/videos/task3/gear_recovery_franka.mp4"><img src="docs/videos/task3/gear_recovery_franka.png" alt="Franka hand threading the white gear onto the shaft under LEARNED force-guided insertion (8.3 N, under budget) after the slip recovery"></a>
   <br><em><b>Franka Panda</b> — the same 5 mm in-grip slip; the recurring contactless-hover
   signature routes through recovery attempts and the learned policy threads the 0.4 mm bore,
   ending <b>SEATED</b>.</em>
