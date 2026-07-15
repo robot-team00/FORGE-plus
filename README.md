@@ -40,13 +40,14 @@ FORGE-plus studies what happens when you close both gaps at once:
 
 ## Bottle-placement demo — wine-cellar bottle insertion
 
-A Franka Panda carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
-rack, then safely releases it** — a contact-rich peg-in-hole **place + release**. A **learned
-FORGE PPO policy** descends the bottle into the cell under force control (contact stays gentle,
-~0–4 N — far below breaking), keeps it vertical, and **decides when to let go** (a learned 8th
-action dimension); it seats the bottle standing upright and the arm retracts. Real physics
-throughout — the bottle is a dynamic rigid body held by a genuine friction grip, never teleported
-during the carry.
+The robot carries a realistic LIBERO wine bottle and **inserts it into a cell of a wine
+rack, then safely releases it** — a contact-rich peg-in-hole **place + release**, with the
+fragile recovery episode demonstrated on **both grippers** (Robotiq 2F-140 and Franka Panda).
+A **learned FORGE PPO policy** descends the bottle into the cell under force control (contact
+stays gentle, ~0–4 N — far below breaking), keeps it vertical, and **decides when to let go**
+(a learned 8th action dimension); it seats the bottle standing upright and the arm retracts.
+Real physics throughout — the bottle is a dynamic rigid body held by a genuine friction grip,
+never teleported during the carry.
 
 > ✅ **This is a learned policy** (FORGE PPO), not a scripted scaffold. The **force-guided
 > insertion and the release timing are learned**; only the pre-approach positioning, the
@@ -56,18 +57,28 @@ during the carry.
 > write-ups: [`docs/task3/07-learned-place-release.md`](docs/task3/07-learned-place-release.md)
 > and [`docs/task3/06-recovery.md`](docs/task3/06-recovery.md).
 
-<div align="center">
-  <img src="docs/videos/task3/forge_recovery_franka.png" width="600" alt="Fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack">
-  <br><em>The headline moment: the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the system reads the
-  <b>text force signature</b> (no vision), the LLM picks <code>rotate_align</code>, and the learned
-  policy re-inserts, seats the bottle, releases, and retracts.</em>
-</div>
+<table>
+<tr>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/forge_recovery_robotiq.mp4"><img src="docs/videos/task3/forge_recovery_robotiq.png" alt="Robotiq 2F-140 fragile recovery: the JAM DETECTED card shows the text force signature (peak 14.0 N, rising, lateral -x steady) and the LLM's rotate_align decision over the wine rack"></a>
+  <br><em><b>Robotiq 2F-140</b> — a seeded base-aim fault wedges the bottle; the jam is caught
+  from the <b>text force signature</b> (peak 14.0 N vs a 19 N break, no vision), the LLM picks
+  <code>rotate_align</code>, and attempt 2 places the bottle upright.</em>
+</td>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/forge_recovery_franka.mp4"><img src="docs/videos/task3/forge_recovery_franka.png" alt="Franka fragile recovery episode: the JAM DETECTED card shows the text force signature (peak 16.1 N, lateral +x steady) and the LLM's rotate_align decision while the arm, still holding the glass bottle, realigns over the rack"></a>
+  <br><em><b>Franka Panda</b> — the insertion <b>jams at 16.1 N</b> (break ≈ 23 N), the LLM picks
+  <code>rotate_align</code>, and the learned policy re-inserts, seats the bottle,
+  <b>releases</b> (learned), and retracts.</em>
+</td>
+</tr>
+</table>
 
-▶️ **[`docs/videos/task3/forge_recovery_franka.mp4`](docs/videos/task3/forge_recovery_franka.mp4)**
- — the full **fragile recovery episode**: learned insertion → induced jam caught from the force
- signature far below break → LLM recovery → learned re-insertion → seat → **learned release** →
- retract. (The clean insertion + release demo without a jam:
- [`docs/videos/task3/forge_release.mp4`](docs/videos/task3/forge_release.mp4).)
+▶️ Videos (click a still above to play, or open directly):
+**[`forge_recovery_robotiq.mp4`](docs/videos/task3/forge_recovery_robotiq.mp4)** (11 s) ·
+**[`forge_recovery_franka.mp4`](docs/videos/task3/forge_recovery_franka.mp4)** (13 s).
+(The clean insertion + release demo without a jam:
+[`forge_release.mp4`](docs/videos/task3/forge_release.mp4).)
 
 Full write-up (algorithm, reward shaping, the gripper-open bug, rendering, HUD) is in
 **[`docs/task3/`](docs/task3/README.md)** — start with
@@ -99,11 +110,29 @@ Headline numbers (deterministic policy, strict TRUE-seat criterion, hidden per-e
   **20% breaks**. Only the force-signature chain ever routes to `regrasp`, the one maneuver that
   fixes a tilted grip.
 
-▶️ **[`docs/videos/task3/gear_clean_robotiq.mp4`](docs/videos/task3/gear_clean_robotiq.mp4)** —
-clean episode (28 s): table pick → carry → learned insertion → learned release → hand clear.
-▶️ **[`docs/videos/task3/gear_recovery_robotiq.mp4`](docs/videos/task3/gear_recovery_robotiq.mp4)**
-— recovery episode (83 s): induced in-grip slip → hover signature → LLM-selected recovery with
-two physical place-on-table regrasps → seat → learned release.
+<table>
+<tr>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/gear_recovery_robotiq.mp4"><img src="docs/videos/task3/gear_recovery_robotiq.png" alt="Robotiq 2F-140 mid-recovery: the tilted gear is being placed back on the table for a physical re-pick (LLM decision wedge -> regrasp, attempt 2)"></a>
+  <br><em><b>Robotiq 2F-140</b> — mid-recovery: the slip leaves the gear tilted in the grip, and
+  the LLM's <code>regrasp</code> decision drives a <b>fully physical place-on-table re-pick</b>
+  (two cycles in the episode) before the learned policy seats and releases it.</em>
+</td>
+<td width="50%" align="center">
+  <a href="docs/videos/task3/gear_recovery_franka.mp4"><img src="docs/videos/task3/gear_recovery_franka.png" alt="Franka hand mid-recovery: the hover signature has routed to a recovery attempt while the gear hangs tilted over the three-shaft plate"></a>
+  <br><em><b>Franka Panda</b> — the same 5 mm in-grip slip; the recurring contactless-hover
+  signature routes through recovery attempts and the learned policy threads the 0.4 mm bore,
+  ending <b>SEATED</b>.</em>
+</td>
+</tr>
+</table>
+
+▶️ Videos (click a still above to play, or open directly):
+**[`gear_recovery_robotiq.mp4`](docs/videos/task3/gear_recovery_robotiq.mp4)** (83 s) ·
+**[`gear_recovery_franka.mp4`](docs/videos/task3/gear_recovery_franka.mp4)** (14 s).
+(The clean full cycle without a disturbance — table pick → carry → learned insertion → learned
+release → hand clear:
+[`gear_clean_robotiq.mp4`](docs/videos/task3/gear_clean_robotiq.mp4), 28 s.)
 
 Why the method section matters: **PPO alone provably fails at this clearance** (exploration
 noise that can search the funnel already breaks the part; nine escalating runs, zero seats),
