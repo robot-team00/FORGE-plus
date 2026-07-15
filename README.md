@@ -156,7 +156,7 @@ forge_plus/
 │   ├── base_assembly_env.py  # Abstract interface (decouples episode runner from sim)
 │   ├── mock_assembly_env.py  # Lightweight CPU env for testing without Isaac Lab
 │   ├── isaac_lab_env.py      # Isaac Lab implementation (requires GPU + isaaclab>=2.0)
-│   └── object_configs.py     # 8 objects across 3 tasks, each with hidden F_break dist.
+│   └── object_configs.py     # object registry, each class with a hidden F_break dist.
 ├── skills/
 │   ├── policy_network.py     # FiLM-conditioned MLP — F_cmd modulates every hidden layer
 │   └── forge_skill.py        # FORGE-style skill with running obs normalizer
@@ -240,8 +240,7 @@ PYTHONPATH=. python scripts/train_skill.py \
 | # | Name | What it isolates | Objects | Dominant failure |
 |---|---|---|---|---|
 | 1 | Single insertion | Budget-setting + clamp | ABS round connector (fragile) vs steel peg (robust) | Wedge jam vs friction jam — identical on camera, distinguishable in force |
-| 2 | Multi-step assembly | Closed-loop recovery across a sequence | Resin planet gear (fragile) vs aluminium planet gear (robust) | Cross-thread / misalignment / tooth clash — each demands a different recovery within budget |
-| 3 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
+| 2 | Fragile place / stack | Ceiling + recovery *outside* tight insertion | Glass bowl, ceramic plate (fragile) vs aluminium tray, stoneware mug (robust) | Over-press / edge-load / tip — "press harder" is maximally destructive here |
 
 Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps seeded by [GraspGen](https://arxiv.org/abs/2507.13097)). Gripper becomes a generalization axis: `F_max` is derived from object identity and should be gripper-invariant; whether it actually is is a testable prediction.
 
@@ -258,8 +257,6 @@ Every task runs on both the **Franka Panda** and the **Robotiq 2F-140** (grasps 
 |---|---|---|---|
 | `abs_round_connector` | ABS plastic | 38 ± 5 | Insertion — fragile |
 | `steel_peg` | Steel | 230 ± 20 | Insertion — robust |
-| `resin_planet_gear` | Photopolymer resin | 48 ± 8 | Assembly — fragile |
-| `metal_planet_gear` | Aluminium | 210 ± 18 | Assembly — robust |
 | `glass_bowl` | Borosilicate glass | 22 ± 4 | Placement — fragile |
 | `ceramic_plate` | Stoneware ceramic | 26 ± 5 | Placement — fragile |
 | `metal_plate` | Aluminium | 180 ± 25 | Placement — robust |

@@ -178,7 +178,7 @@
     <h2><span class="num">01</span>Summary</h2>
     <p class="lead">We propose a two-layer controller for contact-rich assembly in which a <strong>frozen large language model acts as a slow semantic supervisor</strong> over a fast, force-aware reinforcement-learning skill. The supervisor does two things and nothing else: (a) before an episode, it reads an object's identity and <strong>sets a numeric force ceiling <code class="inl">F_max</code></strong> that the manipulator must never exceed; and (b) on failure, it reads a <strong>compact text force/contact signature</strong> — not images — and selects a recovery action from a fixed menu.</p>
     <p>Underneath sits a FORGE-style force-aware RL skill conditioned on a commanded maximum force. The scene carries a <em class="term">hidden ground-truth breaking force</em> <code class="inl">F_break</code> per object instance that the policy and the LLM never observe. Because breakage is decided by a hidden scalar rather than by deformation or fracture geometry, the study stays inside trustworthy rigid-body simulation: no soft-body modeling, no contact mesh fracture, no hardware.</p>
-    <p>No single ingredient here is new. Force-ceiling-conditioned skills exist (FORGE); LLM failure reasoners exist (REFLECT, DoReMi, AHA); language-conditioned force and force-based "try harder" recovery exist (Tactile-VLA); controller-retains-authority designs exist (PaCo-VLA). <strong>The contribution is their conjunction under one constraint</strong>: force-grounded (not vision) semantic recovery, under a hard per-object force ceiling, across multi-step assembly, judged by closed-loop multi-attempt success, and measured with a fragility metric that is not circular.</p>
+    <p>No single ingredient here is new. Force-ceiling-conditioned skills exist (FORGE); LLM failure reasoners exist (REFLECT, DoReMi, AHA); language-conditioned force and force-based "try harder" recovery exist (Tactile-VLA); controller-retains-authority designs exist (PaCo-VLA). <strong>The contribution is their conjunction under one constraint</strong>: force-grounded (not vision) semantic recovery, under a hard per-object force ceiling, judged by closed-loop multi-attempt success, and measured with a fragility metric that is not circular.</p>
 
     <div class="callout">
       <span class="lab">Scope &amp; assumptions — what this is, and is not</span>
@@ -258,7 +258,7 @@
 
     <div class="callout">
       <span class="lab">Argumentative thread — novelty is the conjunction</span>
-      <p>Ceiling-conditioned skills (FORGE), LLM recovery (REFLECT / DoReMi / AHA), language-conditioned force with force-based recovery (Tactile-VLA), and shield-retains-authority (PaCo-VLA) each exist in isolation. None combines <strong>force-grounded (not vision) recovery</strong> + a <strong>hard per-object ceiling</strong> + <strong>multi-step assembly</strong> + <strong>closed-loop multi-attempt scoring</strong> + a <strong>fragility metric the agent cannot read off</strong>. That five-way conjunction, in one trustworthy rigid-body sim, is the proposal.</p>
+      <p>Ceiling-conditioned skills (FORGE), LLM recovery (REFLECT / DoReMi / AHA), language-conditioned force with force-based recovery (Tactile-VLA), and shield-retains-authority (PaCo-VLA) each exist in isolation. None combines <strong>force-grounded (not vision) recovery</strong> + a <strong>hard per-object ceiling</strong> + <strong>closed-loop multi-attempt scoring</strong> + a <strong>fragility metric the agent cannot read off</strong>. That four-way conjunction, in one trustworthy rigid-body sim, is the proposal.</p>
     </div>
   </section>
 
@@ -479,7 +479,7 @@
   <!-- 9 -->
   <section id="tasks">
     <h2><span class="num">09</span>Tasks</h2>
-    <p>Three tasks, escalating in what they stress. <strong>Single insertion</strong> isolates budget-setting and the clamp in the simplest contact case. <strong>Multi-step assembly</strong> is the recovery stress test — disturbances are injected to manufacture realistic jams and misalignment across a sequence. <strong>Fragile placement</strong> carries the idea outside tight insertion, into seating contact where "press harder" is most destructive. Each task pairs a <em class="term">fragile</em> variant (low hidden <code class="inl">F_break</code>) with a geometrically matched <em class="term">robust</em> one. F_break ranges below are illustrative (Newtons), to be calibrated against measured sim contact forces.</p>
+    <p>Two tasks, escalating in what they stress. <strong>Single insertion</strong> isolates budget-setting and the clamp in the simplest contact case — disturbances are injected to manufacture realistic jams and misalignment. <strong>Fragile placement</strong> carries the idea outside tight insertion, into seating contact where "press harder" is most destructive. Each task pairs a <em class="term">fragile</em> variant (low hidden <code class="inl">F_break</code>) with a geometrically matched <em class="term">robust</em> one. F_break ranges below are illustrative (Newtons), to be calibrated against measured sim contact forces.</p>
     <div class="tbl-wrap">
       <table>
         <thead>
@@ -495,15 +495,7 @@
             <td>wedge vs. friction jam — wedging shows steady lateral bias with rising axial; a friction jam is axial-only. The two are identical on camera.</td>
           </tr>
           <tr>
-            <td class="col-h">2 · Multi-step assembly<br>with injected jams<br><span style="color:var(--faint);font-weight:400;font-size:11px">FORGE planetary gearbox / peg sequence</span></td>
-            <td>Closed-loop multi-attempt recovery across a sequence; per-subtask budgets. The case the proposal is built around.</td>
-            <td>thread → insert → mesh</td>
-            <td>mixed per member<br>resin planet gear<br>~40–60 amid metal ~180–240</td>
-            <td>pose perturbations sampled to cause cross-thread, misalignment, and tooth clash</td>
-            <td>jam vs. misalignment vs. clash — the recovery-selector must separate these from the force/torque trace; they look alike visually yet demand different recoveries within the budget.</td>
-          </tr>
-          <tr>
-            <td class="col-h">3 · Fragile place / stack<br><span style="color:var(--faint);font-weight:400;font-size:11px">glass → rack, plate → slot</span></td>
+            <td class="col-h">2 · Fragile place / stack<br><span style="color:var(--faint);font-weight:400;font-size:11px">glass → rack, plate → slot</span></td>
             <td>Ceiling + recovery <em>outside</em> tight insertion — does the idea survive contact-rich seating with no hole to enter?</td>
             <td>approach · contact · settle / seat</td>
             <td>glass / ceramic<br>~15–35<br>sturdy mug / metal plate<br>~150+</td>
@@ -512,9 +504,9 @@
           </tr>
         </tbody>
       </table>
-      <caption>Single insertion is the controlled unit test; multi-step assembly is the recovery stress test, where injected pose perturbations manufacture the jams; fragile placement checks the ceiling-plus-recovery idea outside peg-in-hole, where escalating force is exactly the wrong move.</caption>
+      <caption>Single insertion is the controlled unit test, where injected pose perturbations manufacture the jams; fragile placement checks the ceiling-plus-recovery idea outside peg-in-hole, where escalating force is exactly the wrong move.</caption>
     </div>
-    <p>Every task is run on <strong>both grippers</strong> — the Franka Panda and the Robotiq 2F-140, with grasps seeded by GraspGen — so each task is really a 2&nbsp;×&nbsp;2 grid of {gripper} × {fragile, robust}. Gripper becomes a generalization axis rather than a hidden default, and the multi-step task additionally stresses whether one identity-derived budget holds as the embodiment changes.</p>
+    <p>Every task is run on <strong>both grippers</strong> — the Franka Panda and the Robotiq 2F-140, with grasps seeded by GraspGen — so each task is really a 2&nbsp;×&nbsp;2 grid of {gripper} × {fragile, robust}. Gripper becomes a generalization axis rather than a hidden default, and it stresses whether one identity-derived budget holds as the embodiment changes.</p>
   </section>
 
   <!-- 10 -->
@@ -557,7 +549,7 @@
   <!-- 11 -->
   <section id="compute">
     <h2><span class="num">11</span>Compute &amp; feasibility</h2>
-    <p>The study is deliberately single-GPU. Isaac Lab runs thousands of parallel environments (target 1–4k) for FORGE-style PPO; with <strong>no rendering required</strong> — observations are proprioception, pose, and F/T, not images — simulation throughput is high and there is no vision sim-to-real gap to defend. A FORGE-class skill per task is plausibly trainable in hours-to-a-day on a single RTX 4090 / L40 / A100. Grasps are seeded by GraspGen (real-time inference) for both grippers, so the skill budget is one policy per gripper × task — six skills for three tasks — while the frozen LLM layer is shared across all of them; the cross-gripper cost lands on RL training, not on the semantic layer.</p>
+    <p>The study is deliberately single-GPU. Isaac Lab runs thousands of parallel environments (target 1–4k) for FORGE-style PPO; with <strong>no rendering required</strong> — observations are proprioception, pose, and F/T, not images — simulation throughput is high and there is no vision sim-to-real gap to defend. A FORGE-class skill per task is plausibly trainable in hours-to-a-day on a single RTX 4090 / L40 / A100. Grasps are seeded by GraspGen (real-time inference) for both grippers, so the skill budget is one policy per gripper × task — four skills for two tasks — while the frozen LLM layer is shared across all of them; the cross-gripper cost lands on RL training, not on the semantic layer.</p>
     <p>The LLM is frozen and called at most twice per episode (budget + one recovery; more if multiple failures). A local 7–8B instruct model or a hosted API both work; cost is negligible beside the RL run, and budget-setter outputs can be cached per object identity since the call is near-deterministic. Concretely: training dominates compute, the LLM dominates nothing, and the whole pipeline fits one workstation.</p>
   </section>
 
@@ -593,7 +585,6 @@
       <li><strong>LLM choice:</strong> hosted API vs. local small model, and how to make budget-setting reproducible across model versions.</li>
       <li><strong>F_break distribution:</strong> per-class fixed vs. per-instance randomized, and how much spread before identity stops being predictive.</li>
       <li><strong>Recovery memory:</strong> does the selector see history across retries, or is each call stateless?</li>
-      <li><strong>Multi-step credit:</strong> one episode-level ceiling vs. per-subtask ceilings for tasks like planetary assembly.</li>
       <li><strong>Breakage semantics:</strong> terminal hard failure vs. a continuous penalty past <code class="inl">F_break</code>.</li>
     </ul>
   </section>
